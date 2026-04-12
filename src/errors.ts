@@ -106,8 +106,23 @@ export function mapHttpError(status: number, message: string): ProviderError {
   return new ProviderError(message);
 }
 
+/** Construct a typed error from a canonical code string. */
+export function errorClassForCode(code: string, message: string): ProviderError {
+  const map: Record<string, new (msg: string) => ProviderError> = {
+    auth: AuthError,
+    billing: BillingError,
+    rate_limit: RateLimitError,
+    invalid_request: InvalidRequestError,
+    context_length: ContextLengthError,
+    timeout: TimeoutError,
+    server: ServerError,
+  };
+  const Cls = map[code] ?? ProviderError;
+  return new Cls(message);
+}
+
 /** Map an error class to its canonical lm15 error code. */
-export function canonicalErrorCode(error: Error): string {
+export function canonicalErrorCode(error: Error): import("./types.js").ErrorCode {
   if (error instanceof ContextLengthError) return "context_length";
   if (error instanceof AuthError) return "auth";
   if (error instanceof BillingError) return "billing";

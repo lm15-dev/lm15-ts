@@ -4,8 +4,9 @@
  * TypeScript implementation.
  */
 
+// ── Types ──────────────────────────────────────────────────────────
+
 export {
-  // Types
   type JsonPrimitive, type JsonValue, type JsonArray, type JsonObject,
   type Role, type PartType, type ToolType, type ReasoningEffort, type FinishReason,
   type DataSourceType, type StreamEventType, type PartDeltaType, type ErrorCode,
@@ -31,14 +32,18 @@ export {
   type AudioGenerationRequest, type AudioGenerationResponse,
 } from "./types.js";
 
+// ── Errors ─────────────────────────────────────────────────────────
+
 export {
   ULMError, TransportError, ProviderError,
   AuthError, BillingError, RateLimitError,
   InvalidRequestError, ContextLengthError,
   TimeoutError, ServerError,
   UnsupportedModelError, UnsupportedFeatureError, NotConfiguredError,
-  mapHttpError, canonicalErrorCode,
+  mapHttpError, canonicalErrorCode, errorClassForCode,
 } from "./errors.js";
+
+// ── Transport ──────────────────────────────────────────────────────
 
 export {
   type TransportPolicy, DEFAULT_POLICY,
@@ -48,3 +53,60 @@ export {
 } from "./transport.js";
 
 export { type SSEEvent, parseSSE } from "./sse.js";
+
+// ── Capabilities ───────────────────────────────────────────────────
+
+export { type Capabilities, resolveProvider, resolveCapabilities, CapabilityResolver } from "./capabilities.js";
+
+// ── Providers ──────────────────────────────────────────────────────
+
+export {
+  type LMAdapter, type EndpointSupport, type ProviderManifest, type LiveSession,
+  BaseProviderAdapter,
+} from "./providers/base.js";
+export { OpenAIAdapter } from "./providers/openai.js";
+export { AnthropicAdapter } from "./providers/anthropic.js";
+export { GeminiAdapter } from "./providers/gemini.js";
+
+// ── Client ─────────────────────────────────────────────────────────
+
+export { UniversalLM } from "./client.js";
+
+// ── Middleware ─────────────────────────────────────────────────────
+
+export {
+  MiddlewarePipeline,
+  withRetries, withCache, withHistory,
+  type CompleteMiddleware, type StreamMiddleware,
+  type HistoryEntry as MiddlewareHistoryEntry,
+} from "./middleware.js";
+
+// ── Result ─────────────────────────────────────────────────────────
+
+export { Result, type StreamChunk, type ResultOpts, type StartStreamFn, type OnFinishedFn } from "./result.js";
+
+// ── Model ──────────────────────────────────────────────────────────
+
+export { Model, type ModelOpts, type CallOpts, type HistoryEntry } from "./model.js";
+
+// ── Conversation ───────────────────────────────────────────────────
+
+export { Conversation } from "./conversation.js";
+
+// ── Factory ────────────────────────────────────────────────────────
+
+export { buildDefault, type BuildDefaultOpts } from "./factory.js";
+
+// ── High-level API ─────────────────────────────────────────────────
+
+export {
+  configure,
+  call,
+  stream,
+  model,
+  prepare,
+  send,
+  providers,
+  type CallOptions,
+  type ModelOptions,
+} from "./api.js";
