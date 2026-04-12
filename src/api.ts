@@ -8,9 +8,11 @@ import { buildDefault, type BuildDefaultOpts } from "./factory.js";
 import { Model, type CallOpts, type ModelOpts } from "./model.js";
 import { Result, type StartStreamFn } from "./result.js";
 import type {
-  JsonObject, LMRequest, Message, Part, Tool, ToolCallInfo, Usage,
+  AudioFormat, JsonObject, LiveConfig, LMRequest, Message, Part, Tool, ToolCallInfo, Usage,
 } from "./types.js";
 import { Part as PartFactory } from "./types.js";
+import { models as _models, providersInfo as _providersInfo, type ModelsOpts } from "./discovery.js";
+import type { ModelSpec } from "./model_catalog.js";
 
 // ── Module-level state ─────────────────────────────────────────────
 
@@ -194,6 +196,55 @@ export function send(
     request,
     startStream,
     callableRegistry,
+  });
+}
+
+// ── upload() ───────────────────────────────────────────────────────
+
+/**
+ * Upload a file via the provider's file API. Returns a Part.
+ */
+export async function upload(
+  modelName: string,
+  filePath: string | Uint8Array,
+  opts?: { mediaType?: string; provider?: string; apiKey?: string | Record<string, string>; env?: string },
+): Promise<Part> {
+  const resolved = opts?.provider ?? resolveProvider(modelName);
+  const m = model(modelName, {
+    provider: resolved,
+    apiKey: opts?.apiKey,
+    env: opts?.env,
+  });
+  return m.upload(filePath, { mediaType: opts?.mediaType });
+}
+
+// ── models() / providersInfo() ─────────────────────────────────────
+
+/**
+ * Discover available models from live provider APIs and models.dev.
+ */
+export async function models(opts?: ModelsOpts): Promise<ModelSpec[]> {
+  return _models({
+    ...opts,
+    apiKey: resolve("apiKey", opts?.apiKey) as string | Record<string, string> | undefined,
+    env: resolve("env", opts?.env) as string | undefined,
+  });
+}
+
+/**
+ * Get provider status and configuration info.
+ */
+export async function providersInfo(opts?: {
+  live?: boolean;
+  refresh?: boolean;
+  timeout?: number;
+  apiKey?: string | Record<string, string>;
+  env?: string;
+}) {
+  return _providersInfo({
+    ...opts,
+    apiKey: resolve("apiKey", opts?.apiKey) as string | Record<string, string> | undefined,
+    env: resolve("env", opts?.env) as string | undefined,
   });
 }
 

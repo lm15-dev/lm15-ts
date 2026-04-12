@@ -161,7 +161,11 @@ LMRequest → UniversalLM → ProviderAdapter → Transport (native fetch)
 | Conversation helper | ✅ |
 | Factory (`buildDefault`, env file parsing) | ✅ |
 | Capability resolver | ✅ |
-| Live sessions (WebSocket) | 🔜 |
+| Live sessions (WebSocket) | ✅ |
+| Serde (JSON round-tripping) | ✅ |
+| Cost estimation | ✅ |
+| Model discovery (live + models.dev) | ✅ |
+| File upload | ✅ |
 
 ## Related
 

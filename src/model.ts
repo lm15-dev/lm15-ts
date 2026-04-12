@@ -6,10 +6,12 @@ import { resolveProvider } from "./capabilities.js";
 import type { UniversalLM } from "./client.js";
 import { Result, type StartStreamFn, type OnFinishedFn } from "./result.js";
 import type {
-  Config, JsonObject, LMRequest, LMResponse, Message,
+  Config, FileUploadRequest, JsonObject, LMRequest, LMResponse, Message,
   Part, Tool, ToolCallInfo, ToolCallPart, Usage,
 } from "./types.js";
 import { Part as PartFactory, EMPTY_USAGE } from "./types.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 type ToolInput = Tool | ((...args: unknown[]) => unknown) | string;
 
@@ -142,6 +144,42 @@ export class Model {
     this.history = [];
     this._conversation = [];
     this._pendingToolCalls = [];
+  }
+
+  /** Upload a file via the provider's file API. Returns a Part. */
+  async upload(filePath: string | Uint8Array, opts?: { mediaType?: string }): Promise<Part> {
+    let data: Uint8Array;
+    let filename: string;
+    let mediaType = opts?.mediaType;
+
+    if (typeof filePath === "string") {
+      data = new Uint8Array(fs.readFileSync(filePath));
+      filename = path.basename(filePath);
+      if (!mediaType) {
+        const ext = path.extname(filePath).toLowerCase();
+        const mimeMap: Record<string, string> = {
+          ".pdf": "application/pdf", ".txt": "text/plain", ".json": "application/json",
+          ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+          ".gif": "image/gif", ".webp": "image/webp",
+          ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
+          ".mp4": "video/mp4", ".webm": "video/webm",
+        };
+        mediaType = mimeMap[ext] ?? "application/octet-stream";
+      }
+    } else {
+      data = filePath;
+      filename = "file.bin";
+    }
+    mediaType = mediaType ?? "application/octet-stream";
+
+    const req: FileUploadRequest = { model: this.model, filename, bytes_data: data, media_type: mediaType };
+    const provider = this.provider ?? resolveProvider(this.model);
+    const resp = await this._lm.fileUpload(req, provider);
+
+    if (mediaType.startsWith("image/")) return PartFactory.image({ file_id: resp.id, media_type: mediaType });
+    if (mediaType.startsWith("audio/")) return PartFactory.audio({ file_id: resp.id, media_type: mediaType });
+    if (mediaType.startsWith("video/")) return PartFactory.video({ file_id: resp.id, media_type: mediaType });
+    return PartFactory.document({ file_id: resp.id, media_type: mediaType });
   }
 
   /** Build an LMRequest without sending it. */

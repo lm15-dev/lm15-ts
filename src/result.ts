@@ -14,7 +14,7 @@ import type {
   AudioPart, CitationPart, ImagePart, JsonObject, LMRequest, LMResponse,
   Message, Part, PartDelta, StreamEvent, ToolCallInfo, ToolCallPart, Usage,
 } from "./types.js";
-import { EMPTY_USAGE, Part as PartFactory } from "./types.js";
+import { EMPTY_USAGE, Part as PartFactory, dataSourceBytes } from "./types.js";
 
 // ── StreamChunk ────────────────────────────────────────────────────
 
@@ -279,10 +279,48 @@ export class Result {
     return this._consume().then(r => r.model);
   }
 
+  get image(): Promise<ImagePart | undefined> {
+    return this._consume().then(r =>
+      r.message.parts.find((p): p is ImagePart => p.type === "image"),
+    );
+  }
+
+  get images(): Promise<ImagePart[]> {
+    return this._consume().then(r =>
+      r.message.parts.filter((p): p is ImagePart => p.type === "image"),
+    );
+  }
+
+  get audio(): Promise<AudioPart | undefined> {
+    return this._consume().then(r =>
+      r.message.parts.find((p): p is AudioPart => p.type === "audio"),
+    );
+  }
+
+  get citations(): Promise<CitationPart[]> {
+    return this._consume().then(r =>
+      r.message.parts.filter((p): p is CitationPart => p.type === "citation"),
+    );
+  }
+
   get json(): Promise<unknown> {
     return this.text.then(t => {
       if (t == null) throw new Error("Response contains no text");
       return JSON.parse(t);
+    });
+  }
+
+  get imageBytes(): Promise<Uint8Array> {
+    return this.image.then(img => {
+      if (!img) throw new Error("Response contains no image part");
+      return dataSourceBytes(img.source);
+    });
+  }
+
+  get audioBytes(): Promise<Uint8Array> {
+    return this.audio.then(aud => {
+      if (!aud) throw new Error("Response contains no audio part");
+      return dataSourceBytes(aud.source);
     });
   }
 

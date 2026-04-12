@@ -97,6 +97,34 @@ export { Conversation } from "./conversation.js";
 
 export { buildDefault, type BuildDefaultOpts } from "./factory.js";
 
+// ── Model Catalog ──────────────────────────────────────────────────
+
+export { type ModelSpec, fetchModelsDev, buildProviderModelIndex } from "./model_catalog.js";
+
+// ── Cost Estimation ────────────────────────────────────────────────
+
+export { type CostBreakdown, estimateCost } from "./cost.js";
+
+// ── Discovery ──────────────────────────────────────────────────────
+
+export { type ModelsOpts } from "./discovery.js";
+
+// ── Live Sessions ──────────────────────────────────────────────────
+
+export { WebSocketLiveSession, type EncodeEventFn, type DecodeEventFn } from "./live.js";
+
+// ── Serde ──────────────────────────────────────────────────────────
+
+export {
+  dataSourceToDict, partToDict, messageToDict, toolToDict, usageToDict,
+  configToDict, requestToDict, responseToDict, errorInfoToDict,
+  partDeltaToDict, streamEventToDict, liveConfigToDict,
+  liveClientEventToDict, liveServerEventToDict,
+  dataSourceFromDict, partFromDict, messageFromDict, toolFromDict,
+  usageFromDict, configFromDict, requestFromDict, responseFromDict,
+  errorInfoFromDict, streamEventFromDict,
+} from "./serde.js";
+
 // ── High-level API ─────────────────────────────────────────────────
 
 export {
@@ -106,6 +134,9 @@ export {
   model,
   prepare,
   send,
+  upload,
+  models,
+  providersInfo,
   providers,
   type CallOptions,
   type ModelOptions,
