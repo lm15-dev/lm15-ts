@@ -128,6 +128,24 @@ const data = await resp.json;
 console.log(data);
 ```
 
+### Cost tracking
+
+```typescript
+lm15.configure({ trackCosts: true });
+
+const resp = lm15.call("gpt-4.1-mini", "Explain TCP.");
+console.log(await resp.cost);
+
+const m = lm15.model("claude-sonnet-4");
+await m.call("What is TCP?").text;
+await m.call("What is UDP?").text;
+console.log(await m.totalCost);
+```
+
+`configure({ trackCosts: true })` starts fetching pricing from models.dev.
+You can also use `estimateCost()` manually, or preload pricing explicitly with
+`await lm15.enableCostTracking()`.
+
 ## Architecture
 
 Same layered design as the [Python implementation](https://github.com/lm15-dev/lm15-python):

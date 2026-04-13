@@ -13,6 +13,7 @@ import type {
 import { Part as PartFactory } from "./types.js";
 import { models as _models, providersInfo as _providersInfo, type ModelsOpts } from "./discovery.js";
 import type { ModelSpec } from "./model_catalog.js";
+import { disableCostTracking, enableCostTracking } from "./cost.js";
 
 // ── Module-level state ─────────────────────────────────────────────
 
@@ -20,11 +21,17 @@ const _defaults: Record<string, unknown> = {};
 const _clientCache = new Map<string, UniversalLM>();
 
 /** Set module-level defaults so you don't repeat them on every call. */
-export function configure(opts: { env?: string; apiKey?: string | Record<string, string> }): void {
+export function configure(opts: { env?: string; apiKey?: string | Record<string, string>; trackCosts?: boolean }): void {
   for (const key of Object.keys(_defaults)) delete _defaults[key];
   _clientCache.clear();
   if (opts.env != null) _defaults.env = opts.env;
   if (opts.apiKey != null) _defaults.apiKey = opts.apiKey;
+
+  if (opts.trackCosts) {
+    void enableCostTracking();
+  } else {
+    disableCostTracking();
+  }
 }
 
 function resolve<T>(key: string, explicit: T | undefined): T | undefined {

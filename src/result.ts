@@ -15,6 +15,8 @@ import type {
   Message, Part, PartDelta, StreamEvent, ToolCallInfo, ToolCallPart, Usage,
 } from "./types.js";
 import { EMPTY_USAGE, Part as PartFactory, dataSourceBytes } from "./types.js";
+import type { CostBreakdown } from "./cost.js";
+import { lookupCost } from "./cost.js";
 
 // ── StreamChunk ────────────────────────────────────────────────────
 
@@ -269,6 +271,10 @@ export class Result {
 
   get usage(): Promise<Usage> {
     return this._consume().then(r => r.usage);
+  }
+
+  get cost(): Promise<CostBreakdown | undefined> {
+    return this._consume().then(r => lookupCost(r.model, r.usage));
   }
 
   get finishReason(): Promise<string> {

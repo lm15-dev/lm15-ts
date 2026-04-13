@@ -10,6 +10,8 @@ import type {
   Part, Tool, ToolCallInfo, ToolCallPart, Usage,
 } from "./types.js";
 import { Part as PartFactory, EMPTY_USAGE } from "./types.js";
+import type { CostBreakdown } from "./cost.js";
+import { lookupCost, sumCosts } from "./cost.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -144,6 +146,17 @@ export class Model {
     this.history = [];
     this._conversation = [];
     this._pendingToolCalls = [];
+  }
+
+  get totalCost(): Promise<CostBreakdown | undefined> {
+    if (!this.history.length) {
+      return Promise.resolve(sumCosts([]));
+    }
+    return Promise.all(this.history.map(entry => lookupCost(entry.response.model, entry.response.usage))).then(costs => {
+      const found = costs.filter((cost): cost is CostBreakdown => cost != null);
+      if (!found.length) return undefined;
+      return sumCosts(found);
+    });
   }
 
   /** Upload a file via the provider's file API. Returns a Part. */

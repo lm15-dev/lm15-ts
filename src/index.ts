@@ -103,7 +103,16 @@ export { type ModelSpec, fetchModelsDev, buildProviderModelIndex } from "./model
 
 // ── Cost Estimation ────────────────────────────────────────────────
 
-export { type CostBreakdown, estimateCost } from "./cost.js";
+export {
+  type CostBreakdown,
+  estimateCost,
+  enableCostTracking,
+  disableCostTracking,
+  getCostIndex,
+  setCostIndex,
+  lookupCost,
+  sumCosts,
+} from "./cost.js";
 
 // ── Discovery ──────────────────────────────────────────────────────
 
@@ -141,3 +150,11 @@ export {
   type CallOptions,
   type ModelOptions,
 } from "./api.js";
+
+// ── Curl Dump ──────────────────────────────────────────────────────
+
+export {
+  dumpCurl, dumpHttp,
+  buildHttpRequest, httpRequestToDict, httpRequestToCurl,
+  type BuildHttpOpts, type HttpRequestDict,
+} from "./curl.js";

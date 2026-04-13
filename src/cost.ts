@@ -2,7 +2,7 @@
  * Cost estimation from Usage + models.dev pricing data.
  */
 
-import type { ModelSpec } from "./model_catalog.js";
+import { fetchModelsDev, type ModelSpec } from "./model_catalog.js";
 import type { Usage } from "./types.js";
 
 export interface CostBreakdown {
@@ -14,6 +14,90 @@ export interface CostBreakdown {
   readonly input_audio: number;
   readonly output_audio: number;
   readonly total: number;
+}
+
+let _costIndex: Map<string, ModelSpec> | undefined;
+let _costIndexPromise: Promise<Map<string, ModelSpec>> | undefined;
+
+function emptyCostBreakdown(): CostBreakdown {
+  return {
+    input: 0,
+    output: 0,
+    cache_read: 0,
+    cache_write: 0,
+    reasoning: 0,
+    input_audio: 0,
+    output_audio: 0,
+    total: 0,
+  };
+}
+
+async function hydrateCostIndex(): Promise<Map<string, ModelSpec>> {
+  const specs = await fetchModelsDev();
+  return new Map(specs.filter(s => !!(s.raw as { cost?: unknown }).cost).map(s => [s.id, s]));
+}
+
+export async function enableCostTracking(): Promise<void> {
+  if (_costIndex) return;
+  if (!_costIndexPromise) {
+    _costIndexPromise = hydrateCostIndex().then(index => {
+      _costIndex = index;
+      return index;
+    }).finally(() => {
+      _costIndexPromise = undefined;
+    });
+  }
+  await _costIndexPromise;
+}
+
+export function disableCostTracking(): void {
+  _costIndex = undefined;
+  _costIndexPromise = undefined;
+}
+
+export function getCostIndex(): ReadonlyMap<string, ModelSpec> | undefined {
+  return _costIndex;
+}
+
+export function setCostIndex(index: ReadonlyMap<string, ModelSpec> | undefined): void {
+  _costIndex = index ? new Map(index) : undefined;
+  _costIndexPromise = undefined;
+}
+
+export async function lookupCost(
+  model: string,
+  usage: Usage,
+): Promise<CostBreakdown | undefined> {
+  if (_costIndex == null && _costIndexPromise) {
+    await _costIndexPromise;
+  }
+  const spec = _costIndex?.get(model);
+  if (!spec) return undefined;
+  return estimateCost(usage, spec);
+}
+
+export function sumCosts(costs: Iterable<CostBreakdown>): CostBreakdown {
+  const total: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    reasoning: number;
+    input_audio: number;
+    output_audio: number;
+    total: number;
+  } = emptyCostBreakdown();
+  for (const cost of costs) {
+    total.input += cost.input;
+    total.output += cost.output;
+    total.cache_read += cost.cache_read;
+    total.cache_write += cost.cache_write;
+    total.reasoning += cost.reasoning;
+    total.input_audio += cost.input_audio;
+    total.output_audio += cost.output_audio;
+    total.total += cost.total;
+  }
+  return total;
 }
 
 /**
