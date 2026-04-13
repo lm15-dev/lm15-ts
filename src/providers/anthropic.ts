@@ -89,13 +89,23 @@ export class AnthropicAdapter extends BaseProviderAdapter {
     if (p.type === "document" && p.source) {
       return { type: "document", source: dsToAnthropicSource(p.source) };
     }
-    if (p.type === "tool_result") {
+    if (p.type === "tool_call") {
       return {
+        type: "tool_use",
+        id: p.id,
+        name: p.name,
+        input: p.input ?? {},
+      };
+    }
+    if (p.type === "tool_result") {
+      const contentText = partsToText(p.content);
+      const out: JsonObject = {
         type: "tool_result",
         tool_use_id: p.id,
-        is_error: !!p.is_error,
-        content: [{ type: "text", text: partsToText(p.content) }],
       };
+      if (contentText) out.content = contentText;
+      if (p.is_error) out.is_error = true;
+      return out;
     }
     return { type: "text", text: ("text" in p ? (p.text as string) : "") ?? "" };
   }
@@ -105,7 +115,7 @@ export class AnthropicAdapter extends BaseProviderAdapter {
     const promptCaching = !!providerCfg.prompt_caching;
 
     const messages: JsonObject[] = request.messages.map(m => ({
-      role: m.role as string,
+      role: m.role === "tool" ? "user" : m.role as string,
       content: m.parts.map(p => this.partPayload(p)),
     }));
 

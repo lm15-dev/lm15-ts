@@ -310,6 +310,120 @@ export const Message = {
   },
 } as const;
 
+// ── Canonical message JSON serialization ───────────────────────────
+
+export function partToDict(part: Part): JsonObject {
+  const d: JsonObject = { type: part.type };
+  if (part.type === "text") {
+    d.text = part.text ?? "";
+  } else if (part.type === "thinking") {
+    d.text = part.text ?? "";
+    if (part.redacted != null) d.redacted = part.redacted;
+    if (part.summary != null) d.summary = part.summary;
+  } else if (part.type === "refusal") {
+    d.text = part.text ?? "";
+  } else if (part.type === "citation") {
+    if (part.text != null) d.text = part.text;
+    if (part.url != null) d.url = part.url;
+    if (part.title != null) d.title = part.title;
+  } else if (part.type === "image" || part.type === "audio" || part.type === "video" || part.type === "document") {
+    if (part.source) {
+      const src: JsonObject = { type: part.source.type };
+      if (part.source.url != null) src.url = part.source.url;
+      if (part.source.data != null) src.data = part.source.data;
+      if (part.source.media_type != null) src.media_type = part.source.media_type;
+      if (part.source.file_id != null) src.file_id = part.source.file_id;
+      if (part.source.detail != null) src.detail = part.source.detail;
+      d.source = src;
+    }
+  } else if (part.type === "tool_call") {
+    d.id = part.id;
+    d.name = part.name;
+    d.arguments = part.input ?? {};
+  } else if (part.type === "tool_result") {
+    d.id = part.id;
+    if (part.name != null) d.name = part.name;
+    d.content = part.content.length
+      ? (part.content.map(p => partToDict(p)) as JsonObject[])
+      : "";
+    if (part.is_error != null) d.is_error = part.is_error;
+  }
+  if ("metadata" in part && part.metadata != null) d.metadata = part.metadata;
+  return d;
+}
+
+export function partFromDict(d: JsonObject): Part {
+  const t = d.type as string;
+  if (t === "text") return Part.text((d.text as string) ?? "");
+  if (t === "thinking") return Part.thinking((d.text as string) ?? "", {
+    redacted: d.redacted as boolean | undefined,
+    summary: d.summary as string | undefined,
+  });
+  if (t === "refusal") return Part.refusal((d.text as string) ?? "");
+  if (t === "citation") return Part.citation({
+    text: d.text as string | undefined,
+    url: d.url as string | undefined,
+    title: d.title as string | undefined,
+  });
+  if (t === "image" || t === "audio" || t === "video" || t === "document") {
+    const src = (d.source ?? {}) as JsonObject;
+    const source = createDataSource({
+      type: (src.type as DataSourceType) ?? "url",
+      url: src.url as string | undefined,
+      data: src.data as string | undefined,
+      media_type: src.media_type as string | undefined,
+      file_id: src.file_id as string | undefined,
+      detail: src.detail as "low" | "high" | "auto" | undefined,
+    });
+    const metadata = d.metadata as JsonObject | undefined;
+    if (t === "image") return Object.freeze({ type: "image" as const, source, metadata });
+    if (t === "audio") return Object.freeze({ type: "audio" as const, source, metadata });
+    if (t === "video") return Object.freeze({ type: "video" as const, source, metadata });
+    return Object.freeze({ type: "document" as const, source, metadata });
+  }
+  if (t === "tool_call") return Part.toolCall(
+    d.id as string, d.name as string, (d.arguments ?? {}) as JsonObject,
+  );
+  if (t === "tool_result") {
+    const rawContent = d.content;
+    let content: Part[];
+    if (typeof rawContent === "string") {
+      content = rawContent ? [Part.text(rawContent)] : [];
+    } else if (Array.isArray(rawContent)) {
+      content = rawContent.map(c => typeof c === "object" ? partFromDict(c as JsonObject) : Part.text(String(c)));
+    } else {
+      content = [];
+    }
+    return Part.toolResult(d.id as string, content, {
+      is_error: d.is_error as boolean | undefined,
+      name: d.name as string | undefined,
+    });
+  }
+  throw new Error(`unsupported part type: ${t}`);
+}
+
+export function messageToDict(msg: Message): JsonObject {
+  const d: JsonObject = { role: msg.role, parts: msg.parts.map(p => partToDict(p)) as JsonObject[] };
+  if (msg.name != null) d.name = msg.name;
+  return d;
+}
+
+export function messageFromDict(d: JsonObject): Message {
+  const role = d.role as Role;
+  const partsRaw = (d.parts ?? []) as JsonObject[];
+  const parts = partsRaw.map(p => typeof p === "object" ? partFromDict(p) : Part.text(String(p)));
+  if (!parts.length) throw new Error(`message for role '${role}' has no parts`);
+  return Object.freeze({ role, parts: Object.freeze(parts), name: d.name as string | undefined });
+}
+
+export function messagesToJson(messages: readonly Message[]): JsonObject[] {
+  return messages.map(m => messageToDict(m));
+}
+
+export function messagesFromJson(data: JsonObject[]): Message[] {
+  return data.map(d => messageFromDict(d));
+}
+
 // ── Request / Response ─────────────────────────────────────────────
 
 export interface LMRequest {

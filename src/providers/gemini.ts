@@ -80,12 +80,19 @@ export class GeminiAdapter extends BaseProviderAdapter {
       if (p.source.type === "base64") return { inlineData: { mimeType: mime, data: p.source.data! } };
       if (p.source.type === "file") return { fileData: { mimeType: mime, fileUri: p.source.file_id! } };
     }
+    if (p.type === "tool_call") {
+      const fc: JsonObject = { name: p.name ?? "", args: p.input ?? {} };
+      if (p.id) fc.id = p.id;
+      return { functionCall: fc };
+    }
     if (p.type === "tool_result") {
       const text = p.content
         .filter(x => x.type === "text" && "text" in x)
         .map(x => (x as { text: string }).text)
         .join("");
-      return { functionResponse: { name: p.name ?? "tool", response: { result: { text } } } };
+      const fr: JsonObject = { name: p.name ?? "tool", response: { result: text } };
+      if (p.id) fr.id = p.id;
+      return { functionResponse: fr };
     }
     return { text: ("text" in p ? (p.text as string) : "") ?? "" };
   }

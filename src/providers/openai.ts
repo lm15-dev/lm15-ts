@@ -66,10 +66,49 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     };
   }
 
+  private buildInput(messages: readonly Message[]): JsonObject[] {
+    const items: JsonObject[] = [];
+    for (const msg of messages) {
+      if (msg.role === "tool") {
+        for (const part of msg.parts) {
+          if (part.type === "tool_result" && part.id) {
+            const text = part.content
+              .filter(x => x.type === "text" && "text" in x)
+              .map(x => (x as { text: string }).text)
+              .join("\n");
+            items.push({
+              type: "function_call_output",
+              call_id: part.id,
+              output: text || "",
+            });
+          }
+        }
+        continue;
+      }
+      const contentParts = msg.parts
+        .filter(p => p.type !== "tool_call" && p.type !== "tool_result")
+        .map(p => partToOpenAIInput(p));
+      if (contentParts.length) {
+        items.push({ role: msg.role, content: contentParts as JsonObject[] });
+      }
+      for (const part of msg.parts) {
+        if (part.type === "tool_call" && part.id && part.name) {
+          items.push({
+            type: "function_call",
+            call_id: part.id,
+            name: part.name,
+            arguments: JSON.stringify(part.input ?? {}),
+          });
+        }
+      }
+    }
+    return items;
+  }
+
   private payload(request: LMRequest, stream: boolean): JsonObject {
     const payload: JsonObject = {
       model: request.model,
-      input: request.messages.map(m => messageToOpenAIInput(m)),
+      input: this.buildInput(request.messages),
       stream,
     };
     if (request.system) {
