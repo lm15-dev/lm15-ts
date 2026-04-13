@@ -1,4 +1,6 @@
-# lm15
+<p align="center">
+  <img src="https://raw.githubusercontent.com/lm15-dev/.github/main/assets/banners/banner-1200x300.png" alt="lm15" width="600">
+</p>
 
 [![npm](https://img.shields.io/npm/v/lm15.svg)](https://www.npmjs.com/package/lm15)
 [![Node 18+](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
