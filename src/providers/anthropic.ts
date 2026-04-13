@@ -19,6 +19,7 @@ import { BaseProviderAdapter, type EndpointSupport, type ProviderManifest } from
 import { dsToAnthropicSource, partsToText } from "./common.js";
 
 const ANTHROPIC_BUILTIN_MAP: Record<string, string> = {
+  web_search: "web_search_20250305",
   code_execution: "code_execution_20250522",
 };
 
