@@ -21,6 +21,18 @@ import { EMPTY_USAGE, Part as PartFactory } from "../types.js";
 import { BaseProviderAdapter, type EndpointSupport, type ProviderManifest } from "./base.js";
 import { messageToOpenAIInput, partToOpenAIInput } from "./common.js";
 
+const OPENAI_BUILTIN_MAP: Record<string, string> = {
+  web_search: "web_search_preview",
+  code_execution: "code_interpreter",
+  file_search: "file_search",
+  computer_use: "computer_use_preview",
+};
+
+function builtinToOpenAI(tool: { name: string; builtin_config?: Record<string, unknown> }): JsonObject {
+  const wireType = OPENAI_BUILTIN_MAP[tool.name] ?? tool.name;
+  return { type: wireType, ...tool.builtin_config };
+}
+
 const SUPPORTS: EndpointSupport = {
   complete: true, stream: true, live: true,
   embeddings: true, files: true, batches: true,
@@ -118,14 +130,20 @@ export class OpenAIAdapter extends BaseProviderAdapter {
     if (cfg.max_tokens != null) payload.max_output_tokens = cfg.max_tokens;
     if (cfg.temperature != null) payload.temperature = cfg.temperature;
     if (request.tools?.length) {
-      payload.tools = request.tools
-        .filter(t => t.type === "function")
-        .map(t => ({
-          type: "function",
-          name: t.name,
-          description: t.description ?? null,
-          parameters: t.parameters ?? { type: "object", properties: {} },
-        }));
+      const toolsWire: JsonObject[] = [];
+      for (const t of request.tools) {
+        if (t.type === "function") {
+          toolsWire.push({
+            type: "function",
+            name: t.name,
+            description: t.description ?? null,
+            parameters: t.parameters ?? { type: "object", properties: {} },
+          });
+        } else if (t.type === "builtin") {
+          toolsWire.push(builtinToOpenAI(t));
+        }
+      }
+      payload.tools = toolsWire;
     }
     if (cfg.response_format) Object.assign(payload, cfg.response_format);
     if (cfg.provider) {

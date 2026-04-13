@@ -20,6 +20,16 @@ import type {
 import { Part as PartFactory, EMPTY_USAGE } from "../types.js";
 import { BaseProviderAdapter, type EndpointSupport, type ProviderManifest } from "./base.js";
 
+const GEMINI_BUILTIN_MAP: Record<string, string> = {
+  web_search: "googleSearch",
+  code_execution: "codeExecution",
+};
+
+function builtinToGemini(tool: { name: string; builtin_config?: Record<string, unknown> }): JsonObject {
+  const wireKey = GEMINI_BUILTIN_MAP[tool.name] ?? tool.name;
+  return { [wireKey]: (tool.builtin_config ?? {}) as JsonObject };
+}
+
 const SUPPORTS: EndpointSupport = {
   complete: true, stream: true, live: true,
   embeddings: true, files: true, batches: true,
@@ -123,15 +133,19 @@ export class GeminiAdapter extends BaseProviderAdapter {
     if (Object.keys(cfg).length) payload.generationConfig = cfg;
 
     if (request.tools?.length) {
-      payload.tools = [{
-        functionDeclarations: request.tools
-          .filter(t => t.type === "function")
-          .map(t => ({
-            name: t.name,
-            description: t.description ?? null,
-            parameters: t.parameters ?? { type: "OBJECT", properties: {} },
-          })),
-      }];
+      const funcDecls = request.tools
+        .filter(t => t.type === "function")
+        .map(t => ({
+          name: t.name,
+          description: t.description ?? null,
+          parameters: t.parameters ?? { type: "OBJECT", properties: {} },
+        }));
+      const toolsWire: JsonObject[] = [];
+      if (funcDecls.length) toolsWire.push({ functionDeclarations: funcDecls });
+      for (const t of request.tools) {
+        if (t.type === "builtin") toolsWire.push(builtinToGemini(t));
+      }
+      payload.tools = toolsWire;
     }
 
     const output = providerCfg.output as string | undefined;

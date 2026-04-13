@@ -18,6 +18,15 @@ import { Part as PartFactory } from "../types.js";
 import { BaseProviderAdapter, type EndpointSupport, type ProviderManifest } from "./base.js";
 import { dsToAnthropicSource, partsToText } from "./common.js";
 
+const ANTHROPIC_BUILTIN_MAP: Record<string, string> = {
+  code_execution: "code_execution_20250522",
+};
+
+function builtinToAnthropic(tool: { name: string; builtin_config?: Record<string, unknown> }): JsonObject {
+  const wireType = ANTHROPIC_BUILTIN_MAP[tool.name] ?? tool.name;
+  return { type: wireType, name: tool.name, ...tool.builtin_config };
+}
+
 const SUPPORTS: EndpointSupport = {
   complete: true, stream: true, live: false,
   embeddings: false, files: true, batches: true,
@@ -150,13 +159,19 @@ export class AnthropicAdapter extends BaseProviderAdapter {
     if (cfg.temperature != null) payload.temperature = cfg.temperature;
 
     if (request.tools?.length) {
-      payload.tools = request.tools
-        .filter(t => t.type === "function")
-        .map(t => ({
-          name: t.name,
-          description: t.description ?? null,
-          input_schema: t.parameters ?? { type: "object", properties: {} },
-        }));
+      const toolsWire: JsonObject[] = [];
+      for (const t of request.tools) {
+        if (t.type === "function") {
+          toolsWire.push({
+            name: t.name,
+            description: t.description ?? null,
+            input_schema: t.parameters ?? { type: "object", properties: {} },
+          });
+        } else if (t.type === "builtin") {
+          toolsWire.push(builtinToAnthropic(t));
+        }
+      }
+      payload.tools = toolsWire;
     }
 
     if (cfg.reasoning && typeof cfg.reasoning === "object" && (cfg.reasoning as unknown as JsonObject).enabled) {
