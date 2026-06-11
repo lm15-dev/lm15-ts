@@ -8,7 +8,7 @@
 
 import { type JsonObject, type JsonValue, isJsonObject } from "../canonical-json.js";
 import { resolveOpenAIResponsesCompat, type ResolvedOpenAIResponsesCompat } from "../compat.js";
-import type { BuiltinTool, Message, Part, Request, ToolChoice, Response } from "../types.js";
+import type { BuiltinTool, Message, Part, Request, ToolChoice, Response, StreamEvent } from "../types.js";
 import {
   compactJson,
   mediaDataUri,
@@ -21,6 +21,8 @@ import {
   type WireRequest,
 } from "./common.js";
 import { parseOpenAIResponse } from "./parse-response.js";
+import { parseOpenAIStreamEvents } from "./parse-stream.js";
+import type { SSEEvent } from "../sse.js";
 
 const OPENAI_BUILTIN_MAP: Record<string, string> = {
   web_search: "web_search_preview",
@@ -318,5 +320,9 @@ export class OpenAIAdapter implements ProviderAdapter {
   }
   parseResponse(request: Request, _status: number, body: JsonValue): Response {
     return parseOpenAIResponse(request, body);
+  }
+
+  parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
+    return parseOpenAIStreamEvents(request, raw);
   }
 }

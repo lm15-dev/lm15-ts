@@ -26,7 +26,7 @@ import {
 
 export type ErrorProvider = "openai" | "openai_chat" | "anthropic" | "gemini";
 
-type ErrorClass = new (message: string, options?: ConstructorParameters<typeof LM15Error>[1]) => ProviderError;
+export type ErrorClass = new (message: string, options?: ConstructorParameters<typeof LM15Error>[1]) => ProviderError;
 
 interface ParsedBody {
   readonly message: string;
@@ -46,13 +46,13 @@ const MODEL_ERROR_MARKERS = [
   "unknown",
 ] as const;
 
-function isModelError(...values: string[]): boolean {
+export function isModelError(...values: string[]): boolean {
   const lowered = values.filter((v) => v).join(" ").toLowerCase();
   return lowered.includes("model") && MODEL_ERROR_MARKERS.some((m) => lowered.includes(m));
 }
 
 /** anthropic/openai variant of the context-length sniff. */
-function isContextLengthMessage(msg: string): boolean {
+export function isContextLengthMessage(msg: string): boolean {
   const lowered = msg.toLowerCase();
   return (
     lowered.includes("prompt is too long") ||
@@ -64,7 +64,7 @@ function isContextLengthMessage(msg: string): boolean {
 }
 
 /** gemini variant. */
-function isGeminiContextLengthMessage(msg: string): boolean {
+export function isGeminiContextLengthMessage(msg: string): boolean {
   const lowered = msg.toLowerCase();
   return (
     (lowered.includes("token") && (lowered.includes("limit") || lowered.includes("exceed"))) ||
@@ -166,7 +166,7 @@ function normalizeOpenAI(provider: ErrorProvider, status: number, body: string):
 
 // ─── anthropic ───────────────────────────────────────────────────────
 
-const ANTHROPIC_TYPE_MAP: Record<string, ErrorClass> = {
+export const ANTHROPIC_TYPE_MAP: Record<string, ErrorClass> = {
   authentication_error: AuthError,
   permission_error: AuthError,
   billing_error: BillingError,
@@ -207,7 +207,7 @@ function normalizeAnthropic(status: number, body: string): ProviderError {
 
 // ─── gemini ──────────────────────────────────────────────────────────
 
-const GEMINI_STATUS_MAP: Record<string, ErrorClass> = {
+export const GEMINI_STATUS_MAP: Record<string, ErrorClass> = {
   INVALID_ARGUMENT: InvalidRequestError,
   FAILED_PRECONDITION: BillingError,
   PERMISSION_DENIED: AuthError,

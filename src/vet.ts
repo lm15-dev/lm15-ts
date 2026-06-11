@@ -23,18 +23,14 @@ import {
 } from "./canonical-json.js";
 import { ValueError } from "./errors.js";
 import { normalizeError, normalizedErrorToDict } from "./normalize-error.js";
-import { requestFromDict, responseToDict, serdeForKind } from "./serde.js";
+import { requestFromDict, responseToDict, serdeForKind, streamEventToDict } from "./serde.js";
+import { parseSse, splitBodyLines } from "./sse.js";
+import { coalesceStream, materializeResponse } from "./stream.js";
 import { surfaceDump } from "./surface.js";
+import type { StreamEvent } from "./types.js";
 
 const LANGUAGE = "typescript";
 const IMPL_VERSION = "0.1.0";
-
-class Unimplemented extends Error {
-  constructor(op: string) {
-    super(`op not implemented yet: ${op}`);
-    this.name = "Unimplemented";
-  }
-}
 
 type Handler = (msg: JsonObject) => JsonValue;
 
@@ -102,15 +98,35 @@ function opSurfaceDump(): JsonValue {
   return surfaceDump() as unknown as JsonValue;
 }
 
-const unimplemented = (op: string): Handler => () => {
-  throw new Unimplemented(op);
-};
+function opReplayStream(msg: JsonObject): JsonValue {
+  const baseUrl = msg["base_url"] !== undefined && msg["base_url"] !== null
+    ? String(msg["base_url"])
+    : null;
+  const adapter = adapterForProvider(String(msg["provider"]), "vet-parse-only", baseUrl);
+  const request = requestFromDict(msg["canonical_request"] as JsonValue);
+  const bodyText = Buffer.from(String(msg["body_b64"]), "base64").toString("utf8");
+  const rawEvents: StreamEvent[] = [];
+  for (const sse of parseSse(splitBodyLines(bodyText))) {
+    rawEvents.push(...adapter.parseStreamEvents(request, sse));
+  }
+  // MAP-3: the canonical event trace is the POST-coalesce trace — exactly
+  // one merged StreamEndEvent, final.
+  const events = coalesceStream(rawEvents);
+  const response = materializeResponse(events, request);
+  const result: JsonObject = {
+    events: events.map((e) => streamEventToDict(e)),
+    canonical_response: responseToDict(response),
+  };
+  const unmapped = response.provider_data?.["_lm15_unmapped"];
+  if (unmapped !== undefined) result["unmapped"] = unmapped;
+  return result;
+}
 
 const HANDLERS: Record<string, Handler> = {
   capabilities: opCapabilities,
   build_request: opBuildRequest,
   parse_response: opParseResponse,
-  replay_stream: unimplemented("replay_stream"),
+  replay_stream: opReplayStream,
   normalize_error: opNormalizeError,
   serde_roundtrip: opSerdeRoundtrip,
   validate: opValidate,

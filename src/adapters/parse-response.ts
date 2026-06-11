@@ -36,7 +36,7 @@ import {
   type UnmappedEntry,
 } from "./common.js";
 
-type ProviderErrorCtor = new (message: string, options?: LM15ErrorOptions) => ProviderError;
+export type ProviderErrorCtor = new (message: string, options?: LM15ErrorOptions) => ProviderError;
 
 function obj(v: JsonValue | undefined): JsonObject {
   return v !== undefined && v !== null && isJsonObject(v) ? v : {};
@@ -57,7 +57,7 @@ const OPENAI_PROVIDER_EXECUTED_ITEMS: ReadonlySet<string> = new Set([
 ]);
 
 /** Reference `_response_error_code_map` (openai.py). */
-const OPENAI_RESPONSE_ERROR_CODE_MAP: Record<string, ProviderErrorCtor> = {
+export const OPENAI_RESPONSE_ERROR_CODE_MAP: Record<string, ProviderErrorCtor> = {
   server_error: ServerError,
   rate_limit_exceeded: RateLimitError,
   invalid_prompt: InvalidRequestError,
@@ -268,7 +268,7 @@ const ANTHROPIC_PROVIDER_EXECUTED_BLOCKS: ReadonlySet<string> = new Set([
 ]);
 
 /** Reference `_finish_reason` (anthropic.py). */
-function anthropicFinishReason(stopReason: JsonValue | undefined, hasTool: boolean): string {
+export function anthropicFinishReason(stopReason: JsonValue | undefined, hasTool: boolean): string {
   if (hasTool) return "tool_call";
   const reason = strOrEmpty(stopReason).toLowerCase();
   if (reason === "max_tokens" || reason === "model_context_window_exceeded") return "length";
@@ -421,7 +421,7 @@ const GEMINI_CANDIDATE_FINISH_ERRORS: ReadonlySet<string> = new Set([
 ]);
 
 /** Reference `_finish_reason` (gemini.py). */
-function geminiFinishReason(reason: JsonValue | undefined, hasTool: boolean): string {
+export function geminiFinishReason(reason: JsonValue | undefined, hasTool: boolean): string {
   if (hasTool) return "tool_call";
   const r = strOrEmpty(reason).toUpperCase();
   if (r === "MAX_TOKENS") return "length";
@@ -656,7 +656,7 @@ export function parseGeminiResponse(request: t.Request, body: JsonValue): t.Resp
 
 // ─── OpenAI Chat Completions dialect ─────────────────────────────────
 
-const CHAT_FINISH_REASON_MAP: Record<string, string> = {
+export const CHAT_FINISH_REASON_MAP: Record<string, string> = {
   stop: "stop",
   length: "length",
   tool_calls: "tool_call",
@@ -679,7 +679,7 @@ function chatFinishReason(
   return mapped;
 }
 
-function usageFromChat(usageData: JsonObject): t.Usage {
+export function usageFromChat(usageData: JsonObject): t.Usage {
   const promptDetails = obj(usageData["prompt_tokens_details"]);
   const completionDetails = obj(usageData["completion_tokens_details"]);
   return t.usage({

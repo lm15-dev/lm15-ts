@@ -8,7 +8,7 @@
 
 import { type JsonObject, type JsonValue, isJsonObject } from "../canonical-json.js";
 import { ValueError } from "../errors.js";
-import type { BuiltinTool, Message, Part, Request, ToolChoice, Response } from "../types.js";
+import type { BuiltinTool, Message, Part, Request, ToolChoice, Response, StreamEvent } from "../types.js";
 import {
   anthropicSource,
   continuationData,
@@ -20,6 +20,8 @@ import {
   type WireRequest,
 } from "./common.js";
 import { parseAnthropicResponse } from "./parse-response.js";
+import { parseAnthropicStreamEvents } from "./parse-stream.js";
+import type { SSEEvent } from "../sse.js";
 
 const ANTHROPIC_BUILTIN_MAP: Record<string, string> = {
   web_search: "web_search_20250305",
@@ -269,5 +271,9 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
   parseResponse(request: Request, _status: number, body: JsonValue): Response {
     return parseAnthropicResponse(request, body);
+  }
+
+  parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
+    return parseAnthropicStreamEvents(request, raw);
   }
 }

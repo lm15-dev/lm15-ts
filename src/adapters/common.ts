@@ -23,7 +23,9 @@ import type {
   Part,
   Request,
   Response,
+  StreamEvent,
 } from "../types.js";
+import type { SSEEvent } from "../sse.js";
 
 /** The build_request wire shape from harness/PROTOCOL.md. */
 export interface WireRequest {
@@ -34,10 +36,12 @@ export interface WireRequest {
   readonly body: JsonObject | null;
 }
 
-/** Provider adapter surface: build_request (Stage C) + parse_response (Stage D). */
+/** Provider adapter surface: build_request (Stage C), parse_response (Stage D), stream mapping (Stage E). */
 export interface ProviderAdapter {
   buildRequest(request: Request, stream: boolean): WireRequest;
   parseResponse(request: Request, status: number, body: JsonValue): Response;
+  /** Map ONE provider SSE frame to canonical events, statelessly (pre-coalesce). */
+  parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[];
 }
 
 /** Lossy text rendering for provider fields that only accept text. */

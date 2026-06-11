@@ -14,7 +14,7 @@ import {
   resolveOpenAIChatCompat,
   type ResolvedOpenAIChatCompat,
 } from "../compat.js";
-import type { Message, Part, Request, ToolChoice, Response } from "../types.js";
+import type { Message, Part, Request, ToolChoice, Response, StreamEvent } from "../types.js";
 import {
   compactJson,
   mediaDataUri,
@@ -27,6 +27,8 @@ import {
   type WireRequest,
 } from "./common.js";
 import { parseOpenAIChatResponse } from "./parse-response.js";
+import { parseOpenAIChatStreamEvents } from "./parse-stream.js";
+import type { SSEEvent } from "../sse.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 
@@ -294,5 +296,9 @@ export class OpenAIChatAdapter implements ProviderAdapter {
   }
   parseResponse(request: Request, _status: number, body: JsonValue): Response {
     return parseOpenAIChatResponse(request, body);
+  }
+
+  parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
+    return parseOpenAIChatStreamEvents(request, raw);
   }
 }
