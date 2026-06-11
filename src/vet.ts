@@ -5,10 +5,10 @@
  * order. Zero runtime dependencies; never touches the network. All JSON I/O
  * goes through the canonical codec so int-vs-float survives the round trip.
  *
- * Stage A implements: capabilities, serde_roundtrip, validate,
- * surface_dump. The transform ops (build_request, parse_response,
- * replay_stream, normalize_error) reply ok:false / "Unimplemented" until
- * the adapter stages land.
+ * Implemented: capabilities, serde_roundtrip, validate, surface_dump
+ * (Stage A); normalize_error (Stage B). The remaining transform ops
+ * (build_request, parse_response, replay_stream) reply ok:false /
+ * "Unimplemented" until the adapter stages land.
  */
 
 import { createInterface } from "node:readline";
@@ -21,6 +21,7 @@ import {
   type JsonValue,
 } from "./canonical-json.js";
 import { ValueError } from "./errors.js";
+import { normalizeError, normalizedErrorToDict } from "./normalize-error.js";
 import { serdeForKind } from "./serde.js";
 import { surfaceDump } from "./surface.js";
 
@@ -55,6 +56,15 @@ function opValidate(msg: JsonObject): JsonValue {
   return { ok: true, normalized: toDict(obj) };
 }
 
+function opNormalizeError(msg: JsonObject): JsonValue {
+  const err = normalizeError(
+    String(msg["provider"]),
+    Number(msg["status"]),
+    String(msg["body_text"]),
+  );
+  return normalizedErrorToDict(err) as unknown as JsonValue;
+}
+
 function opSurfaceDump(): JsonValue {
   return surfaceDump() as unknown as JsonValue;
 }
@@ -68,7 +78,7 @@ const HANDLERS: Record<string, Handler> = {
   build_request: unimplemented("build_request"),
   parse_response: unimplemented("parse_response"),
   replay_stream: unimplemented("replay_stream"),
-  normalize_error: unimplemented("normalize_error"),
+  normalize_error: opNormalizeError,
   serde_roundtrip: opSerdeRoundtrip,
   validate: opValidate,
   surface_dump: opSurfaceDump,

@@ -64,7 +64,13 @@ export class RateLimitError extends ProviderError {}
 export class InvalidRequestError extends ProviderError {}
 export class ContextLengthError extends InvalidRequestError {}
 export class UnsupportedModelError extends InvalidRequestError {}
-export class RequestTimeoutError extends ProviderError {}
+/** Canonical class name on the wire is `TimeoutError` (vocabularies.md). */
+export class RequestTimeoutError extends ProviderError {
+  constructor(message: string, options: LM15ErrorOptions = {}) {
+    super(message, options);
+    this.name = "TimeoutError";
+  }
+}
 export class ServerError extends ProviderError {}
 
 /** ErrorCode -> canonical class, most specific first (vocabularies.md). */
