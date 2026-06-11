@@ -6,7 +6,13 @@
  * the single canonical stringifier renders them.
  */
 
-import { CFloat, isJsonObject, type JsonObject, type JsonValue } from "../canonical-json.js";
+import {
+  CFloat,
+  isJsonObject,
+  parseCanonicalJson,
+  type JsonObject,
+  type JsonValue,
+} from "../canonical-json.js";
 import { ValueError } from "../errors.js";
 import type {
   ContinuationState,
@@ -16,6 +22,7 @@ import type {
   MediaPart,
   Part,
   Request,
+  Response,
 } from "../types.js";
 
 /** The build_request wire shape from harness/PROTOCOL.md. */
@@ -27,9 +34,10 @@ export interface WireRequest {
   readonly body: JsonObject | null;
 }
 
-/** Provider adapter surface for build_request (Stage C). */
+/** Provider adapter surface: build_request (Stage C) + parse_response (Stage D). */
 export interface ProviderAdapter {
   buildRequest(request: Request, stream: boolean): WireRequest;
+  parseResponse(request: Request, status: number, body: JsonValue): Response;
 }
 
 /** Lossy text rendering for provider fields that only accept text. */
@@ -153,4 +161,119 @@ export function asJsonObject(value: JsonValue | null | undefined): JsonObject | 
 
 export function trimTrailingSlash(url: string): string {
   return url.replace(/\/+$/, "");
+}
+
+// ─── Response parsing helpers (Stage D) ──────────────────────────────
+
+/** `_lm15_unmapped` recorder entries (PROTOCOL.md "Unmapped recorder"). */
+export interface UnmappedEntry {
+  readonly path: string;
+  readonly type: string;
+}
+
+/** Mirror of the reference `_record_unmapped`: falsy types → "<missing>". */
+export function recordUnmapped(unmapped: UnmappedEntry[], path: string, typ: unknown): void {
+  const value = typ instanceof CFloat ? typ.value : typ;
+  unmapped.push({ path, type: value ? String(value) : "<missing>" });
+}
+
+/** Python `type(x).__name__` for unmapped shape failures. */
+export function jsonTypeName(v: JsonValue | undefined): string {
+  if (v === null || v === undefined) return "NoneType";
+  if (v instanceof CFloat) return "float";
+  if (Array.isArray(v)) return "list";
+  switch (typeof v) {
+    case "string":
+      return "str";
+    case "boolean":
+      return "bool";
+    case "number":
+      return Number.isInteger(v) ? "int" : "float";
+    case "object":
+      return "dict";
+    default:
+      return typeof v;
+  }
+}
+
+/** Attach the unmapped canary to provider_data when non-empty. */
+export function attachUnmapped(body: JsonObject, unmapped: UnmappedEntry[]): JsonObject {
+  if (unmapped.length === 0) return body;
+  return { ...body, _lm15_unmapped: unmapped.map((e) => ({ ...e })) };
+}
+
+/** Python truthiness over parsed JSON values. */
+export function pyTruthy(v: JsonValue | undefined): boolean {
+  if (v === null || v === undefined || v === false) return false;
+  if (v instanceof CFloat) return v.value !== 0;
+  if (typeof v === "number") return v !== 0;
+  if (typeof v === "string") return v.length > 0;
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "object") return Object.keys(v).length > 0;
+  return Boolean(v);
+}
+
+/** Python `str(x)` over scalar JSON values (None → "None"). */
+export function pyStr(v: JsonValue | undefined): string {
+  if (v === undefined || v === null) return "None";
+  if (v instanceof CFloat) return Number.isInteger(v.value) ? `${v.value}.0` : String(v.value);
+  if (v === true) return "True";
+  if (v === false) return "False";
+  return String(v);
+}
+
+/** Python `str(x or "")`. */
+export function strOrEmpty(v: JsonValue | undefined): string {
+  return pyTruthy(v) ? pyStr(v) : "";
+}
+
+/** Python `_str_or_none`: None or "" → null, else str. */
+export function strOrNull(v: JsonValue | undefined): string | null {
+  if (v === undefined || v === null || v === "") return null;
+  return pyStr(v);
+}
+
+/** Python `_int_or_none`: bools/None → null; numbers truncate; numeric strings parse. */
+export function intOrNull(v: JsonValue | undefined): number | null {
+  if (v === undefined || v === null || typeof v === "boolean") return null;
+  const n = v instanceof CFloat ? v.value : v;
+  if (typeof n === "number") return Math.trunc(n);
+  if (typeof n === "string" && /^[+-]?\d+$/.test(n.trim())) return parseInt(n.trim(), 10);
+  return null;
+}
+
+/** Python `int(x or 0)` for usage counters. */
+export function intCount(v: JsonValue | undefined): number {
+  const n = intOrNull(v);
+  return n === null ? 0 : n;
+}
+
+/** Pass-through usage counter: unwrap CFloat, keep absent/null as undefined. */
+export function counterOrUndefined(v: JsonValue | undefined): number | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (v instanceof CFloat) return v.value;
+  return typeof v === "number" ? v : undefined;
+}
+
+export function asArray(v: JsonValue | undefined): JsonValue[] {
+  return Array.isArray(v) ? v : [];
+}
+
+/**
+ * Reference `parse_json_object`: dict verbatim; non-empty string parsed
+ * (objects verbatim, scalars wrapped, parse failures preserved); else {}.
+ */
+export function parseJsonObjectValue(v: JsonValue | undefined): JsonObject {
+  if (v !== undefined && v !== null && isJsonObject(v)) return v;
+  if (typeof v === "string" && v !== "") {
+    let parsed: JsonValue;
+    try {
+      parsed = parseCanonicalJson(v);
+    } catch {
+      return { partial_json: v };
+    }
+    if (isJsonObject(parsed)) return parsed;
+    return { value: parsed };
+  }
+  return {};
 }

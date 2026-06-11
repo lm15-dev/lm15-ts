@@ -7,7 +7,7 @@
  */
 
 import { type JsonObject, type JsonValue, isJsonObject } from "../canonical-json.js";
-import type { BuiltinTool, Message, Part, Request } from "../types.js";
+import type { BuiltinTool, Message, Part, Request, Response } from "../types.js";
 import {
   continuationData,
   geminiNumber,
@@ -17,6 +17,7 @@ import {
   type ProviderAdapter,
   type WireRequest,
 } from "./common.js";
+import { parseGeminiResponse } from "./parse-response.js";
 
 const GEMINI_BUILTIN_MAP: Record<string, string> = {
   web_search: "googleSearch",
@@ -235,5 +236,8 @@ export class GeminiAdapter implements ProviderAdapter {
       },
       body: this.payload(request),
     };
+  }
+  parseResponse(request: Request, _status: number, body: JsonValue): Response {
+    return parseGeminiResponse(request, body);
   }
 }

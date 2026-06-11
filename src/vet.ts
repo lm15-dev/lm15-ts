@@ -23,7 +23,7 @@ import {
 } from "./canonical-json.js";
 import { ValueError } from "./errors.js";
 import { normalizeError, normalizedErrorToDict } from "./normalize-error.js";
-import { requestFromDict, serdeForKind } from "./serde.js";
+import { requestFromDict, responseToDict, serdeForKind } from "./serde.js";
 import { surfaceDump } from "./surface.js";
 
 const LANGUAGE = "typescript";
@@ -73,6 +73,22 @@ function opBuildRequest(msg: JsonObject): JsonValue {
   };
 }
 
+function opParseResponse(msg: JsonObject): JsonValue {
+  const baseUrl = msg["base_url"] !== undefined && msg["base_url"] !== null
+    ? String(msg["base_url"])
+    : null;
+  // parse_response never authenticates; the key is a placeholder.
+  const adapter = adapterForProvider(String(msg["provider"]), "vet-parse-only", baseUrl);
+  const request = requestFromDict(msg["canonical_request"] as JsonValue);
+  const bodyText = Buffer.from(String(msg["body_b64"]), "base64").toString("utf8");
+  const body = parseCanonicalJson(bodyText);
+  const response = adapter.parseResponse(request, Number(msg["status"]), body);
+  const result: JsonObject = { canonical_response: responseToDict(response) };
+  const unmapped = response.provider_data?.["_lm15_unmapped"];
+  if (unmapped !== undefined) result["unmapped"] = unmapped;
+  return result;
+}
+
 function opNormalizeError(msg: JsonObject): JsonValue {
   const err = normalizeError(
     String(msg["provider"]),
@@ -93,7 +109,7 @@ const unimplemented = (op: string): Handler => () => {
 const HANDLERS: Record<string, Handler> = {
   capabilities: opCapabilities,
   build_request: opBuildRequest,
-  parse_response: unimplemented("parse_response"),
+  parse_response: opParseResponse,
   replay_stream: unimplemented("replay_stream"),
   normalize_error: opNormalizeError,
   serde_roundtrip: opSerdeRoundtrip,
