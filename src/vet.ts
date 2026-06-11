@@ -13,6 +13,7 @@
 
 import { createInterface } from "node:readline";
 
+import { adapterForProvider } from "./adapters/index.js";
 import {
   isJsonObject,
   parseCanonicalJson,
@@ -22,7 +23,7 @@ import {
 } from "./canonical-json.js";
 import { ValueError } from "./errors.js";
 import { normalizeError, normalizedErrorToDict } from "./normalize-error.js";
-import { serdeForKind } from "./serde.js";
+import { requestFromDict, serdeForKind } from "./serde.js";
 import { surfaceDump } from "./surface.js";
 
 const LANGUAGE = "typescript";
@@ -56,6 +57,22 @@ function opValidate(msg: JsonObject): JsonValue {
   return { ok: true, normalized: toDict(obj) };
 }
 
+function opBuildRequest(msg: JsonObject): JsonValue {
+  const baseUrl = msg["base_url"] !== undefined && msg["base_url"] !== null
+    ? String(msg["base_url"])
+    : null;
+  const adapter = adapterForProvider(String(msg["provider"]), String(msg["api_key"]), baseUrl);
+  const request = requestFromDict(msg["canonical_request"] as JsonValue);
+  const wire = adapter.buildRequest(request, Boolean(msg["stream"] ?? false));
+  return {
+    method: wire.method,
+    url: wire.url,
+    params: wire.params,
+    headers: wire.headers,
+    body: wire.body,
+  };
+}
+
 function opNormalizeError(msg: JsonObject): JsonValue {
   const err = normalizeError(
     String(msg["provider"]),
@@ -75,7 +92,7 @@ const unimplemented = (op: string): Handler => () => {
 
 const HANDLERS: Record<string, Handler> = {
   capabilities: opCapabilities,
-  build_request: unimplemented("build_request"),
+  build_request: opBuildRequest,
   parse_response: unimplemented("parse_response"),
   replay_stream: unimplemented("replay_stream"),
   normalize_error: opNormalizeError,
@@ -121,4 +138,8 @@ export function main(): void {
   });
 }
 
-main();
+// Run the JSONL loop only when executed as the entrypoint (node dist/vet.js),
+// not when handleLine is imported by tests.
+if (process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  main();
+}
