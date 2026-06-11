@@ -7,6 +7,8 @@
  */
 
 export * from "./canonical-json.js";
+export * from "./client.js";
+export { coalesceStream, materializeResponse } from "./stream.js";
 export * from "./errors.js";
 export * from "./types.js";
 export * as serde from "./serde.js";

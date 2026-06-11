@@ -519,6 +519,65 @@ export function message(fields: {
   return { role, parts: fields.parts, continuation: normalizeContinuation(fields.continuation) };
 }
 
+// ─── Ergonomic message factories (the reference's Message.user/…) ────
+
+/** A prompt: plain text, one part, or a part list. */
+export type PromptContent = string | Part | readonly Part[];
+/** Tool output: plain text, one part, or a part list. */
+export type ToolResultContent = string | Part | readonly Part[];
+
+function normalizeParts(content: PromptContent): readonly Part[] {
+  if (typeof content === "string") return [textPart({ text: content })];
+  return Array.isArray(content) ? (content as readonly Part[]) : [content as Part];
+}
+
+function isToolResultPart(value: unknown): value is ToolResultPart {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "tool_result"
+  );
+}
+
+/**
+ * Static-style factories mirroring the reference `Message.user(...)`,
+ * `Message.assistant(...)`, `Message.developer(...)`, `Message.tool(...)`.
+ * TypeScript merges this value with the `Message` interface above.
+ */
+export const Message = {
+  user(content: PromptContent): Message {
+    return message({ role: "user", parts: normalizeParts(content) });
+  },
+  assistant(content: PromptContent): Message {
+    return message({ role: "assistant", parts: normalizeParts(content) });
+  },
+  developer(content: PromptContent): Message {
+    return message({ role: "developer", parts: normalizeParts(content) });
+  },
+  /**
+   * Tool message from a single ToolResultPart, a list of them, or a map of
+   * call_id → output (string, Part, or part list) — the reference's dict form.
+   */
+  tool(
+    results:
+      | ToolResultPart
+      | readonly ToolResultPart[]
+      | Readonly<Record<string, ToolResultContent>>,
+  ): Message {
+    let parts: readonly Part[];
+    if (Array.isArray(results)) {
+      parts = results as readonly Part[];
+    } else if (isToolResultPart(results)) {
+      parts = [results];
+    } else {
+      parts = Object.entries(results as Record<string, ToolResultContent>).map(([id, value]) =>
+        toolResultPart({ id, content: normalizeParts(value) }),
+      );
+    }
+    return message({ role: "tool", parts });
+  },
+} as const;
+
 // ─── Tools ───────────────────────────────────────────────────────────
 
 export const DEFAULT_FUNCTION_PARAMETERS: JsonObject = { type: "object", properties: {} };
@@ -799,6 +858,29 @@ export interface Response {
   readonly finish_reason: FinishReason;
   readonly usage: Usage;
   readonly provider_data: JsonObject | null;
+  /**
+   * Concatenated assistant text, when the response has text (the reference's
+   * `Response.text`). Citation and thinking parts are metadata around the
+   * visible answer and do not make `text` unavailable.
+   */
+  readonly text: string | null;
+  /** All tool-call parts of the message (the reference's `Response.tool_calls`). */
+  readonly toolCalls: readonly ToolCallPart[];
+  /** All citation parts of the message (the reference's `Response.citations`). */
+  readonly citations: readonly CitationPart[];
+}
+
+function responseText(message: Message): string | null {
+  if (
+    !message.parts.every(
+      (p) => p.type === "text" || p.type === "citation" || p.type === "thinking",
+    )
+  ) {
+    return null;
+  }
+  const texts = message.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text);
+  if (texts.length === 0) return null;
+  return texts.join("\n");
 }
 
 export function response(fields: {
@@ -812,7 +894,7 @@ export function response(fields: {
   if (fields.message.role !== "assistant") {
     throw new ValueError("Response.message must have role 'assistant'"); // INV-036
   }
-  return {
+  const base = {
     id: optString("Response.id", fields.id, true),
     model: reqString("Response.model", fields.model, true),
     message: fields.message,
@@ -820,6 +902,20 @@ export function response(fields: {
     usage: fields.usage ?? usage(),
     provider_data: optOpaqueObject("Response.provider_data", fields.provider_data),
   };
+  // Convenience accessors are non-enumerable so serde/JSON views of a
+  // Response see only the canonical fields.
+  Object.defineProperties(base, {
+    text: { get: () => responseText(base.message), enumerable: false },
+    toolCalls: {
+      get: () => base.message.parts.filter((p): p is ToolCallPart => p.type === "tool_call"),
+      enumerable: false,
+    },
+    citations: {
+      get: () => base.message.parts.filter((p): p is CitationPart => p.type === "citation"),
+      enumerable: false,
+    },
+  });
+  return base as Response;
 }
 
 // ─── Deltas ──────────────────────────────────────────────────────────
