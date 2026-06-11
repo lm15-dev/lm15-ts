@@ -1,197 +1,32 @@
-<p align="center">
-  <img src="https://raw.githubusercontent.com/lm15-dev/.github/main/assets/banners/banner-1200x300.png" alt="lm15" width="600">
-</p>
+# lm15 (TypeScript)
 
-[![npm](https://img.shields.io/npm/v/lm15.svg)](https://www.npmjs.com/package/lm15)
-[![Node 18+](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
-[![MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+TypeScript port of the lm15 canonical model, implemented from the contract
+in `../lm15-contract` (spec/types.md, spec/invariants.md,
+spec/vocabularies.md, harness/PROTOCOL.md and
+`../lm15-python2/docs/serde-rules.md`).
 
-One interface for OpenAI, Anthropic, and Gemini. Zero dependencies.
+Status — Stage A:
 
-TypeScript implementation — conforms to the [lm15 spec](https://github.com/lm15-dev/spec).
+- Canonical types as plain readonly discriminated unions (`src/types.ts`)
+  with validating factory constructors enforcing the numbered invariants.
+- Canonical serde (`src/serde.ts`) — the single serializer module: one
+  omission rule, opaque payloads verbatim, the Number rule via a
+  float-preserving JSON codec (`src/canonical-json.ts`; `1.0` never
+  collapses to `1`).
+- Vet shim (`src/vet.ts` -> `dist/vet.js`): `capabilities`,
+  `serde_roundtrip`, `validate`, `surface_dump`; transform ops reply
+  `Unimplemented` until the adapter stages land.
 
-```typescript
-import * as lm15 from "lm15";
+Zero runtime dependencies. Node >= 22.
 
-const resp = await lm15.call("claude-sonnet-4-5", "Hello.").text;
-console.log(resp);
+```sh
+npm run build   # tsc -> dist/ (shim entry: dist/vet.js)
+npm test        # node --test dist/tests/*.test.js
 ```
 
-Switch models by changing the string. Same types, same streaming, same tool calling.
+Conformance gate:
 
-## Install
-
-```bash
-npm install lm15
+```sh
+cd ../lm15-contract
+lm15-python2/.venv/bin/python harness/check.py --shim typescript --direction serde
 ```
-
-Set at least one provider key:
-
-```bash
-export OPENAI_API_KEY=sk-...
-export ANTHROPIC_API_KEY=sk-ant-...
-export GEMINI_API_KEY=...
-```
-
-Or use a `.env` file:
-
-```typescript
-import * as lm15 from "lm15";
-
-lm15.configure({ env: ".env" });
-const resp = await lm15.call("gpt-4.1-mini", "Hello.").text;
-```
-
-## Usage
-
-### Blocking
-
-```typescript
-const resp = lm15.call("gpt-4.1-mini", "Hello.");
-console.log(await resp.text);
-console.log(await resp.usage);
-console.log(await resp.finishReason);
-```
-
-### Streaming
-
-```typescript
-for await (const text of lm15.call("gpt-4.1-mini", "Write a haiku.")) {
-  process.stdout.write(text);
-}
-```
-
-### Streaming events
-
-```typescript
-for await (const event of lm15.call("gpt-4.1-mini", "Write a haiku.").events()) {
-  switch (event.type) {
-    case "text":     process.stdout.write(event.text!); break;
-    case "thinking": process.stdout.write(`💭 ${event.text}`); break;
-    case "finished": console.log(`\n📊 ${JSON.stringify(event.response!.usage)}`); break;
-  }
-}
-```
-
-### Tools (auto-execute)
-
-```typescript
-function getWeather(args: { city: string }): string {
-  return `22°C in ${args.city}`;
-}
-
-const resp = lm15.call("gpt-4.1-mini", "Weather in Montreal?", {
-  tools: [getWeather],
-});
-console.log(await resp.text);
-```
-
-### Reusable model with memory
-
-```typescript
-const gpt = lm15.model("gpt-4.1-mini", { system: "You remember everything." });
-
-await gpt.call("My name is Max.").text;
-await gpt.call("I like chess.").text;
-const resp = await gpt.call("What do you know about me?").text;
-console.log(resp);
-```
-
-### Multimodal
-
-```typescript
-import { Part } from "lm15";
-
-const resp = lm15.call("gemini-2.5-flash", [
-  "Describe this image.",
-  Part.image({ url: "https://example.com/cat.jpg" }),
-]);
-console.log(await resp.text);
-```
-
-### Reasoning
-
-```typescript
-const resp = lm15.call("claude-sonnet-4-5", "Prove √2 is irrational.", {
-  reasoning: true,
-});
-console.log(await resp.thinking);
-console.log(await resp.text);
-```
-
-### Structured output (JSON)
-
-```typescript
-const resp = lm15.call("gpt-4.1-mini", "Extract: 'Alice is 30.'.", {
-  system: "Return JSON: {name, age}",
-  prefill: "{",
-});
-const data = await resp.json;
-console.log(data);
-```
-
-### Cost tracking
-
-```typescript
-lm15.configure({ trackCosts: true });
-
-const resp = lm15.call("gpt-4.1-mini", "Explain TCP.");
-console.log(await resp.cost);
-
-const m = lm15.model("claude-sonnet-4");
-await m.call("What is TCP?").text;
-await m.call("What is UDP?").text;
-console.log(await m.totalCost);
-```
-
-`configure({ trackCosts: true })` starts fetching pricing from models.dev.
-You can also use `estimateCost()` manually, or preload pricing explicitly with
-`await lm15.enableCostTracking()`.
-
-## Architecture
-
-Same layered design as the [Python implementation](https://github.com/lm15-dev/lm15-python):
-
-```
-call() / model()          ← high-level surface
-        │
-        ▼
-Result (lazy, async iterable)
-        │
-        ▼
-LMRequest → UniversalLM → ProviderAdapter → Transport (native fetch)
-                                │
-                        providers/{openai,anthropic,gemini}.ts
-```
-
-## Implementation status
-
-| Layer | Status |
-|---|---|
-| Types (`Part`, `Message`, `LMRequest`, etc.) | ✅ |
-| Error hierarchy | ✅ |
-| SSE parser | ✅ |
-| Transport (`fetch`-based, zero deps) | ✅ |
-| Provider adapters (OpenAI, Anthropic, Gemini) | ✅ |
-| UniversalLM client | ✅ |
-| Middleware (retries, cache, history) | ✅ |
-| Result (lazy stream, auto tool execution) | ✅ |
-| Model (stateful, conversation memory) | ✅ |
-| High-level API (`call`, `model`, `stream`, `configure`) | ✅ |
-| Conversation helper | ✅ |
-| Factory (`buildDefault`, env file parsing) | ✅ |
-| Capability resolver | ✅ |
-| Live sessions (WebSocket) | ✅ |
-| Serde (JSON round-tripping) | ✅ |
-| Cost estimation | ✅ |
-| Model discovery (live + models.dev) | ✅ |
-| File upload | ✅ |
-
-## Related
-
-- [lm15 spec](https://github.com/lm15-dev/spec) — canonical type definitions and test fixtures
-- [lm15 Python](https://github.com/lm15-dev/lm15-python) — reference implementation
-
-## License
-
-MIT
