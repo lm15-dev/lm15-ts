@@ -74,6 +74,7 @@ const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
   openrouter: { envKeys: ["OPENROUTER_API_KEY"] },
   deepseek: { envKeys: ["DEEPSEEK_API_KEY"] },
   zai: { envKeys: ["ZAI_API_KEY"] },
+  "deepseek-anthropic": { envKeys: ["DEEPSEEK_API_KEY"] },
   ollama: { envKeys: [], defaultKey: "ollama" },
   vllm: { envKeys: [], defaultKey: "EMPTY" },
   sglang: { envKeys: [], defaultKey: "EMPTY" },
