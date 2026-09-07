@@ -9,7 +9,7 @@ dependencies.
 
 | Module | Contract surface | State |
 |---|---|---|
-| `src/auth.ts` | spec/auth.md AUTH-1/2/5/7 + AUTH-8 read side | fixture-verified (`conformance/auth_resolution.json`) |
+| `src/auth.ts` | spec/auth.md AUTH-1/2/5/7 + AUTH-8 read side | partial; current fixture suite fails (`conformance/auth_resolution.json`) |
 | everything else | — | not yet rebuilt |
 
 The auth module ships: the `Credential` type (static string or zero-arg
@@ -19,6 +19,11 @@ files (token material in true `#private` fields; toString/inspect/JSON all
 redacted). Not yet implemented (stated, not absorbed): the AUTH-3/4 write
 side (locked double-checked refresh, atomic 0600 writes) and the AUTH-9
 login primitives.
+
+The copied auth corpus now includes xAI subscription and cloud-chain cases.
+The implementation and test driver do not support those cases yet. Keep the
+failures visible; this port does not pass the current auth contract and has
+no `CONTRACT_PIN` yet. Complete the auth upgrade before claiming conformance.
 
 ```bash
 npm install   # dev tooling only (typescript, @types/node)
