@@ -10,6 +10,7 @@
 
 import { createInterface } from "node:readline";
 import { handleMessage } from "./vet_ops.ts";
+import "./vet_adapter_ops.ts";
 import { parseJson, stringifyJson, isJsonObject } from "./json.ts";
 
 async function main(): Promise<void> {
