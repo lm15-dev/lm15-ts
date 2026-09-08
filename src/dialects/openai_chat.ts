@@ -28,11 +28,47 @@ import {
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
-import type { BuiltinTool, Request } from "../types/config.ts";
+import {
+  Request,
+  builtinTool,
+  normalizeCacheConfig,
+  normalizeConfig,
+  normalizeReasoning,
+  normalizeToolChoice,
+  tool,
+  type BuiltinTool,
+  type CacheConfig,
+  type Config,
+  type Reasoning,
+  type ResponseFormat,
+  type Tool,
+  type ToolChoice,
+} from "../types/config.ts";
+import { ValueError } from "../types/validate.ts";
 import type { ModelInfo } from "../types/model_info.ts";
-import { normalizePart, type ImagePart, type Message, type Part, type ToolResultPart } from "../types/parts.ts";
+import {
+  Message,
+  audio,
+  document,
+  guessMediaType,
+  image,
+  normalizePart,
+  refusal,
+  text,
+  thinking,
+  toolCall,
+  toolResult,
+  type AssistantPart,
+  type ImagePart,
+  type Part,
+  type PromptPart,
+  type TextPart,
+  type ToolCallPart,
+  type ToolResultContentPart,
+  type ToolResultPart,
+} from "../types/parts.ts";
 import { Response } from "../types/response.ts";
-import type { FinishReason } from "../vocab.ts";
+import type { CacheRetention, FinishReason, ImageDetail, ReasoningEffort, ReasoningSummary, ToolChoiceMode } from "../vocab.ts";
 import type { StreamEvent } from "../types/stream.ts";
 import {
   HttpResponse,
@@ -201,6 +237,12 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   // ─── Request ─────────────────────────────────────────────────────
+
+  /** The inverse of `buildRequest`'s body under this adapter's compat (MAP-12); see `requestFromOpenAIChat`. */
+  requestFromOpenAIChat(body: unknown): Request {
+    const model = isJsonObject(body) && typeof body["model"] === "string" ? body["model"] : undefined;
+    return ingestOpenAIChat(this.provider, body, model !== undefined ? this.compatFor(model) : this.resolvedCompat);
+  }
 
   protected compatFor(model: string): ResolvedOpenAIChatCompat {
     if (!this.compatPartial.modelOverrides || this.compatPartial.modelOverrides.length === 0) return this.resolvedCompat;
@@ -565,4 +607,555 @@ export class OpenAIChatLM extends ProviderLM {
     }
     return events;
   }
+}
+
+// ─── Ingest: a Chat Completions request body → canonical Request (MAP-12) ─
+//
+// The decoder for chatContentParts / responseFormatToChat above and for
+// OpenAIChatLM.buildMessages / payload. It reads ONE preset's spellings
+// (the same ResolvedOpenAIChatCompat the builder writes with), so for every
+// canonical Request r the builder can carry losslessly,
+// requestFromOpenAIChat(build(r)) equals r; the lossy cells are enumerated
+// in docs/mapping-rules.md MAP-12 and pinned per case by the contract's
+// `ingest` direction. Every wire key has exactly one verdict
+// (lm15-contract/tools/openai-chat-ingest-verdicts.json, copied here as
+// data): map, extensions, refuse, call-mode (stream, stream_options: read
+// and dropped) or default (equal to the wire default, reads as absent). A
+// key with no verdict is refused. Malformed input is ValueError / TypeError,
+// like the type system's own validators (MAP-12 rule 6).
+
+const INGEST_EXTENSIONS_KEYS = new Set(["seed", "logit_bias", "presence_penalty", "frequency_penalty", "metadata", "verbosity", "moderation", "provider"]);
+
+const INGEST_REFUSED_KEYS: Readonly<Record<string, string>> = Object.freeze({
+  n: "lm15 reads one choice per response; n>1 would silently lose choices — fan out in the caller",
+  functions: "the deprecated function-calling shape; declare tools with {type: function, function: {...}}",
+  function_call: "the deprecated function-calling shape; use tool_choice",
+  audio: "audio output parameters have no canonical slot on the chat surface",
+  modalities: "output modality selection has no canonical slot on the chat surface",
+  prediction: "predicted-output content has no canonical slot",
+  web_search_options: "a server-executed search the chat dialect cannot map to parts (MAP-1); the Responses dialect carries web_search as a BuiltinTool",
+  top_k: "the Chat Completions wire has no top_k (the builder raises on Config.top_k for the same reason); servers that take it do so through extensions",
+});
+
+const INGEST_CALL_MODE_KEYS = new Set(["stream", "stream_options"]);
+
+const INGEST_CONFIG_KEYS = new Set([
+  "model", "messages", "tools", "tool_choice", "parallel_tool_calls",
+  "max_completion_tokens", "max_tokens", "temperature", "top_p", "stop",
+  "logprobs", "top_logprobs", "response_format", "service_tier", "store",
+  "user", "safety_identifier", "user_id",
+  "reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs", "reasoning_format",
+  "prompt_cache_key", "prompt_cache_retention", "prompt_cache_options",
+]);
+
+const INGEST_GROQ_BUILTIN_INVERSE: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(Object.entries(GROQ_BUILTIN_MAP).map(([name, wire]) => [wire, name])),
+);
+
+const INGEST_AUDIO_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({ wav: "audio/wav", mp3: "audio/mpeg" });
+
+function ingestRefuse(provider: string, what: string, why: string): UnsupportedFeatureError {
+  return new UnsupportedFeatureError(`${provider}: ${what} cannot be carried by a canonical Request — ${why}`, { provider });
+}
+
+function ingestObject(value: unknown, where: string): JsonObject {
+  if (!isJsonObject(value)) throw new TypeError(`${where} must be a JSON object, got ${typeName(value)}`);
+  return value;
+}
+
+function ingestStr(value: unknown, where: string): string {
+  if (typeof value !== "string") throw new TypeError(`${where} must be a string, got ${typeName(value)}`);
+  return value;
+}
+
+/** `null` reads as absent everywhere a caller might write it. */
+function present(obj: JsonObject, key: string): unknown {
+  const v = obj[key];
+  return v === null ? undefined : v;
+}
+
+/** An unlisted key inside a block or object is a refusal, never a drop. */
+function ingestOnlyKeys(provider: string, obj: JsonObject, allowed: readonly string[], where: string): void {
+  const extra = Object.keys(obj).filter((k) => !allowed.includes(k)).sort();
+  if (extra.length > 0) throw ingestRefuse(provider, `${where} key ${JSON.stringify(extra[0])}`, "no canonical slot for it");
+}
+
+/** `data:<media_type>;base64,<payload>` → [media_type, payload]; the inverse of mediaDataUri. */
+function ingestDataUri(value: string, where: string): [string, string] {
+  if (!value.startsWith("data:")) throw new ValueError(`${where} must be a base64 data URI`);
+  const comma = value.indexOf(",");
+  const head = comma < 0 ? "" : value.slice(5, comma);
+  const payload = comma < 0 ? "" : value.slice(comma + 1);
+  if (comma < 0 || !head.endsWith(";base64") || payload === "") {
+    throw new ValueError(`${where} must be a base64 data URI (data:<media-type>;base64,<payload>)`);
+  }
+  const mediaType = head.slice(0, -";base64".length);
+  if (mediaType === "") throw new ValueError(`${where} data URI has no media type`);
+  return [mediaType, payload];
+}
+
+function ingestImageBlock(provider: string, block: JsonObject, where: string): ImagePart {
+  ingestOnlyKeys(provider, block, ["type", "image_url", "prompt_cache_breakpoint"], where);
+  const spec = ingestObject(present(block, "image_url"), `${where}.image_url`);
+  ingestOnlyKeys(provider, spec, ["url", "detail"], `${where}.image_url`);
+  const url = ingestStr(present(spec, "url"), `${where}.image_url.url`);
+  const detail = present(spec, "detail") as ImageDetail | undefined;
+  if (url.startsWith("data:")) {
+    const [mediaType, payload] = ingestDataUri(url, `${where}.image_url.url`);
+    return image({ data: payload, mediaType, ...(detail !== undefined ? { detail } : {}) });
+  }
+  // The wire carries no media type for a URL: guessed from the path, else the default.
+  const guessed = guessMediaType(url.split(/[?#]/, 1)[0] ?? url);
+  return image({ url, ...(guessed?.startsWith("image/") ? { mediaType: guessed } : {}), ...(detail !== undefined ? { detail } : {}) });
+}
+
+function ingestHasBreakpoint(block: JsonObject, where: string): boolean {
+  const mark = present(block, "prompt_cache_breakpoint");
+  if (mark === undefined) return false;
+  const m = ingestObject(mark, `${where}.prompt_cache_breakpoint`);
+  if (Object.keys(m).length !== 1 || m["mode"] !== "explicit") {
+    throw new ValueError(`${where}.prompt_cache_breakpoint must be {"mode": "explicit"}`);
+  }
+  if (block["type"] !== "text") throw new ValueError(`${where}: a prompt_cache_breakpoint rides on a text block, not ${JSON.stringify(block["type"])}`);
+  return true;
+}
+
+/** A row's `content` → parts, plus whether its LAST block carries the breakpoint. */
+function ingestContentBlocks(provider: string, content: unknown, role: string, where: string): [Part[], boolean] {
+  if (typeof content === "string") return [[text(content)], false];
+  if (!Array.isArray(content)) throw new TypeError(`${where}.content must be a string or an array of content parts`);
+  const parts: Part[] = [];
+  let breakpointAtEnd = false;
+  content.forEach((raw, index) => {
+    const blockWhere = `${where}.content[${index}]`;
+    const block = ingestObject(raw, blockWhere);
+    const kind = block["type"];
+    const marked = ingestHasBreakpoint(block, blockWhere);
+    if (marked && index !== content.length - 1) {
+      throw new ValueError(`${blockWhere}: a prompt_cache_breakpoint marks the end of a message; it must be on the last block`);
+    }
+    breakpointAtEnd ||= marked;
+    if (kind === "text") {
+      ingestOnlyKeys(provider, block, ["type", "text", "prompt_cache_breakpoint"], blockWhere);
+      parts.push(text(ingestStr(present(block, "text"), `${blockWhere}.text`)));
+    } else if (kind === "image_url" && (role === "user" || role === "tool")) {
+      parts.push(ingestImageBlock(provider, block, blockWhere));
+    } else if (kind === "input_audio" && role === "user") {
+      ingestOnlyKeys(provider, block, ["type", "input_audio", "prompt_cache_breakpoint"], blockWhere);
+      const spec = ingestObject(present(block, "input_audio"), `${blockWhere}.input_audio`);
+      ingestOnlyKeys(provider, spec, ["data", "format"], `${blockWhere}.input_audio`);
+      const fmt = ingestStr(present(spec, "format"), `${blockWhere}.input_audio.format`);
+      const mediaType = INGEST_AUDIO_MEDIA_TYPES[fmt];
+      if (!mediaType) throw new ValueError(`${blockWhere}.input_audio.format must be one of ["mp3", "wav"]`);
+      parts.push(audio({ data: ingestStr(present(spec, "data"), `${blockWhere}.input_audio.data`), mediaType }));
+    } else if (kind === "file" && role === "user") {
+      ingestOnlyKeys(provider, block, ["type", "file", "prompt_cache_breakpoint"], blockWhere);
+      const spec = ingestObject(present(block, "file"), `${blockWhere}.file`);
+      ingestOnlyKeys(provider, spec, ["file_data", "file_id", "filename"], `${blockWhere}.file`);
+      if (present(spec, "filename") !== undefined) throw ingestRefuse(provider, `${blockWhere}.file.filename`, "DocumentPart has no filename slot");
+      const fileId = present(spec, "file_id");
+      const fileData = present(spec, "file_data");
+      if (fileId !== undefined && fileData === undefined) parts.push(document({ fileId: ingestStr(fileId, `${blockWhere}.file.file_id`) }));
+      else if (fileData !== undefined && fileId === undefined) {
+        const [mediaType, payload] = ingestDataUri(ingestStr(fileData, `${blockWhere}.file.file_data`), `${blockWhere}.file.file_data`);
+        parts.push(document({ data: payload, mediaType }));
+      } else throw new ValueError(`${blockWhere}.file needs exactly one of file_data / file_id`);
+    } else if (kind === "refusal" && role === "assistant") {
+      ingestOnlyKeys(provider, block, ["type", "refusal"], blockWhere);
+      parts.push(refusal(ingestStr(present(block, "refusal"), `${blockWhere}.refusal`)));
+    } else {
+      throw ingestRefuse(
+        provider,
+        `${blockWhere} of type ${JSON.stringify(kind)} in a ${role} message`,
+        "no canonical part for that block on this wire (a part is not a knob: there is no extensions door for content)",
+      );
+    }
+  });
+  return [parts, breakpointAtEnd];
+}
+
+function ingestToolCalls(provider: string, calls: unknown, where: string): ToolCallPart[] {
+  if (!Array.isArray(calls)) throw new TypeError(`${where}.tool_calls must be an array`);
+  return calls.map((raw, index) => {
+    const callWhere = `${where}.tool_calls[${index}]`;
+    const call = ingestObject(raw, callWhere);
+    const kind = call["type"] ?? "function";
+    if (kind !== "function") throw ingestRefuse(provider, `${callWhere} of type ${JSON.stringify(kind)}`, "only function tool calls have a canonical part");
+    ingestOnlyKeys(provider, call, ["id", "type", "function"], callWhere);
+    const fn = ingestObject(present(call, "function"), `${callWhere}.function`);
+    ingestOnlyKeys(provider, fn, ["name", "arguments"], `${callWhere}.function`);
+    const args = present(fn, "arguments");
+    // The builder writes JSON.stringify(input); the inverse is exact (the
+    // lenient provider-output parse is not used on caller input).
+    let input: unknown;
+    if (args === undefined || args === "") input = {};
+    else if (typeof args === "string") {
+      try {
+        input = parseJson(args);
+      } catch (e) {
+        throw new ValueError(`${callWhere}.function.arguments is not JSON: ${(e as Error).message}`);
+      }
+    } else input = args;
+    if (!isJsonObject(input)) throw new ValueError(`${callWhere}.function.arguments must encode a JSON object`);
+    return toolCall(ingestStr(present(call, "id"), `${callWhere}.id`), ingestStr(present(fn, "name"), `${callWhere}.function.name`), input);
+  });
+}
+
+interface IngestRows {
+  system: string | Part[] | undefined;
+  messages: Message[];
+  systemBreakpoint: boolean;
+  breakpointIndex: number | undefined;
+}
+
+function ingestRows(provider: string, rows: unknown): IngestRows {
+  if (!Array.isArray(rows)) throw new TypeError("messages must be an array");
+  const out: IngestRows = { system: undefined, messages: [], systemBreakpoint: false, breakpointIndex: undefined };
+  let pending: ToolResultPart[] = [];
+  const flush = (): void => {
+    if (pending.length > 0) {
+      out.messages.push(Message.tool(pending));
+      pending = [];
+    }
+  };
+  rows.forEach((raw, index) => {
+    const where = `messages[${index}]`;
+    const row = ingestObject(raw, where);
+    const role = row["role"];
+    if (present(row, "name") !== undefined && role !== "tool") {
+      throw ingestRefuse(provider, `${where}.name`, "a per-message participant name has no canonical slot");
+    }
+    if (role === "system" || role === "developer") {
+      flush();
+      ingestOnlyKeys(provider, row, ["role", "content"], where);
+      const [parts, marked] = ingestContentBlocks(provider, row["content"], "system", where);
+      if (index === 0) {
+        out.systemBreakpoint ||= marked;
+        out.system = parts.length === 1 && parts[0]!.type === "text" ? (parts[0] as TextPart).text : parts;
+      } else {
+        if (marked) out.breakpointIndex = out.messages.length;
+        out.messages.push(Message.developer(parts as PromptPart[]));
+      }
+    } else if (role === "user") {
+      flush();
+      ingestOnlyKeys(provider, row, ["role", "content", "name"], where);
+      const [parts, marked] = ingestContentBlocks(provider, row["content"], "user", where);
+      if (marked) {
+        if (out.breakpointIndex !== undefined || out.systemBreakpoint) throw new ValueError(`${where}: a request carries at most one prompt_cache_breakpoint`);
+        out.breakpointIndex = out.messages.length;
+      }
+      out.messages.push(Message.user(parts as PromptPart[]));
+    } else if (role === "assistant") {
+      flush();
+      ingestOnlyKeys(provider, row, ["role", "content", "tool_calls", "refusal", "reasoning_content", "name", "audio", "function_call"], where);
+      if (present(row, "audio") !== undefined) throw ingestRefuse(provider, `${where}.audio`, "an assistant audio reference has no canonical part");
+      if (present(row, "function_call") !== undefined) throw ingestRefuse(provider, `${where}.function_call`, "the deprecated function-calling shape; use tool_calls");
+      const parts: Part[] = [];
+      const reasoningText = present(row, "reasoning_content");
+      if (reasoningText !== undefined) parts.push(thinking(ingestStr(reasoningText, `${where}.reasoning_content`)));
+      const content = present(row, "content");
+      if (content !== undefined) {
+        const [textParts, marked] = ingestContentBlocks(provider, content, "assistant", where);
+        if (marked) throw new ValueError(`${where}: a prompt_cache_breakpoint cannot mark an assistant message (the builder refuses the same cell)`);
+        parts.push(...textParts);
+      }
+      const refusalText = present(row, "refusal");
+      if (refusalText !== undefined) parts.push(refusal(ingestStr(refusalText, `${where}.refusal`)));
+      const calls = present(row, "tool_calls");
+      if (calls !== undefined) parts.push(...ingestToolCalls(provider, calls, where));
+      if (parts.length === 0) parts.push(text("")); // MAP-2, applied to history
+      out.messages.push(Message.assistant(parts as AssistantPart[]));
+    } else if (role === "tool") {
+      ingestOnlyKeys(provider, row, ["role", "content", "tool_call_id", "name"], where);
+      const [parts, marked] = ingestContentBlocks(provider, row["content"], "tool", where);
+      if (marked) throw new ValueError(`${where}: a prompt_cache_breakpoint cannot mark a tool message (the builder refuses the same cell)`);
+      const name = present(row, "name");
+      pending.push(
+        toolResult(
+          ingestStr(present(row, "tool_call_id"), `${where}.tool_call_id`),
+          parts as ToolResultContentPart[],
+          name === undefined ? {} : { name: ingestStr(name, `${where}.name`) },
+        ),
+      );
+    } else if (role === "function") {
+      throw ingestRefuse(provider, `${where} with role 'function'`, "the deprecated function-calling shape; use a tool row with tool_call_id");
+    } else {
+      throw new ValueError(`${where}.role must be one of system, developer, user, assistant, tool; got ${JSON.stringify(role)}`);
+    }
+  });
+  flush();
+  return out;
+}
+
+function ingestTools(provider: string, raw: unknown, compat: ResolvedOpenAIChatCompat): Tool[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw new TypeError("tools must be an array");
+  return raw.map((entryRaw, index) => {
+    const where = `tools[${index}]`;
+    const entry = ingestObject(entryRaw, where);
+    const kind = entry["type"];
+    if (kind === "function") {
+      ingestOnlyKeys(provider, entry, ["type", "function"], where);
+      const fn = ingestObject(present(entry, "function"), `${where}.function`);
+      ingestOnlyKeys(provider, fn, ["name", "description", "parameters", "strict"], `${where}.function`);
+      if (fn["strict"] === true) {
+        throw ingestRefuse(provider, `${where}.function.strict = true`, "no per-tool strict slot (compat.strict_tools is a preset policy)");
+      }
+      const description = present(fn, "description");
+      const parameters = present(fn, "parameters");
+      return tool(ingestStr(present(fn, "name"), `${where}.function.name`), {
+        ...(description === undefined ? {} : { description: ingestStr(description, `${where}.function.description`) }),
+        ...(parameters === undefined ? {} : { parameters: ingestObject(parameters, `${where}.function.parameters`) }),
+      });
+    }
+    if (typeof kind === "string" && kind in INGEST_GROQ_BUILTIN_INVERSE && compat.builtinTools === "groq") {
+      const config: JsonObject = {};
+      for (const [k, v] of Object.entries(entry)) if (k !== "type") config[k] = v;
+      return builtinTool(INGEST_GROQ_BUILTIN_INVERSE[kind]!, Object.keys(config).length > 0 ? config : undefined);
+    }
+    throw ingestRefuse(provider, `${where} of type ${JSON.stringify(kind)}`, "only function tools (and, on the groq preset, its server-executed tools) have a canonical form");
+  });
+}
+
+function ingestToolChoice(provider: string, raw: unknown, parallel: unknown): ToolChoice | undefined {
+  let mode: ToolChoiceMode | undefined;
+  let allowed: string[] = [];
+  if (raw !== undefined) {
+    if (raw === "none" || raw === "auto" || raw === "required") mode = raw;
+    else if (isJsonObject(raw)) {
+      const kind = raw["type"];
+      if (kind === "function") {
+        ingestOnlyKeys(provider, raw, ["type", "function"], "tool_choice");
+        const fn = ingestObject(present(raw, "function"), "tool_choice.function");
+        ingestOnlyKeys(provider, fn, ["name"], "tool_choice.function");
+        mode = "required";
+        allowed = [ingestStr(present(fn, "name"), "tool_choice.function.name")];
+      } else if (kind === "allowed_tools") {
+        ingestOnlyKeys(provider, raw, ["type", "allowed_tools"], "tool_choice");
+        const spec = ingestObject(present(raw, "allowed_tools"), "tool_choice.allowed_tools");
+        ingestOnlyKeys(provider, spec, ["mode", "tools"], "tool_choice.allowed_tools");
+        mode = ingestStr(present(spec, "mode"), "tool_choice.allowed_tools.mode") as ToolChoiceMode;
+        const entries = present(spec, "tools");
+        if (!Array.isArray(entries) || entries.length === 0) throw new ValueError("tool_choice.allowed_tools.tools must be a non-empty array");
+        allowed = entries.map((entryRaw, index) => {
+          const where = `tool_choice.allowed_tools.tools[${index}]`;
+          const entry = ingestObject(entryRaw, where);
+          if (entry["type"] !== "function") throw ingestRefuse(provider, `${where} of type ${JSON.stringify(entry["type"])}`, "only function tools can be allowed on this wire");
+          return ingestStr(present(ingestObject(present(entry, "function"), `${where}.function`), "name"), `${where}.function.name`);
+        });
+      } else if (kind === "custom") throw ingestRefuse(provider, "tool_choice of type 'custom'", "custom tools have no canonical form");
+      else throw new ValueError(`tool_choice.type must be function or allowed_tools; got ${JSON.stringify(kind)}`);
+    } else throw new ValueError("tool_choice must be none, auto, required, or an object");
+  }
+  if (parallel !== undefined && typeof parallel !== "boolean") throw new TypeError("parallel_tool_calls must be a boolean");
+  if (mode === undefined && parallel === undefined) return undefined;
+  return normalizeToolChoice({ mode: mode ?? "auto", allowed, parallel });
+}
+
+function ingestResponseFormat(provider: string, raw: unknown): ResponseFormat | undefined {
+  const fmt = ingestObject(raw, "response_format");
+  const kind = fmt["type"];
+  if (kind === "text") {
+    ingestOnlyKeys(provider, fmt, ["type"], "response_format");
+    return undefined;
+  }
+  if (kind === "json_object") {
+    ingestOnlyKeys(provider, fmt, ["type"], "response_format");
+    return { type: "json_object" };
+  }
+  if (kind === "json_schema") {
+    ingestOnlyKeys(provider, fmt, ["type", "json_schema"], "response_format");
+    const inner = ingestObject(present(fmt, "json_schema"), "response_format.json_schema");
+    ingestOnlyKeys(provider, inner, ["name", "schema", "strict", "description"], "response_format.json_schema");
+    if (present(inner, "description") !== undefined) throw ingestRefuse(provider, "response_format.json_schema.description", "the canonical response_format has no description slot (INV-050)");
+    const out: JsonObject = { type: "json_schema", schema: ingestObject(present(inner, "schema"), "response_format.json_schema.schema") };
+    const name = present(inner, "name");
+    if (name !== undefined && name !== "response") out["name"] = ingestStr(name, "response_format.json_schema.name");
+    const strict = present(inner, "strict");
+    if (strict !== undefined) {
+      if (typeof strict !== "boolean") throw new TypeError("response_format.json_schema.strict must be a boolean");
+      out["strict"] = strict;
+    }
+    return out as unknown as ResponseFormat;
+  }
+  throw new ValueError(`response_format.type must be text, json_object or json_schema; got ${JSON.stringify(kind)}`);
+}
+
+function ingestReasoning(provider: string, body: JsonObject, compat: ResolvedOpenAIChatCompat, extensions: JsonObject): Reasoning | undefined {
+  const spellings = ["reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs", "reasoning_format"];
+  const presentKeys = spellings.filter((k) => k in body);
+  if (presentKeys.length === 0) return undefined;
+  const spelledBy: string[] = {
+    reasoning_effort: ["reasoning_effort"],
+    openrouter: ["reasoning"],
+    deepseek: ["thinking", "reasoning_effort"],
+    kimi: ["thinking", "reasoning_effort"],
+    qwen: ["enable_thinking"],
+    qwen_chat_template: ["chat_template_kwargs"],
+    none: [],
+  }[compat.thinkingFormat]!.slice();
+  if (compat.builtinTools === "groq") spelledBy.push("reasoning_format");
+  const foreign = presentKeys.find((k) => !spelledBy.includes(k));
+  if (foreign !== undefined) {
+    const where = spelledBy.length === 0 ? "nowhere (no dial)" : JSON.stringify([...spelledBy].sort());
+    throw ingestRefuse(provider, JSON.stringify(foreign), `this server's reasoning dial is spelled ${where}; another server's spelling would be sent and ignored`);
+  }
+  let effort: ReasoningEffort | undefined;
+  let off = false;
+  if ("reasoning_effort" in body) {
+    const word = ingestStr(body["reasoning_effort"], "reasoning_effort");
+    if (word === "none") off = true;
+    else effort = word as ReasoningEffort;
+  }
+  if ("thinking" in body) {
+    const spec = ingestObject(body["thinking"], "thinking");
+    ingestOnlyKeys(provider, spec, ["type"], "thinking");
+    if (spec["type"] === "disabled") {
+      if (effort !== undefined) throw new ValueError("thinking.type=disabled next to a reasoning_effort level is contradictory");
+      off = true;
+    } else if (spec["type"] === "enabled") {
+      if (effort === undefined && !off) throw ingestRefuse(provider, "thinking.type=enabled without reasoning_effort", "lm15's dial is a level (MAP-7); set config.reasoning with an effort word");
+    } else throw new ValueError(`thinking.type must be enabled or disabled; got ${JSON.stringify(spec["type"])}`);
+  }
+  if ("reasoning" in body) {
+    const spec = ingestObject(body["reasoning"], "reasoning");
+    ingestOnlyKeys(provider, spec, ["effort", "enabled"], "reasoning");
+    if (spec["enabled"] === false) off = true;
+    else if (present(spec, "effort") !== undefined) effort = ingestStr(spec["effort"], "reasoning.effort") as ReasoningEffort;
+    else throw new ValueError("reasoning must carry effort or enabled: false");
+  }
+  if ("enable_thinking" in body) {
+    const flag = body["enable_thinking"];
+    if (flag === false) off = true;
+    else if (flag === true) throw ingestRefuse(provider, "enable_thinking = true", "this wire has no effort level; lm15's dial is a level (MAP-7) — set config.reasoning yourself");
+    else throw new TypeError("enable_thinking must be a boolean");
+  }
+  if ("chat_template_kwargs" in body) {
+    const spec = ingestObject(body["chat_template_kwargs"], "chat_template_kwargs");
+    ingestOnlyKeys(provider, spec, ["enable_thinking", "preserve_thinking"], "chat_template_kwargs");
+    if (spec["enable_thinking"] === false) off = true;
+    else if (spec["enable_thinking"] === true) throw ingestRefuse(provider, "chat_template_kwargs.enable_thinking = true", "this wire has no effort level; lm15's dial is a level (MAP-7) — set config.reasoning yourself");
+    else throw new TypeError("chat_template_kwargs.enable_thinking must be a boolean");
+  }
+  let summary: ReasoningSummary | undefined;
+  if ("reasoning_format" in body) {
+    const value = body["reasoning_format"];
+    if (value !== "parsed") throw ingestRefuse(provider, `reasoning_format = ${JSON.stringify(value)}`, "only 'parsed' maps (Reasoning.summary='auto', MAP-7 rule 7)");
+    if (effort === undefined) extensions["reasoning_format"] = value; // the documented door
+    else summary = "auto";
+  }
+  if (off) return normalizeReasoning({ effort: "off" });
+  if (effort === undefined) return undefined;
+  return normalizeReasoning({ effort, summary });
+}
+
+function ingestCache(provider: string, body: JsonObject, compat: ResolvedOpenAIChatCompat, systemBreakpoint: boolean, breakpointIndex: number | undefined): CacheConfig | undefined {
+  const keys = ["prompt_cache_key", "prompt_cache_options", "prompt_cache_retention"].filter((k) => k in body);
+  const marked = systemBreakpoint || breakpointIndex !== undefined;
+  if (keys.length === 0 && !marked) return undefined;
+  if (compat.cacheControl !== "openai" && compat.cacheControl !== "openai_implicit") {
+    throw ingestRefuse(provider, JSON.stringify(keys[0] ?? "prompt_cache_breakpoint"), "this server has no OpenAI prompt-cache control (compat.cache_control)");
+  }
+  if (marked && compat.cacheControl !== "openai") {
+    throw ingestRefuse(provider, "prompt_cache_breakpoint", "this server swallows an explicit breakpoint silently (compat.cache_control=openai_implicit)");
+  }
+  const keyRaw = present(body, "prompt_cache_key");
+  const key = keyRaw === undefined ? undefined : ingestStr(keyRaw, "prompt_cache_key");
+  let retention: CacheRetention | undefined;
+  if ("prompt_cache_retention" in body) {
+    if (body["prompt_cache_retention"] !== "24h") throw ingestRefuse(provider, `prompt_cache_retention = ${JSON.stringify(body["prompt_cache_retention"])}`, "only '24h' has a canonical value (CacheConfig.retention='long')");
+    retention = "long";
+  }
+  let explicit = false;
+  if ("prompt_cache_options" in body) {
+    const spec = ingestObject(body["prompt_cache_options"], "prompt_cache_options");
+    ingestOnlyKeys(provider, spec, ["mode", "ttl"], "prompt_cache_options");
+    if (present(spec, "ttl") !== undefined) throw ingestRefuse(provider, "prompt_cache_options.ttl", "CacheConfig.retention names 24h only");
+    if (spec["mode"] === "explicit") explicit = true;
+    else if (spec["mode"] === "implicit") throw ingestRefuse(provider, "prompt_cache_options.mode = 'implicit'", "the server default; a canonical CacheConfig names auto or off");
+    else throw new ValueError(`prompt_cache_options.mode must be explicit or implicit; got ${JSON.stringify(spec["mode"])}`);
+  }
+  if (explicit && !marked) {
+    if (key !== undefined || retention !== undefined) throw new ValueError("prompt_cache_options.mode=explicit with no breakpoint is the off switch; it cannot carry a key or retention (INV-027)");
+    return normalizeCacheConfig({ mode: "off" });
+  }
+  if (systemBreakpoint) return normalizeCacheConfig({ prefix: "stable", key, retention });
+  if (breakpointIndex !== undefined) return normalizeCacheConfig({ prefixUntilIndex: breakpointIndex, key, retention });
+  return normalizeCacheConfig({ key, retention });
+}
+
+function ingestConfig(provider: string, body: JsonObject, compat: ResolvedOpenAIChatCompat, rows: IngestRows): Config {
+  const cfg: Record<string, unknown> = {};
+  const limits = ["max_completion_tokens", "max_tokens"].map((k) => present(body, k)).filter((v) => v !== undefined);
+  if (limits.length > 0) {
+    if (new Set(limits.map((v) => JSON.stringify(v))).size > 1) throw new ValueError(`max_tokens and max_completion_tokens disagree: ${JSON.stringify(limits)}`);
+    cfg["maxTokens"] = limits[0];
+  }
+  if (present(body, "temperature") !== undefined) cfg["temperature"] = body["temperature"];
+  if (present(body, "top_p") !== undefined) cfg["topP"] = body["top_p"];
+  if (present(body, "service_tier") !== undefined) cfg["serviceTier"] = body["service_tier"];
+  if (present(body, "store") !== undefined) cfg["store"] = body["store"];
+  if (present(body, "stop") !== undefined) cfg["stop"] = body["stop"];
+  const logprobs = present(body, "logprobs");
+  if (logprobs === true) cfg["logprobs"] = present(body, "top_logprobs") ?? 0;
+  else if (logprobs !== undefined && logprobs !== false) throw new TypeError("logprobs must be a boolean");
+  else if (present(body, "top_logprobs") !== undefined) throw new ValueError("top_logprobs requires logprobs: true");
+  if (present(body, "response_format") !== undefined) cfg["responseFormat"] = ingestResponseFormat(provider, body["response_format"]);
+  cfg["toolChoice"] = ingestToolChoice(provider, present(body, "tool_choice"), present(body, "parallel_tool_calls"));
+  const userKeys = ["user", "safety_identifier", "user_id"].filter((k) => k in body);
+  if (userKeys.includes("user_id") && compat.userField !== "user_id") {
+    throw ingestRefuse(provider, "'user_id'", `this server spells the end-user field ${JSON.stringify(compat.userField)}`);
+  }
+  if (userKeys.length > 1) throw new ValueError(`one end-user identifier only; got ${JSON.stringify(userKeys)}`);
+  if (userKeys.length === 1) cfg["userId"] = body[userKeys[0]!] as unknown;
+  const extensions: JsonObject = {};
+  cfg["reasoning"] = ingestReasoning(provider, body, compat, extensions);
+  cfg["cache"] = ingestCache(provider, body, compat, rows.systemBreakpoint, rows.breakpointIndex);
+  for (const key of Object.keys(body)) if (INGEST_EXTENSIONS_KEYS.has(key)) extensions[key] = body[key]!;
+  cfg["extensions"] = Object.keys(extensions).length > 0 ? extensions : undefined;
+  return normalizeConfig(cfg);
+}
+
+function ingestOpenAIChat(provider: string, body: unknown, compat: ResolvedOpenAIChatCompat): Request {
+  if (!isJsonObject(body)) throw new TypeError(`a Chat Completions request body is a JSON object, got ${typeName(body)}`);
+  for (const key of Object.keys(body)) {
+    if (key in INGEST_REFUSED_KEYS) throw ingestRefuse(provider, JSON.stringify(key), INGEST_REFUSED_KEYS[key]!);
+    if (!INGEST_CONFIG_KEYS.has(key) && !INGEST_EXTENSIONS_KEYS.has(key) && !INGEST_CALL_MODE_KEYS.has(key)) {
+      throw ingestRefuse(provider, JSON.stringify(key), "no verdict for this key (lm15-contract/tools/openai-chat-ingest-verdicts.json); lm15 never drops a key silently");
+    }
+  }
+  const model = body["model"];
+  if (typeof model !== "string" || model === "") throw new ValueError("model must be a non-empty string");
+  if (!("messages" in body)) throw new ValueError("messages is required");
+  const rows = ingestRows(provider, body["messages"]);
+  const tools = ingestTools(provider, present(body, "tools"), compat);
+  const config = ingestConfig(provider, body, compat, rows);
+  return Request.create({
+    model,
+    messages: rows.messages,
+    ...(rows.system === undefined ? {} : { system: rows.system as string | PromptPart[] }),
+    tools,
+    config,
+  });
+}
+
+/**
+ * A Chat Completions request body → the canonical `Request` (MAP-12).
+ *
+ * `body` is the JSON object a client would POST to `/chat/completions`.
+ * `compat` names the server dialect whose spellings are read — a preset name
+ * (`"groq"`, `"deepseek"`, …), an `OpenAIChatCompat`, or absent for OpenAI's
+ * own — the same policy `OpenAIChatLM` writes with, so what that adapter
+ * emits for a Request reads back as that Request wherever the wire can carry
+ * it. Every key has one verdict: it maps to a canonical field, passes
+ * verbatim through `config.extensions`, or is refused with
+ * `UnsupportedFeatureError` naming the key; `stream` / `stream_options` are
+ * read and dropped. Malformed input throws `ValueError` / `TypeError`.
+ * On an adapter, `lm.requestFromOpenAIChat(body)` uses that adapter's compat.
+ */
+export function requestFromOpenAIChat(body: unknown, opts: { compat?: OpenAIChatCompat | string } = {}): Request {
+  const partial = typeof opts.compat === "string" ? openaiChatPreset(opts.compat) : (opts.compat ?? {});
+  const model = isJsonObject(body) && typeof body["model"] === "string" ? body["model"] : undefined;
+  const resolved = resolveOpenAIChatCompat(model !== undefined ? chatCompatForModel(partial, model) : partial);
+  return ingestOpenAIChat("openai-chat", body, resolved);
 }

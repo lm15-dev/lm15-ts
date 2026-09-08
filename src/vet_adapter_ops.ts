@@ -134,6 +134,14 @@ const ops: Record<string, OpHandler> = {
     return normalizeTransportRequest(await lm.buildRequest(request, Boolean(msg["stream"])));
   },
 
+  /** PROTOCOL.md § ingest_openai_chat (MAP-12): the case's provider binds the compat; no credential is read. */
+  ingest_openai_chat(msg) {
+    const lm = adapter(msg, { parseOnly: true });
+    const ingest = (lm as ProviderLM & { requestFromOpenAIChat?: (body: unknown) => Request }).requestFromOpenAIChat;
+    if (typeof ingest !== "function") throw new ValueError(`provider ${JSON.stringify(msg["provider"])} does not speak the Chat Completions wire; nothing to ingest`);
+    return { canonical_request: Request.toJSON(ingest.call(lm, msg["body"])) };
+  },
+
   parse_response(msg) {
     const lm = adapter(msg, { parseOnly: true });
     const request = requestOf(msg);

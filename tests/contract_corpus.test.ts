@@ -122,7 +122,7 @@ function wireCases(): JsonObject[] {
   for (const dir of readdirSync(join(root, "cases"))) {
     for (const file of readdirSync(join(root, "cases", dir))) {
       const c = read(`cases/${dir}/${file}`);
-      if (!["models", "live", "files", "batch", "generation", "video", "cache"].includes(String(c["surface"] ?? ""))) out.push(c);
+      if (!["models", "live", "files", "batch", "generation", "video", "cache", "ingest"].includes(String(c["surface"] ?? ""))) out.push(c);
     }
   }
   return out;
@@ -154,6 +154,56 @@ function compare(expected: JsonValue, actual: JsonValue, path: string[], volatil
   }
   assert.ok(jsonEquals(expected, actual), `${id}: ${rendered}: expected ${JSON.stringify(expected)} got ${JSON.stringify(actual)}`);
 }
+
+function ingestCases(): JsonObject[] {
+  const out: JsonObject[] = [];
+  for (const dir of readdirSync(join(root, "cases"))) {
+    for (const file of readdirSync(join(root, "cases", dir))) {
+      const c = read(`cases/${dir}/${file}`);
+      if (c["surface"] === "ingest") {
+        out.push(c);
+        continue;
+      }
+      const url = String(((c["request"] as JsonObject | undefined) ?? {})["url"] ?? "").split("?")[0] ?? "";
+      const raises = ((c["expect_lm15"] as JsonObject | undefined) ?? {})["raises"] as JsonObject | undefined;
+      if (url.endsWith("/chat/completions") && isJsonObject(c["canonical_request"]) && raises?.["op"] !== "build_request") out.push(c);
+    }
+  }
+  return out;
+}
+
+test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinned, foreign shapes as authored", { skip: !present }, () => {
+  let roundTrips = 0, lossy = 0, foreign = 0, refusals = 0;
+  for (const c of ingestCases()) {
+    const id = String(c["id"]);
+    const isSurface = c["surface"] === "ingest";
+    const lm = adapterFor(String(c["provider"]), { apiKey: "vet-parse-only", ...hostOptions(c) }) as ReturnType<typeof adapterFor> & { requestFromOpenAIChat(body: unknown): Request };
+    const body = isSurface ? c["body"] : (c["request"] as JsonObject)["body"];
+    const raises = ((c["expect_lm15"] as JsonObject | undefined) ?? {})["raises"] as JsonObject | undefined;
+    if (raises?.["op"] === "ingest_openai_chat") {
+      assert.throws(() => lm.requestFromOpenAIChat(body), (e: unknown) => e instanceof LM15Error && e.name === raises["type"] && e.code === raises["code"], id);
+      refusals++;
+      continue;
+    }
+    const got = Request.toJSON(lm.requestFromOpenAIChat(body));
+    let want: JsonValue;
+    if (isSurface) {
+      want = (c["expect_lm15"] as JsonObject)["canonical_request"] as JsonValue;
+      foreign++;
+    } else if (isJsonObject(c["ingest"])) {
+      const classes = (c["ingest"] as JsonObject)["lossy"];
+      assert.ok(Array.isArray(classes) && classes.length > 0, `${id}: an empty lossy declaration`);
+      want = (c["ingest"] as JsonObject)["canonical_request"] as JsonValue;
+      lossy++;
+      roundTrips++;
+    } else {
+      want = c["canonical_request"] as JsonValue;
+      roundTrips++;
+    }
+    compare(want, got, ["canonical_request"], new Set(), id);
+  }
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [118, 21, 28, 10], "case counts moved; move CONTRACT_PIN and these constants together");
+});
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {
   let n = 0;

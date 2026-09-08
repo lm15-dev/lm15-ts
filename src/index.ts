@@ -168,7 +168,7 @@ export type { ErrorMetadata } from "./errors.ts";
 // Providers, direct
 export { OpenAILM, OpenAICodexLM } from "./dialects/openai_responses.ts";
 export type { OpenAILMOptions } from "./dialects/openai_responses.ts";
-export { OpenAIChatLM } from "./dialects/openai_chat.ts";
+export { OpenAIChatLM, requestFromOpenAIChat } from "./dialects/openai_chat.ts";
 export type { OpenAIChatLMOptions } from "./dialects/openai_chat.ts";
 export { AnthropicLM, ClaudeCodeLM } from "./dialects/anthropic.ts";
 export type { AnthropicLMOptions, ClaudeCodeLMOptions } from "./dialects/anthropic.ts";

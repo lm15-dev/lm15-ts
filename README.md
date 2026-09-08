@@ -29,13 +29,15 @@ failures and no skips added; the two skips are corpus gaps
 | `files`, `batch`, `cache` | the three surfaces, multipart byte for byte, MAP-11 id escaping | 48 / 0, 41 / 0, 11 / 0 |
 | `generation`, `video` | image and speech generation, video jobs (MAP-11) | 20 / 0, 27 / 0 |
 | `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
+| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 118 recorded chat bodies round-trip (21 pinned lossy), 38 foreign shapes (10 refusals). Provisional; module 4b | 156 / 0 |
 
-Beyond the harness: `npm test` (node:test, 47 tests) covers the JSON
+Beyond the harness: `npm test` (node:test, 53 tests) covers the JSON
 fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
 credential secrecy, the lock and atomic writes, the doctor, the router, an
 end-to-end call through a fake transport, and a replay of the sibling corpus
 through the library directly (serde, errors, SigV4, router, every pinned
-request, body and stream with a golden).
+request, body and stream with a golden, and every chat body read back
+through `requestFromOpenAIChat`).
 
 Outside the corpus: `tools/differential.py` (194 request comparisons against
 the reference, zero differences — the Rust port's 30 probes plus ten
