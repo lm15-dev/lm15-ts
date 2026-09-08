@@ -397,3 +397,116 @@ const ops: Record<string, OpHandler> = {
 };
 
 registerOps(ops);
+
+// ─── Auth, token, router ─────────────────────────────────────────────
+
+import { explainAuth, describeReport } from "./auth/doctor.ts";
+import { ChainContext, tokenExchangeBuild, tokenExchangeParse } from "./cloud/chains.ts";
+import { sign as sigv4Sign } from "./cloud/sigv4.ts";
+import { LM15Error } from "./errors.ts";
+import { lookup } from "./registry.ts";
+import { ModelRegistry } from "./types/model_info.ts";
+import { resolveModel } from "./router.ts";
+import { AwsCredentials } from "./types/credential.ts";
+
+function stringMap(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (isJsonObject(value)) for (const [k, v] of Object.entries(value)) out[k] = String(v);
+  return out;
+}
+
+registerOps({
+  explain_auth(msg) {
+    const provider = String(msg["provider"]);
+    const sentinel = String(msg["sentinel"]);
+    const env = stringMap(msg["env"]);
+    const providers = Array.isArray(msg["api_keys_providers"]) ? msg["api_keys_providers"].map(String) : [];
+    const apiKeys = providers.length > 0 ? Object.fromEntries(providers.map((p) => [p, sentinel])) : undefined;
+    const files = isJsonObject(msg["files"]) ? stringMap(msg["files"]) : undefined;
+    const settings = isJsonObject(msg["settings"]) ? stringMap(msg["settings"]) : undefined;
+    const credentialsPath = msg["credentials_path"] === null || msg["credentials_path"] === undefined ? undefined : String(msg["credentials_path"]);
+    const canonical = provider.replace(/_/g, "-");
+    const report = explainAuth(provider, {
+      env,
+      ...(apiKeys ? { apiKeys } : {}),
+      ...(files ? { files } : {}),
+      ...(env["HOME"] ? { home: env["HOME"] } : {}),
+      ...(settings ? { settings } : {}),
+      ...(credentialsPath !== undefined
+        ? canonical === "claude-code"
+          ? { claudeCredentialsPath: credentialsPath }
+          : canonical === "xai"
+            ? { xaiCredentialsPath: credentialsPath }
+            : { codexAuthPath: credentialsPath }
+        : {}),
+    });
+    return {
+      configured: report.configured,
+      steps: report.steps.map((s) => ({ kind: s.kind, state: s.state })),
+      report_text: [describeReport(report), JSON.stringify(report.steps.map((s) => ({ ...s })))].join("\n"),
+    };
+  },
+
+  token_exchange_build(msg) {
+    const definition = lookup(String(msg["provider"]));
+    if (!definition) throw new ValueError(`unknown provider: ${String(msg["provider"])}`);
+    const inputs: JsonObject = { ...(isJsonObject(msg["input"]) ? msg["input"] : isJsonObject(msg["credential"]) ? msg["credential"] : {}) };
+    const env = stringMap(inputs["env"]);
+    const files: Record<string, string> = {};
+    if (inputs["certificate_pem"] && env["AZURE_CLIENT_CERTIFICATE_PATH"]) {
+      files[env["AZURE_CLIENT_CERTIFICATE_PATH"]] = `${String(inputs["certificate_pem"])}\n${String(inputs["private_key_pem"] ?? "")}`;
+    }
+    const fixed = parseRfc3339(String(msg["now"]));
+    const ctx = new ChainContext({ env, files: Object.keys(files).length > 0 ? files : undefined, now: () => fixed, settings: stringMap(inputs["settings"] ?? msg["settings"]) });
+    return tokenExchangeBuild(definition.access, String(msg["rung"]), inputs, ctx);
+  },
+
+  token_exchange_parse(msg) {
+    const definition = lookup(String(msg["provider"]));
+    if (!definition) throw new ValueError(`unknown provider: ${String(msg["provider"])}`);
+    const fixed = parseRfc3339(String(msg["now"]));
+    let body = msg["body"];
+    if ((body === null || body === undefined) && msg["body_b64"] !== undefined) body = parseJson(decodeText(decodeBase64("body", String(msg["body_b64"]))));
+    const ctx = new ChainContext({ env: {}, now: () => fixed });
+    try {
+      const credential = tokenExchangeParse(definition.access, String(msg["rung"]), Number(msg["status"] ?? 200), isJsonObject(body) ? body : {}, ctx);
+      return { ok: true, credential: Credential.toJSON(credential) };
+    } catch (e) {
+      if (e instanceof LM15Error) return { ok: false, error: { class: e.name, code: e.code } };
+      throw e;
+    }
+  },
+
+  sigv4_sign(msg) {
+    const credential = Credential.fromJSON(msg["credential"] as JsonObject);
+    if (!(credential instanceof AwsCredentials)) throw new ValueError("sigv4_sign needs an aws credential");
+    const req = msg["request"] as JsonObject;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(isJsonObject(req["headers"]) ? req["headers"] : {})) {
+      if (["host", "x-amz-date", "x-amz-security-token"].includes(k.toLowerCase())) continue;
+      headers[k] = Array.isArray(v) ? v.map(String).join(",") : String(v);
+    }
+    const signature = sigv4Sign({
+      method: String(req["method"]),
+      url: String(req["url"]),
+      headers,
+      payload: new TextEncoder().encode(String(req["body"] ?? "")),
+      credentials: credential,
+      region: String(msg["region"]),
+      service: String(msg["service"]),
+      now: parseRfc3339(String(msg["now"])),
+    });
+    return { canonical_request: signature.canonicalRequest, string_to_sign: signature.stringToSign, authorization: signature.authorization, headers: signature.headers };
+  },
+
+  resolve_model(msg) {
+    const env = stringMap(msg["env"]);
+    let registry: ModelRegistry | undefined;
+    if ("catalog" in msg) {
+      registry = new ModelRegistry();
+      for (const entry of Array.isArray(msg["catalog"]) ? msg["catalog"] : []) registry.add(ModelInfo.fromJSON(entry as JsonObject), { replace: false });
+    }
+    const resolution = resolveModel(String(msg["model"]), { env, ...(registry ? { registry } : {}) });
+    return { provider: resolution.provider, model: resolution.model, source: resolution.source };
+  },
+});
