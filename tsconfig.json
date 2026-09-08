@@ -1,15 +1,24 @@
 {
   "compilerOptions": {
     "target": "es2023",
+    "lib": ["es2023", "dom", "dom.iterable"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-    "noEmit": true,
-    "allowImportingTsExtensions": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
-    "types": ["node"]
+    "rewriteRelativeImportExtensions": true,
+    "allowImportingTsExtensions": true,
+    "declaration": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "types": ["node"],
+    "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tools/**/*.ts"]
 }
