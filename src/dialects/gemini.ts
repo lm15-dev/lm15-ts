@@ -532,7 +532,7 @@ export class GeminiLM extends ProviderLM {
     return payload;
   }
 
-  buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
     const endpoint = stream ? "streamGenerateContent" : "generateContent";
     return this.emit({
       method: "POST",

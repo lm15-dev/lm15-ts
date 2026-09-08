@@ -495,7 +495,7 @@ export class AnthropicLM extends ProviderLM {
     return payload;
   }
 
-  buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
     return this.emit({
       method: "POST",
       url: `${this.base()}/messages`,

@@ -23,12 +23,23 @@
     "README.md"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
+    "build": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "vet": "node dist/vet.js"
+    "vet": "node dist/vet.js",
+    "surface": "node --experimental-strip-types tools/gen_surface.ts",
+    "differential": "python3 tools/differential.py && python3 tools/differential_surfaces.py",
+    "harness": "cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all"
   },
-  "keywords": ["llm", "openai", "anthropic", "gemini", "ai", "universal", "lm15"],
+  "keywords": [
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "ai",
+    "universal",
+    "lm15"
+  ],
   "author": "lm15-dev",
   "license": "MIT",
   "repository": {
