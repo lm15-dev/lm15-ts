@@ -1,0 +1,83 @@
+{
+  "sent": {
+    "method": "POST",
+    "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+    "headers": {
+      "Content-Type": "application/json",
+      "x-goog-api-key": "$ENV_KEY"
+    },
+    "body": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Reply with exactly the two words: hello world\"}]}],\"generationConfig\":{\"temperature\":0,\"maxOutputTokens\":64}}"
+  },
+  "status": 200,
+  "headers": [
+    [
+      "alt-svc",
+      "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000"
+    ],
+    [
+      "content-encoding",
+      "gzip"
+    ],
+    [
+      "content-type",
+      "application/json; charset=UTF-8"
+    ],
+    [
+      "date",
+      "Tue, 08 Sep 2026 18:04:23 GMT"
+    ],
+    [
+      "server",
+      "scaffolding on HTTPServer2"
+    ],
+    [
+      "server-timing",
+      "gfet4t7; dur=594"
+    ],
+    [
+      "transfer-encoding",
+      "chunked"
+    ],
+    [
+      "vary",
+      "Origin, X-Origin, Referer"
+    ],
+    [
+      "x-content-type-options",
+      "nosniff"
+    ],
+    [
+      "x-frame-options",
+      "SAMEORIGIN"
+    ],
+    [
+      "x-gemini-service-tier",
+      "standard"
+    ],
+    [
+      "x-xss-protection",
+      "0"
+    ]
+  ],
+  "body": "{\n  \"candidates\": [\n    {\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"hello world\"\n          }\n        ],\n        \"role\": \"model\"\n      },\n      \"finishReason\": \"STOP\",\n      \"index\": 0\n    }\n  ],\n  \"usageMetadata\": {\n    \"promptTokenCount\": 10,\n    \"candidatesTokenCount\": 2,\n    \"totalTokenCount\": 44,\n    \"promptTokensDetails\": [\n      {\n        \"modality\": \"TEXT\",\n        \"tokenCount\": 10\n      }\n    ],\n    \"thoughtsTokenCount\": 32,\n    \"serviceTier\": \"standard\"\n  },\n  \"modelVersion\": \"gemini-2.5-flash\",\n  \"responseId\": \"Jk6gar_9M5On9MoP84PmgQ0\"\n}\n",
+  "lm15": {
+    "id": "Jk6gar_9M5On9MoP84PmgQ0",
+    "model": "gemini-2.5-flash",
+    "message": {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "text",
+          "text": "hello world"
+        }
+      ]
+    },
+    "finish_reason": "stop",
+    "usage": {
+      "input_tokens": 10,
+      "output_tokens": 2,
+      "total_tokens": 44,
+      "reasoning_tokens": 32
+    }
+  }
+}

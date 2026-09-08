@@ -1,32 +1,175 @@
 # lm15-ts
 
-TypeScript port of lm15, rebuilt module-by-module against the
-[lm15-contract](https://github.com/lm15-dev/lm15-contract) corpus after the
-stale v1 implementation was removed (2026-08-31). Zero runtime
-dependencies.
+The TypeScript port of lm15: one canonical request/response model over every
+provider the [lm15-contract](https://github.com/lm15-dev/lm15-contract) names,
+byte-exact against its corpus. Async only, `fetch` + `WebSocket` (Node 22+),
+zero runtime dependencies. One npm package serves TypeScript and plain
+JavaScript (ESM and CommonJS, with `.d.ts`).
+
+The contract commit this port is built against is in `CONTRACT_PIN`;
+`harness/check.py` refuses to grade the port against any other commit.
 
 ## Status
 
-| Module | Contract surface | State |
+**Contract-complete.** Every harness direction is green at the pin, with zero
+failures and no skips added; the two skips are corpus gaps
+(`openai.computer_use` has no canonical request and no golden).
+
+| Direction | Contract surface | Result |
 |---|---|---|
-| `src/auth.ts` | spec/auth.md AUTH-1/2/5/7 + AUTH-8 read side | partial; current fixture suite fails (`conformance/auth_resolution.json`) |
-| everything else | — | not yet rebuilt |
+| `serde` | spec/types.md, spec/vocabularies.md, spec/invariants.md, docs/serde-rules.md; all 36 kinds | 115 / 0 |
+| `error` | ErrorCode + class hierarchy; `normalizeError` per provider | 84 / 0 |
+| `auth` | spec/auth.md AUTH-1/2/5/7/8/10 and the three cloud chains (AUTH-11) | 37 / 0 |
+| `token` | SigV4 (34 vectors), RS256 JWTs, token exchanges | 43 / 0 |
+| `request` | the four dialects, request side; MAP-5..8, MAP-10; hosts, presets | 365 / 0 (1 skip) |
+| `response` | the four dialects, response side; MAP-1..4 | 302 / 0 (1 skip) |
+| `stream` | SSE decoding, MAP-3/4 coalescing, MAP-9 assembly and its refusal | 40 / 0 |
+| `router` | the three rungs, precedence, `unknown_model` / `ambiguous_model` | 22 / 0 |
+| `models` | `listModels` on every provider | 34 / 0 |
+| `files`, `batch`, `cache` | the three surfaces, multipart byte for byte, MAP-11 id escaping | 48 / 0, 41 / 0, 11 / 0 |
+| `generation`, `video` | image and speech generation, video jobs (MAP-11) | 20 / 0, 27 / 0 |
+| `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
 
-The auth module ships: the `Credential` type (static string or zero-arg
-provider callable), the resolution chain + `explainAuth` doctor report, and
-read-only borrowed-credential loaders for the Claude Code and Codex CLI
-files (token material in true `#private` fields; toString/inspect/JSON all
-redacted). Not yet implemented (stated, not absorbed): the AUTH-3/4 write
-side (locked double-checked refresh, atomic 0600 writes) and the AUTH-9
-login primitives.
+Beyond the harness: `npm test` (node:test, 47 tests) covers the JSON
+fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
+credential secrecy, the lock and atomic writes, the doctor, the router, an
+end-to-end call through a fake transport, and a replay of the sibling corpus
+through the library directly (serde, errors, SigV4, router, every pinned
+request, body and stream with a golden).
 
-The copied auth corpus now includes xAI subscription and cloud-chain cases.
-The implementation and test driver do not support those cases yet. Keep the
-failures visible; this port does not pass the current auth contract and has
-no `CONTRACT_PIN` yet. Complete the auth upgrade before claiming conformance.
+Outside the corpus: `tools/differential.py` (194 request comparisons against
+the reference, zero differences — the Rust port's 30 probes plus ten
+JavaScript-specific ones: integral floats, opaque-payload numbers, unicode,
+empty strings) and `tools/differential_surfaces.py` (177 files / batch /
+cache / generation / video / live comparisons, zero differences).
+
+Live proof, keys from the environment (`receipts/2026-09-08-live-smoke/`):
+one `complete` and one `stream` per dialect through the router (OpenAI,
+Anthropic, Gemini, Groq — token counts identical to the Rust port's receipts
+of 2026-09-07), and one text turn over Gemini Live through `LiveSession`.
+Every one worked on first contact with the real server.
+
+### Not exercised live, stated
+
+Files, batches, caches, image/video generation, the cloud credential chains
+(no AWS / Azure / GCP account on this machine), the OAuth refresh wire, the
+xAI device-code login, and OpenAI Realtime. The harness pins recorded
+lifecycles, token vectors and transcripts for all of them; the fixtures are
+the proof.
+
+## Gates
 
 ```bash
-npm install   # dev tooling only (typescript, @types/node)
-npm run check # tsc --noEmit
-npm test      # node --experimental-strip-types --test
+npm install                    # dev tooling only: typescript, @types/node
+npm run build                  # regenerates src/surface.ts, emits dist/ (ESM + CJS + d.ts)
+npm test                       # node:test; replays ../lm15-contract when present
+npm run differential           # both probes against ../lm15-python
+cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all
 ```
+
+## Quick start
+
+```ts
+import { LMRouter, Message, ResponseStream, tool } from "lm15";
+
+const router = new LMRouter(); // keys from the environment (AUTH-1)
+const request = {
+  model: "groq:openai/gpt-oss-20b", // or "claude-haiku-4-5", "gpt-4.1-mini", "gemini-2.5-flash"
+  messages: [Message.user("hi")],
+  config: { maxTokens: 100 },
+};
+
+// One call.
+const response = await router.complete(request);
+console.log(response.text);
+
+// Streamed: text as it arrives, then the same Response `complete` returns.
+const rs = new ResponseStream(router.stream(request), request);
+for await (const text of rs) process.stdout.write(text);
+const streamed = await rs.response();
+
+// How was it routed? `resolve` is pure: no network, no files, no secrets.
+console.log(router.resolve("grok-4"));
+
+// Tools: the schema is written by you; the loop is yours.
+const weather = tool("get_weather", {
+  description: "Current weather for a city",
+  parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+});
+const turn = await router.complete({ model: "claude-haiku-4-5", messages: [Message.user("Weather in Oslo?")], tools: [weather] });
+for (const call of turn.toolCalls) {
+  const result = await lookUp(call.input);
+  const next = await router.complete({
+    model: "claude-haiku-4-5",
+    messages: [Message.user("Weather in Oslo?"), turn.message, Message.tool(call.id, JSON.stringify(result))],
+    tools: [weather],
+  });
+}
+
+// Explicit configuration.
+const configured = new LMRouter({
+  apiKeys: { anthropic: process.env.MY_KEY! },
+  settings: { "bedrock-chat": { region: "us-east-1" } },
+});
+
+// Providers, direct.
+import { OpenAILM, AnthropicLM, GeminiLM, OpenAIChatLM, XaiLM, ClaudeCodeLM, OpenAICodexLM } from "lm15";
+const lm = new AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! });
+await lm.listModels();
+
+// Why is my key (not) being used? No secrets are printed.
+import { explainAuth, describeReport } from "lm15";
+console.log(describeReport(explainAuth("groq")));
+```
+
+Plain JavaScript users import the same package; the types are optional.
+
+## Stated deviations
+
+Each row names the rule it deviates from (playbooks/port.md rule 8).
+
+- **Integral floats inside opaque payloads authored in JavaScript** (docs/
+  serde-rules.md, Number rule 4). JavaScript has one number type: a literal
+  `{ extensions: { x: 1.0 } }` is `1` by the time lm15 sees it and is emitted
+  as the integer `1`. Wire-originated payloads keep their form: `parseJson`
+  preserves integral-float and big-integer lexemes as `RawNumber`, so
+  `serde_roundtrip` and every response are byte-exact. Typed float fields
+  (`temperature`, `top_p`, `logprob`, pricing) are always emitted as floats.
+  Use `new RawNumber("1.0")` to force a float lexeme by hand.
+- **The credential-file lock does not interoperate with the other ports**
+  (spec/auth.md AUTH-4). Node has no `flock`; the lock is an exclusive-create
+  lock file (`<digest>.node.lock`) in the lm15 lock directory, serializing
+  lm15-ts processes among themselves. AUTH-3's double-checked re-read inside
+  the lock is the mitigation, the same one the reference applies to foreign
+  writers (the Claude Code and Codex CLIs).
+- **No schema derivation from a function signature** (api-family.md § Tools):
+  `tool(name, { parameters })` takes the JSON Schema you write. Stated once
+  for all three non-Python ports.
+- **The router's rung 0** (a `provider` attribute on a `str` subclass) is a
+  Python idiom with no TypeScript equivalent; `provider:model` and catalogs
+  cover the same ground (spec/vocabularies.md names only the three rungs the
+  harness pins).
+- **`surface_dump` is reflection at build time**, not at call time
+  (harness/PROTOCOL.md): TypeScript erases types, so `tools/gen_surface.ts`
+  reads the compiler's view of `src/types/*.ts` and writes `src/surface.ts`
+  on every build. It is never edited by hand.
+- **`aws-event-stream` framing** (phase 2, `bedrock` Converse) is not
+  implemented, exactly as in the reference; the request refuses with
+  `UnsupportedFeatureError` and `replay_stream` refuses the framing.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `src/json.ts` | JSON with number fidelity: `RawNumber`, `parseJson`, `stringifyJson`, `float` |
+| `src/types/` | every canonical type: interface, validating constructor, `fromJSON`/`toJSON` |
+| `src/vocab.ts`, `src/errors.ts` | the closed vocabularies; the error hierarchy |
+| `src/auth/` | access policies (AUTH-10), stored credentials and the lock (AUTH-3/4/8/9), the doctor (AUTH-7) |
+| `src/cloud/` | the three cloud chains (AUTH-1/11), SigV4, RS256, host rewrites |
+| `src/compat.ts`, `src/registry.ts` | compat presets and the provider table, copied as data |
+| `src/adapter.ts`, `src/dialects/` | the shared adapter base; OpenAI Responses, OpenAI Chat, Anthropic, Gemini, xAI |
+| `src/stream.ts` | SSE, the MAP-3/4 coalescer, the MAP-9 accumulator, `ResponseStream` |
+| `src/router.ts`, `src/live.ts` | `LMRouter`; `LiveSession` over the platform WebSocket |
+| `src/vet.ts`, `src/vet_*.ts` | the vet shim (`node dist/vet.js`) |
+| `tools/` | surface generator, differential probes, live smoke |
+| `receipts/` | live evidence, secrets redacted (`tools/check_secrecy.py` passes) |
