@@ -7,7 +7,7 @@
  */
 
 import { LM15Error, StreamAssemblyError, TransportError, errorClassForCode } from "./errors.ts";
-import { isJsonObject, parseJson, type JsonObject, type JsonValue } from "./json.ts";
+import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
 import type { Request } from "./types/config.ts";
 import {
   audio,
@@ -19,7 +19,7 @@ import {
   type ToolCallPart,
 } from "./types/parts.ts";
 import { Response, Usage, type TokenLogprob } from "./types/response.ts";
-import { continuationDeltaToState, type StreamEndEvent, type StreamEvent } from "./types/stream.ts";
+import { StreamEvent as StreamEventNs, continuationDeltaToState, type StreamEndEvent, type StreamEvent } from "./types/stream.ts";
 import { decodeBase64, encodeBase64 } from "./types/validate.ts";
 import type { FinishReason } from "./vocab.ts";
 
@@ -156,6 +156,7 @@ class Coalescer {
 
   /** Events to emit for one adapter event. */
   push(event: StreamEvent): StreamEvent[] {
+    event = StreamEventNs.create(event);
     if (event.type === "start") {
       if (this.started) return [];
       this.started = true;
@@ -186,12 +187,12 @@ class Coalescer {
     if (this.finishReason !== undefined) fields["finishReason"] = this.finishReason;
     if (this.usage !== undefined) fields["usage"] = this.usage;
     if (this.endData.value !== undefined) fields["providerData"] = this.endData.value;
-    out.push(Object.freeze(fields) as unknown as StreamEndEvent);
+    out.push(StreamEventNs.create(fields));
     return out;
   }
 
   private syntheticStart(): StreamEvent {
-    return this.model !== undefined ? Object.freeze({ type: "start" as const, model: this.model }) : Object.freeze({ type: "start" as const });
+    return StreamEventNs.create({ type: "start", model: this.model });
   }
 }
 
@@ -423,6 +424,7 @@ export class ResponseStream implements AsyncIterable<string> {
   private result: Response | undefined;
   private failure: unknown;
   private done = false;
+  private reading = false;
 
   constructor(events: AsyncIterable<StreamEvent> | Iterable<StreamEvent>, request: Request) {
     this.accumulator = new StreamAccumulator(request);
@@ -436,28 +438,40 @@ export class ResponseStream implements AsyncIterable<string> {
     }
   }
 
-  /** The canonical stream events, teed through the accumulator. */
+  /** Breaking iteration pauses the stream; response() can drain the remainder.
+   * Call close() to abandon it. Only one consumer may read at a time.
+   */
   async *events(): AsyncGenerator<StreamEvent> {
+    if (this.reading) throw new TypeError("ResponseStream already has an active reader");
+    if (this.failure !== undefined) throw this.failure;
     if (this.done) return;
+    this.reading = true;
     try {
       for (;;) {
-        const next = await this.source.next();
-        if (next.done) break;
-        const event = next.value;
-        if (event.type === "error") {
-          this.failure = exceptionFromErrorEvent(event);
-          throw this.failure;
+        let event: StreamEvent | undefined;
+        try {
+          const next = await this.source.next();
+          if (!next.done) {
+            event = next.value;
+            if (event.type === "error") throw exceptionFromErrorEvent(event);
+            this.accumulator.push(event);
+          }
+          if (next.done || event?.type === "end") {
+            this.result = this.accumulator.response();
+            this.done = true;
+            await this.source.return?.();
+          }
+        } catch (e) {
+          this.failure = e;
+          this.done = true;
+          try { await this.source.return?.(); } catch { /* preserve the original failure */ }
+          throw e;
         }
-        this.accumulator.push(event);
-        yield event;
-        if (event.type === "end") break;
+        if (event !== undefined) yield event;
+        if (this.done) return;
       }
-      this.result = this.accumulator.response();
-    } catch (e) {
-      this.failure = e;
-      throw e;
     } finally {
-      this.done = true;
+      this.reading = false;
     }
   }
 
@@ -466,7 +480,23 @@ export class ResponseStream implements AsyncIterable<string> {
     if (this.failure !== undefined) throw this.failure;
     if (!this.done) for await (const _ of this.events()) void _;
     if (this.failure !== undefined) throw this.failure;
-    return this.result!;
+    if (this.result === undefined) throw new TransportError("response stream was closed before completion");
+    return this.result;
+  }
+
+  /** Cancel an abandoned source, never present a partial response as complete.
+   * Stop iteration first; use the request's AbortSignal to interrupt a pending read.
+   */
+  async close(): Promise<void> {
+    if (this.reading) throw new TypeError("stop the active reader before closing ResponseStream; abort the request to interrupt a pending read");
+    if (this.done) return;
+    this.done = true;
+    this.failure = new TransportError("response stream was closed before completion");
+    await this.source.return?.();
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
   }
 }
 
@@ -493,6 +523,48 @@ export async function materializeResponseAsync(events: AsyncIterable<StreamEvent
     if (event.type === "end") break;
   }
   return acc.response();
+}
+
+/** Replay a complete response as canonical events. Unsupported part kinds are
+ * refused before any events are returned, never silently discarded.
+ */
+export function responseToEvents(response: Response): StreamEvent[] {
+  const out: StreamEvent[] = [StreamEventNs.create({ type: "start", id: response.id, model: response.model })];
+  let logprobs = response.logprobs;
+  for (const [partIndex, part] of response.message.parts.entries()) {
+    let delta: Record<string, unknown>;
+    switch (part.type) {
+      case "text":
+        delta = { type: "text", text: part.text, partIndex, logprobs };
+        logprobs = undefined;
+        break;
+      case "thinking":
+        delta = { type: "thinking", text: part.text, partIndex };
+        break;
+      case "tool_call":
+        delta = { type: "tool_call", id: part.id, name: part.name, input: stringifyJson(part.input), partIndex };
+        break;
+      case "image":
+      case "audio":
+        if (part.type === "audio" && part.data === undefined) throw new TypeError("Cannot replay AudioPart: AudioDelta requires inline data");
+        delta = { type: part.type, data: part.data, url: part.url, fileId: part.fileId, mediaType: part.mediaType, partIndex };
+        break;
+      case "citation":
+        delta = { type: "citation", text: part.text, url: part.url, title: part.title, partIndex };
+        break;
+      default:
+        throw new TypeError(`Cannot replay ${part.type} part: no Delta variant exists`);
+    }
+    out.push(StreamEventNs.create({ type: "delta", delta }));
+    for (const state of part.continuation ?? []) {
+      out.push(StreamEventNs.create({ type: "delta", delta: { type: "continuation", ...state, partIndex } }));
+    }
+  }
+  for (const state of response.message.continuation ?? []) {
+    out.push(StreamEventNs.create({ type: "delta", delta: { type: "continuation", ...state } }));
+  }
+  out.push(StreamEventNs.create({ type: "end", finishReason: response.finishReason, usage: response.usage, providerData: response.providerData }));
+  return out;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────

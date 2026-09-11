@@ -39,7 +39,7 @@ test("AUTH-1: an explicit key wins; a key policy with nothing is a typed not-con
   assert.throws(() => loadCredential(OPENAI_API, undefined), (e: unknown) => e instanceof NotConfiguredError && e.message.includes("OPENAI_API_KEY"));
 });
 
-test("AUTH-4: private atomic writes and a cooperative lock", async () => {
+test("AUTH-4: private atomic writes and a cooperative lock", { skip: process.platform !== "linux" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "lm15-auth-"));
   process.env["LM15_LOCK_DIR"] = join(dir, "locks");
   const target = join(dir, "store.json");
@@ -50,7 +50,7 @@ test("AUTH-4: private atomic writes and a cooperative lock", async () => {
   let inside = 0;
   await withFileLock(target, async () => {
     inside++;
-    await assert.rejects(withFileLock(target, async () => {}, { timeoutMs: 120 }), (e: unknown) => e instanceof LockTimeoutError && e.lockPath.endsWith(".node.lock"));
+    await assert.rejects(withFileLock(target, async () => {}, { timeoutMs: 120 }), (e: unknown) => e instanceof LockTimeoutError && e.lockPath.endsWith(".lock"));
   });
   assert.equal(inside, 1);
 

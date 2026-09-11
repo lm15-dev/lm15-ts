@@ -3,15 +3,14 @@
  * Claude Code and Codex CLI files, the lm15-owned store (xAI), the
  * double-checked refresh under a lock, and atomic private writes.
  *
- * Stated deviation (README): the cross-process lock is an exclusive-create
- * lock file (`<digest>.node.lock`) in the lm15 lock directory. Node has no
- * `flock`, so this lock serializes lm15-ts processes among themselves and
- * NOT against the Python/Rust ports, which use `flock` on `<digest>.lock`.
- * AUTH-3's double-checked re-read inside the lock is the mitigation, the
- * same one the reference applies to foreign writers.
+ * Linux: the system `flock` utility locks an inherited open file description.
+ * Node retains the descriptor after the utility exits; close or process death
+ * releases the kernel lock. The lock path and primitive match Python/Rust.
+ * Requires util-linux flock on PATH; other platforms fail explicitly.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -68,50 +67,57 @@ export function lockDir(env: NodeJS.ProcessEnv = process.env): string {
 
 // ─── AUTH-4: lock + atomic write ─────────────────────────────────────
 
-export function lockPathFor(target: string): string {
-  let canonical = path.resolve(expandHome(target));
-  try {
-    canonical = fs.realpathSync(canonical);
-  } catch {
-    // the guarded file may not exist yet
+function realPathAllowMissing(target: string): string {
+  try { return fs.realpathSync(target); } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    const parent = path.dirname(target);
+    if (parent === target) throw e;
+    return path.join(realPathAllowMissing(parent), path.basename(target));
   }
+}
+
+export function lockPathFor(target: string): string {
+  const canonical = realPathAllowMissing(path.resolve(expandHome(target)));
   const digest = createHash("sha256").update(canonical, "utf-8").digest("hex").slice(0, 32);
-  return path.join(lockDir(), `${digest}.node.lock`);
+  return path.join(lockDir(), `${digest}.lock`);
+}
+
+function tryFlock(fd: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("flock", ["--exclusive", "--nonblock", "--conflict-exit-code", "75", "3"], {
+      stdio: ["ignore", "ignore", "ignore", fd], timeout: 5000,
+    });
+    child.once("error", (cause) => reject(new NotConfiguredError("credential locking requires util-linux flock on PATH", { cause })));
+    child.once("close", (code) => {
+      if (code === 0) resolve(true);
+      else if (code === 75) resolve(false);
+      else reject(new NotConfiguredError("flock could not acquire the credential lock; no unsafe fallback was used"));
+    });
+  });
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Hold the exclusive advisory lock for `target` while `fn` runs. Not re-entrant. */
 export async function withFileLock<T>(target: string, fn: () => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
+  if (process.platform !== "linux") throw new NotConfiguredError("shared credential locking currently requires Linux and util-linux flock; pass an explicit credential on other platforms");
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError("lock timeoutMs must be non-negative and finite");
   const lockFile = lockPathFor(target);
   fs.mkdirSync(path.dirname(lockFile), { recursive: true, mode: 0o700 });
-  const deadline = Date.now() + (opts.timeoutMs ?? 60_000);
-  let fd: number | undefined;
-  for (;;) {
-    try {
-      fd = fs.openSync(lockFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
-      break;
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      if (Date.now() >= deadline) {
-        throw new LockTimeoutError(
-          `Could not lock credential file ${target} within ${Math.round((opts.timeoutMs ?? 60_000) / 1000)}s (lock file: ${lockFile}). Another process may be refreshing the same credential; retry, or remove a stale lock only if you are certain no other process holds it.`,
-          { path: target, lockPath: lockFile },
-        );
-      }
-      await sleep(50);
-    }
-  }
+  const deadline = performance.now() + timeoutMs;
+  const fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
   try {
-    fs.writeSync(fd, String(process.pid));
+    if (!fs.fstatSync(fd).isFile()) throw new NotConfiguredError("credential lock must be a regular file");
+    while (!(await tryFlock(fd))) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) throw new LockTimeoutError(`Could not lock credential file ${target} within ${timeoutMs}ms; another process holds the lock. Do not delete the lock file.`, { path: target, lockPath: lockFile });
+      await sleep(Math.min(50, remaining));
+    }
     return await fn();
   } finally {
+    // Never unlink: concurrent processes must keep locking the same inode.
     fs.closeSync(fd);
-    try {
-      fs.unlinkSync(lockFile);
-    } catch {
-      // already gone
-    }
   }
 }
 
@@ -119,15 +125,16 @@ export async function withFileLock<T>(target: string, fn: () => Promise<T>, opts
 export function writePrivateJsonAtomic(target: string, data: JsonObject): void {
   const dir = path.dirname(target);
   fs.mkdirSync(dir, { recursive: true });
-  const temp = path.join(dir, `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  const text = stringifyJson(data, { indent: 2 }) + "\n";
+  const temp = path.join(dir, `.${path.basename(target)}.${randomUUID()}.tmp`);
   const fd = fs.openSync(temp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
   try {
-    fs.writeSync(fd, stringifyJson(data, { indent: 2 }) + "\n");
-    fs.fsyncSync(fd);
-  } finally {
-    fs.closeSync(fd);
-  }
-  try {
+    try {
+      fs.writeFileSync(fd, text);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     fs.renameSync(temp, target);
   } catch (e) {
     try {

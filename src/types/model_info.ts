@@ -3,6 +3,7 @@
  * routing, and cost estimation (mirrors `lm15.models`).
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import { ValueError, absent, compact, frozen, optionalInt, optionalJsonObject, requireFloat, stringArray } from "./validate.ts";
 import type { Usage } from "./response.ts";
@@ -203,7 +204,8 @@ export interface ModelInfo {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeModelInfo(input: unknown): ModelInfo {
+export const normalizeModelInfo = canonicalFactory("model_info", normalizeModelInfoValue);
+function normalizeModelInfoValue(input: unknown): ModelInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a ModelInfo");
   const d = input as Record<string, unknown>;
   const ext = d["extensions"];

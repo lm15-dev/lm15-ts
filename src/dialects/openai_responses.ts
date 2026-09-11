@@ -473,6 +473,7 @@ export class OpenAILM extends ProviderLM {
   }
 
   async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+    request = RequestNs.create(request);
     return this.emit({
       method: "POST",
       url: `${this.base()}/responses`,

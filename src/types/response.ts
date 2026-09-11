@@ -6,6 +6,7 @@
  * `response.usage.inputTokens`.
  */
 
+import { canonicalFactory, canonicalValue } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, parseJson, type JsonObject, type JsonValue } from "../json.ts";
 import { ERROR_CODES, FINISH_REASONS, type ErrorCode, type FinishReason } from "../vocab.ts";
 import { Message, normalizeMessage, type CitationPart, type Part, type TextPart, type ToolCallPart } from "./parts.ts";
@@ -53,19 +54,20 @@ const USAGE_FIELDS = [
   ["outputAudioTokens", "output_audio_tokens"],
 ] as const;
 
-export function normalizeUsage(input: unknown): Usage {
+export const normalizeUsage = canonicalFactory("usage", normalizeUsageValue);
+function normalizeUsageValue(input: unknown): Usage {
   if (absent(input)) return EMPTY_USAGE;
   if (typeof input !== "object") throw new TypeError("usage must be a Usage");
   const d = input as Record<string, unknown>;
   const out: Record<string, number | undefined> = {};
   for (const [camel, snake] of USAGE_FIELDS) out[camel] = optionalInt(d[camel], snake, { min: 0 });
   if (out["totalTokens"] === undefined && out["inputTokens"] !== undefined && out["outputTokens"] !== undefined) {
-    out["totalTokens"] = out["inputTokens"] + out["outputTokens"];
+    out["totalTokens"] = requireInt(out["inputTokens"] + out["outputTokens"], "total_tokens", { min: 0 });
   }
   return frozen(compact(out) as Usage);
 }
 
-const EMPTY_USAGE: Usage = Object.freeze({});
+const EMPTY_USAGE: Usage = canonicalValue("usage", Object.freeze({}));
 
 export function isEmptyUsage(usage: Usage | undefined): boolean {
   return usage === undefined || USAGE_FIELDS.every(([camel]) => usage[camel] === undefined);
@@ -133,7 +135,8 @@ function normalizeTopLogprob(input: unknown, withTop: boolean): TokenLogprob {
   return frozen(compact(out) as unknown as TokenLogprob);
 }
 
-export function normalizeTokenLogprob(input: unknown): TokenLogprob {
+export const normalizeTokenLogprob = canonicalFactory("token_logprob", normalizeTokenLogprobValue);
+function normalizeTokenLogprobValue(input: unknown): TokenLogprob {
   return normalizeTopLogprob(input, true);
 }
 
@@ -192,7 +195,8 @@ export interface ErrorDetail {
   readonly providerCode?: string;
 }
 
-export function normalizeErrorDetail(input: unknown): ErrorDetail {
+export const normalizeErrorDetail = canonicalFactory("error_detail", normalizeErrorDetailValue);
+function normalizeErrorDetailValue(input: unknown): ErrorDetail {
   if (typeof input !== "object" || input === null) throw new TypeError("ErrorDetail must be an object");
   const d = input as Record<string, unknown>;
   return frozen(

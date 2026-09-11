@@ -31,7 +31,7 @@ import {
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
-import type { BuiltinTool, Request, ResponseFormat } from "../types/config.ts";
+import { Request, type BuiltinTool, type ResponseFormat } from "../types/config.ts";
 import { BatchEntry, BatchJobInfo, FileInfo, FilePage, type BatchRequest, type FileUploadRequest } from "../types/endpoints.ts";
 import type { ModelInfo } from "../types/model_info.ts";
 import { continuationData, normalizePart, type CitationPart, type MediaPart, type Message, type Part } from "../types/parts.ts";
@@ -496,6 +496,7 @@ export class AnthropicLM extends ProviderLM {
   }
 
   async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+    request = Request.create(request);
     return this.emit({
       method: "POST",
       url: `${this.base()}/messages`,

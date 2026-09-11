@@ -3,7 +3,8 @@
 The TypeScript port of lm15: one canonical request/response model over every
 provider the [lm15-contract](https://github.com/lm15-dev/lm15-contract) names,
 byte-exact against its corpus. Async only, `fetch` + `WebSocket` (Node 22+),
-zero runtime dependencies. One npm package serves TypeScript and plain
+zero npm runtime dependencies. Stored-credential refresh/writes require Linux
+and util-linux `flock`; explicit credentials work without it. One npm package serves TypeScript and plain
 JavaScript (ESM and CommonJS, with `.d.ts`).
 
 The contract commit this port is built against is in `CONTRACT_PIN`;
@@ -11,9 +12,11 @@ The contract commit this port is built against is in `CONTRACT_PIN`;
 
 ## Status
 
-**Contract-complete.** Every harness direction is green at the pin, with zero
-failures and no skips added; the two skips are corpus gaps
-(`openai.computer_use` has no canonical request and no golden).
+**Passing the pinned corpus, not a claim of SDK or release completeness.**
+Every harness direction is green at the pin, with zero failures and no skips
+added; the two skips are corpus gaps (`openai.computer_use` has no canonical
+request and no golden). Runtime correctness is tested separately; see
+[the correctness review and remaining work](docs/runtime-correctness.md).
 
 | Direction | Contract surface | Result |
 |---|---|---|
@@ -31,13 +34,18 @@ failures and no skips added; the two skips are corpus gaps
 | `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
 | `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 118 recorded chat bodies round-trip (21 pinned lossy), 38 foreign shapes (10 refusals). Provisional; module 4b | 156 / 0 |
 
-Beyond the harness: `npm test` (node:test, 53 tests) covers the JSON
+Beyond the harness: `npm test` (node:test) covers the JSON
 fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
 credential secrecy, the lock and atomic writes, the doctor, the router, an
 end-to-end call through a fake transport, and a replay of the sibling corpus
 through the library directly (serde, errors, SigV4, router, every pinned
 request, body and stream with a golden, and every chat body read back
-through `requestFromOpenAIChat`).
+through `requestFromOpenAIChat`). Runtime regression tests additionally cover
+generic serialization, unsafe integers, direct-provider validation, stream
+pause/drain/cancellation, real local HTTP cancellation, timeouts, websocket
+failure paths, Python/Node lock exclusion, and lock release after process death.
+The Python interoperability check skips if Python is unavailable; kernel-lock
+tests skip off Linux.
 
 Outside the corpus: `tools/differential.py` (194 request comparisons against
 the reference, zero differences — the Rust port's 30 probes plus ten
@@ -56,8 +64,8 @@ Every one worked on first contact with the real server.
 Files, batches, caches, image/video generation, the cloud credential chains
 (no AWS / Azure / GCP account on this machine), the OAuth refresh wire, the
 xAI device-code login, and OpenAI Realtime. The harness pins recorded
-lifecycles, token vectors and transcripts for all of them; the fixtures are
-the proof.
+lifecycles, token vectors and transcripts for all of them. Those fixtures prove
+recorded wire behavior, not working network lifecycles or release readiness.
 
 ## Gates
 
@@ -138,12 +146,26 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   `serde_roundtrip` and every response are byte-exact. Typed float fields
   (`temperature`, `top_p`, `logprob`, pricing) are always emitted as floats.
   Use `new RawNumber("1.0")` to force a float lexeme by hand.
-- **The credential-file lock does not interoperate with the other ports**
-  (spec/auth.md AUTH-4). Node has no `flock`; the lock is an exclusive-create
-  lock file (`<digest>.node.lock`) in the lm15 lock directory, serializing
-  lm15-ts processes among themselves. AUTH-3's double-checked re-read inside
-  the lock is the mitigation, the same one the reference applies to foreign
-  writers (the Claude Code and Codex CLIs).
+- **Shared credential locking requires Linux and util-linux `flock`**
+  (spec/auth.md AUTH-4). The utility locks a descriptor inherited from Node;
+  Node retains the kernel lock after the utility exits. The `<digest>.lock`
+  path and primitive match Python/Rust; process death releases the lock.
+  Missing utility or unsupported platform fails explicitly, with no fallback.
+  Existing processes using the old `.node.lock` implementation must be stopped
+  before upgrading. Foreign CLIs still do not cooperate with lm15's lock.
+- **Typed integers must fit JavaScript's safe integer range.** Larger counters
+  and overflowing computed totals are rejected, never rounded. Opaque JSON
+  payloads still preserve arbitrarily large integer lexemes using `RawNumber`.
+- **Generic serialization does not guess a plain object's type.** Factory-made
+  canonical values remember their kind out of band. Use `toJSON(value, "delta")`
+  or `Delta.toJSON(value)` for literals, copied objects, or values from another
+  package instance. A text part, text delta and live text event can share a shape.
+- **Platform fetch cannot separately configure connection timing or proxies.**
+  `FetchTransport` exposes header-wait and per-chunk idle deadlines (60s each;
+  streaming provider requests set a 120s read deadline), plus an optional total
+  deadline. A request's `readTimeout` overrides the transport default. Supply a
+  configured fetch/Transport for connection-specific settings, TLS and proxies.
+  An unsupported request-level `connectTimeout` is rejected, not ignored.
 - **No schema derivation from a function signature** (api-family.md § Tools):
   `tool(name, { parameters })` takes the JSON Schema you write. Stated once
   for all three non-Python ports.
@@ -172,6 +194,8 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 | `src/adapter.ts`, `src/dialects/` | the shared adapter base; OpenAI Responses, OpenAI Chat, Anthropic, Gemini, xAI |
 | `src/stream.ts` | SSE, the MAP-3/4 coalescer, the MAP-9 accumulator, `ResponseStream` |
 | `src/router.ts`, `src/live.ts` | `LMRouter`; `LiveSession` over the platform WebSocket |
+| `src/testing.ts` | `lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
+| `src/canonical.ts` | Out-of-band type identity for generic serialization |
 | `src/vet.ts`, `src/vet_*.ts` | the vet shim (`node dist/vet.js`) |
 | `tools/` | surface generator, differential probes, live smoke |
 | `receipts/` | live evidence, secrets redacted (`tools/check_secrecy.py` passes) |

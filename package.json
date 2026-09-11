@@ -12,6 +12,11 @@
       "import": "./dist/index.js",
       "require": "./dist/cjs/index.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "import": "./dist/testing.js",
+      "require": "./dist/cjs/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -20,7 +25,8 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "scripts": {
     "build": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",

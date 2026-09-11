@@ -8,6 +8,8 @@
  * caches, generation, video).
  */
 
+import { abortable, checkAborted } from "./async.ts";
+import type { LiveSession, LiveSessionOptions } from "./live.ts";
 import { authHeader, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
 import { loadCredential } from "./auth/stores.ts";
 import { finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
@@ -17,7 +19,7 @@ import { lookup } from "./registry.ts";
 import { coalesceStreamAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
 import { AwsCredentials, coerceCredential, type CredentialLike, type CredentialValue } from "./types/credential.ts";
-import { isDefaultConfig, type Request } from "./types/config.ts";
+import { isDefaultConfig, normalizeRequest, type Request } from "./types/config.ts";
 import type {
   BatchEntry,
   BatchJobInfo,
@@ -35,7 +37,7 @@ import type {
   VideoGenerationRequest,
   VideoJobInfo,
 } from "./types/endpoints.ts";
-import { CachedPrefix } from "./types/endpoints.ts";
+import { CachedPrefix, normalizeFileUploadRequest, normalizeBatchRequest, normalizeImageGenerationRequest, normalizeSpeechGenerationRequest, normalizeVideoGenerationRequest } from "./types/endpoints.ts";
 import type { LiveConfig, LiveClientEvent, LiveServerEvent } from "./types/live.ts";
 import type { ModelInfo } from "./types/model_info.ts";
 import type { VideoPart } from "./types/parts.ts";
@@ -171,7 +173,7 @@ export abstract class ProviderLM {
       model: opts.model,
       credential,
     });
-    const req = makeJsonRequest({
+    let req = makeJsonRequest({
       method: opts.method,
       url: finished.url,
       headers: finished.headers,
@@ -179,6 +181,7 @@ export abstract class ProviderLM {
       payload: finished.payload,
       body: opts.body,
     });
+    if (opts.stream) req = { ...req, readTimeout: 120 };
     if (credential instanceof AwsCredentials) {
       const signed = signRequest(this.access, this.hostSettings, {
         method: req.method,
@@ -238,7 +241,10 @@ export abstract class ProviderLM {
   // ─── Drivers: complete / stream ────────────────────────────────────
 
   async complete(request: Request, opts: { signal?: AbortSignal } = {}): Promise<Response> {
-    const req = await this.buildRequest(request, false);
+    checkAborted(opts.signal);
+    request = normalizeRequest(request);
+    const building = this.buildRequest(request, false);
+    const req = await (opts.signal ? abortable(building, opts.signal) : building);
     const resp = await this.send(req, opts.signal);
     if (resp.status >= 400) throw attachRetryAfter(this.normalizeError(resp.status, resp.text()), resp);
     return this.parseResponse(request, resp);
@@ -250,7 +256,10 @@ export abstract class ProviderLM {
   }
 
   protected async *streamRaw(request: Request, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
-    const req = await this.buildRequest(request, true);
+    checkAborted(signal);
+    request = normalizeRequest(request);
+    const building = this.buildRequest(request, true);
+    const req = await (signal ? abortable(building, signal) : building);
     let res;
     try {
       res = await this.transport.send(req, { signal });
@@ -297,6 +306,11 @@ export abstract class ProviderLM {
 
   // ─── Live ──────────────────────────────────────────────────────────
 
+  async live(config: LiveConfig, opts: LiveSessionOptions = {}): Promise<LiveSession> {
+    const { LiveSession } = await import("./live.ts");
+    return LiveSession.open(this, config, opts);
+  }
+
   liveSetupFrames(_config: LiveConfig): JsonObject[] {
     throw new UnsupportedFeatureError(`${this.provider}: live not supported`, { provider: this.provider });
   }
@@ -336,6 +350,7 @@ export abstract class ProviderLM {
 
   async fileUpload(request: FileUploadRequest): Promise<FileInfo> {
     this.require("files");
+    request = normalizeFileUploadRequest(request);
     return this.fileInfoFromBody((await this.sendOk(await this.fileUploadRequest(request))).text());
   }
   async fileGet(fileId: string): Promise<FileInfo> {
@@ -404,6 +419,7 @@ export abstract class ProviderLM {
 
   async batchSubmit(request: BatchRequest): Promise<BatchJobInfo> {
     this.require("batches");
+    request = normalizeBatchRequest(request);
     let uploadBody: JsonObject | undefined;
     const upload = await this.batchUploadRequest(request);
     if (upload) {
@@ -476,6 +492,7 @@ export abstract class ProviderLM {
 
   async cacheCreate(prefix: Request, opts: { ttlSeconds?: number; label?: string } = {}): Promise<CacheInfo> {
     this.require("caches");
+    prefix = normalizeRequest(prefix);
     ProviderLM.checkCachePrefix(prefix, opts.ttlSeconds);
     return this.cacheInfoFromBody((await this.sendOk(await this.cacheCreateRequest(prefix, opts.ttlSeconds, opts.label))).text());
   }
@@ -498,6 +515,7 @@ export abstract class ProviderLM {
   }
   /** Make a prompt beginning reusable with the best tier this provider has. */
   async cache(prefix: Request, opts: { ttlSeconds?: number; label?: string } = {}): Promise<CachedPrefixValue> {
+    prefix = normalizeRequest(prefix);
     if (this.supports.caches) return CachedPrefix.create({ prefix, resource: await this.cacheCreate(prefix, opts) });
     ProviderLM.checkCachePrefix(prefix, opts.ttlSeconds);
     return CachedPrefix.create({ prefix });
@@ -523,10 +541,12 @@ export abstract class ProviderLM {
 
   async imageGenerate(request: ImageGenerationRequest): Promise<ImageGenerationResponse> {
     this.require("images");
+    request = normalizeImageGenerationRequest(request);
     return this.imageGenerationFromResponse(request, await this.sendOk(await this.imageGenerateRequest(request)));
   }
   async speechGenerate(request: SpeechGenerationRequest): Promise<SpeechGenerationResponse> {
     this.require("speech");
+    request = normalizeSpeechGenerationRequest(request);
     return this.speechGenerationFromResponse(request, await this.sendOk(await this.speechGenerateRequest(request)));
   }
 
@@ -560,6 +580,7 @@ export abstract class ProviderLM {
 
   async videoSubmit(request: VideoGenerationRequest): Promise<VideoJobInfo> {
     this.require("video");
+    request = normalizeVideoGenerationRequest(request);
     return this.videoJobFromBody((await this.sendOk(await this.videoSubmitRequest(request))).text());
   }
   async videoStatus(videoId: string): Promise<VideoJobInfo> {

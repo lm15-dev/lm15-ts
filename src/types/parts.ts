@@ -8,6 +8,7 @@
  * the wire contract (snake_case), the identifiers follow TypeScript.
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import { IMAGE_DETAILS, ROLES, type ImageDetail, type Role } from "../vocab.ts";
 import {
@@ -39,7 +40,8 @@ export function continuationState(provider: string, kind: string, data: JsonObje
   return normalizeContinuationState({ provider, kind, data });
 }
 
-export function normalizeContinuationState(input: unknown): ContinuationState {
+export const normalizeContinuationState = canonicalFactory("continuation_state", normalizeContinuationStateValue);
+function normalizeContinuationStateValue(input: unknown): ContinuationState {
   if (!isJsonObject(input) && !(typeof input === "object" && input !== null)) {
     throw new TypeError("continuation must contain ContinuationState objects");
   }
@@ -252,7 +254,8 @@ export function isMediaPart(part: Part): part is MediaPart {
  * with a `type` discriminator and camelCase fields; returns a frozen Part
  * with the invariants checked and defaults filled.
  */
-export function normalizePart(input: unknown): Part {
+export const normalizePart = canonicalFactory("part", normalizePartValue);
+function normalizePartValue(input: unknown): Part {
   if (!isPart(input)) {
     const t = typeof input === "object" && input !== null ? (input as { type?: unknown }).type : undefined;
     if (typeof t === "string") throw new ValueError(`unsupported part type: ${t}`);
@@ -627,7 +630,8 @@ function validateMessageParts(role: Role, parts: readonly Part[]): void {
 }
 
 /** The validating constructor for Message (INV-020, INV-022..024). */
-export function normalizeMessage(input: unknown): Message {
+export const normalizeMessage = canonicalFactory("message", normalizeMessageValue);
+function normalizeMessageValue(input: unknown): Message {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a Message object");
   const d = input as Record<string, unknown>;
   const role = d["role"];

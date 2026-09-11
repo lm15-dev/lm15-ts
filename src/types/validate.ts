@@ -51,6 +51,7 @@ export function requireInt(value: unknown, field: string, opts: { min?: number; 
   else if (value instanceof RawNumber) n = value.valueOf();
   else throw new TypeError(`${field} must be an int`);
   if (!Number.isFinite(n) || !Number.isInteger(n)) throw new TypeError(`${field} must be an int`);
+  if (!Number.isSafeInteger(n)) throw new ValueError(`${field} exceeds JavaScript's exact integer range; refusing to round it`);
   if (opts.min !== undefined && n < opts.min) {
     throw new ValueError(opts.min === 1 ? `${field} must be > 0` : `${field} must be >= ${opts.min}`);
   }

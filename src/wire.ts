@@ -24,7 +24,9 @@ export interface TransportRequest {
   /** Ordered header pairs; names as the dialect spelled them. */
   readonly headers: ReadonlyArray<readonly [string, string]>;
   readonly body: Uint8Array;
+  /** Seconds. Requires a custom transport; platform fetch has no separate connect timer. */
   readonly connectTimeout?: number;
+  /** Per-chunk idle timeout in seconds, overriding the transport default. */
   readonly readTimeout?: number;
 }
 

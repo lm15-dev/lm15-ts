@@ -15,7 +15,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { RawNumber, isJsonObject, jsonEquals, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../src/json.ts";
-import { serdeForKind } from "../src/serde.ts";
+import { serdeForKind, toJSON as canonicalJSON } from "../src/serde.ts";
 import { adapterFor } from "../src/providers.ts";
 import { Request } from "../src/types/config.ts";
 import { Credential, AwsCredentials, parseRfc3339 } from "../src/types/credential.ts";
@@ -38,7 +38,9 @@ const DROP_HEADERS = new Set(["user-agent", "accept", "accept-encoding", "conten
 test("corpus: serde/canonical.json round-trips exactly", { skip: !present }, () => {
   for (const c of read("serde/canonical.json")["cases"] as JsonObject[]) {
     const { fromJSON, toJSON } = serdeForKind(String(c["kind"]));
-    const out = toJSON(fromJSON(c["value"] as JsonObject));
+    const value = fromJSON(c["value"] as JsonObject);
+    const out = toJSON(value);
+    assert.ok(jsonEquals(out, canonicalJSON(value)), `generic serializer: ${c["id"]}`);
     assert.ok(jsonEquals(c["value"], out), `${c["id"]}: ${stringifyJson(out)}`);
   }
 });

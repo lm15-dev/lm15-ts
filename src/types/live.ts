@@ -2,6 +2,7 @@
  * Audio / live (realtime) types (spec/types.md § Audio / Live).
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import { AUDIO_ENCODINGS, type AudioEncoding } from "../vocab.ts";
 import { Tool, isTool, normalizeTool } from "./config.ts";
@@ -39,7 +40,8 @@ export interface AudioFormat {
   readonly channels?: number;
 }
 
-export function normalizeAudioFormat(input: unknown): AudioFormat {
+export const normalizeAudioFormat = canonicalFactory("audio_format", normalizeAudioFormatValue);
+function normalizeAudioFormatValue(input: unknown): AudioFormat {
   if (typeof input !== "object" || input === null) throw new TypeError("expected an AudioFormat");
   const d = input as Record<string, unknown>;
   return frozen({
@@ -71,7 +73,8 @@ export interface LiveConfig {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeLiveConfig(input: unknown): LiveConfig {
+export const normalizeLiveConfig = canonicalFactory("live_config", normalizeLiveConfigValue);
+function normalizeLiveConfigValue(input: unknown): LiveConfig {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a LiveConfig");
   const d = input as Record<string, unknown>;
   if (typeof d["model"] !== "string" || d["model"] === "") throw new ValueError("model is required");
@@ -173,7 +176,8 @@ const TOOL_RESULT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "
 export const DEFAULT_LIVE_AUDIO_MEDIA_TYPE = "audio/pcm;rate=16000";
 export const DEFAULT_LIVE_IMAGE_MEDIA_TYPE = "image/jpeg";
 
-export function normalizeLiveClientEvent(input: unknown): LiveClientEvent {
+export const normalizeLiveClientEvent = canonicalFactory("live_client_event", normalizeLiveClientEventValue);
+function normalizeLiveClientEventValue(input: unknown): LiveClientEvent {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a LiveClientEvent");
   const d = input as Record<string, unknown>;
   switch (d["type"]) {
@@ -331,7 +335,8 @@ export type LiveServerEvent =
   | LiveServerUsageEvent
   | LiveServerErrorEvent;
 
-export function normalizeLiveServerEvent(input: unknown): LiveServerEvent {
+export const normalizeLiveServerEvent = canonicalFactory("live_server_event", normalizeLiveServerEventValue);
+function normalizeLiveServerEventValue(input: unknown): LiveServerEvent {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a LiveServerEvent");
   const d = input as Record<string, unknown>;
   switch (d["type"]) {

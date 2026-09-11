@@ -14,7 +14,7 @@
 // The core loop (playbooks/api-family.md)
 export { LMRouter, DEFAULT_RULES, MissingCredentialError, describeResolution, resolveModel } from "./router.ts";
 export type { Resolution, ResolutionSource, RouteRule, RouterConfig } from "./router.ts";
-export { ResponseStream, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, parseSse, parseSseAsync } from "./stream.ts";
+export { ResponseStream, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, responseToEvents, parseSse, parseSseAsync } from "./stream.ts";
 export type { SSEEvent } from "./stream.ts";
 
 // Canonical types
@@ -208,7 +208,7 @@ export { ChainContext, explain as explainChain, credentialProvider } from "./clo
 
 // Transport
 export { FetchTransport } from "./transport.ts";
-export type { Transport, TransportResponse } from "./transport.ts";
+export type { Transport, TransportResponse, FetchTransportOptions } from "./transport.ts";
 export { HttpResponse } from "./wire.ts";
 export type { TransportRequest } from "./wire.ts";
 

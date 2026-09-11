@@ -3,6 +3,7 @@
  * Closed discriminated unions on `type`.
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import { FINISH_REASONS, type FinishReason } from "../vocab.ts";
 import { continuationState, type ContinuationState } from "./parts.ts";
@@ -100,7 +101,8 @@ function partIndexOf(d: Record<string, unknown>): number {
   return absent(d["partIndex"]) ? 0 : requireInt(d["partIndex"], "part_index", { min: 0 });
 }
 
-export function normalizeDelta(input: unknown): Delta {
+export const normalizeDelta = canonicalFactory("delta", normalizeDeltaValue);
+function normalizeDeltaValue(input: unknown): Delta {
   if (!isDelta(input)) {
     const t = typeof input === "object" && input !== null ? (input as { type?: unknown }).type : undefined;
     if (typeof t === "string") throw new ValueError(`unsupported delta type: ${t}`);
@@ -278,7 +280,8 @@ export interface StreamErrorEvent {
 
 export type StreamEvent = StreamStartEvent | StreamDeltaEvent | StreamEndEvent | StreamErrorEvent;
 
-export function normalizeStreamEvent(input: unknown): StreamEvent {
+export const normalizeStreamEvent = canonicalFactory("stream_event", normalizeStreamEventValue);
+function normalizeStreamEventValue(input: unknown): StreamEvent {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a StreamEvent object");
   const d = input as Record<string, unknown>;
   switch (d["type"]) {

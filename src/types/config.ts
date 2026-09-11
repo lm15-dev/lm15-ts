@@ -6,6 +6,7 @@
  * `router.complete`).
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import {
   CACHE_MODES,
@@ -78,7 +79,8 @@ export function isTool(value: unknown): value is Tool {
   return t === "function" || t === "builtin";
 }
 
-export function normalizeTool(input: unknown): Tool {
+export const normalizeTool = canonicalFactory("tool", normalizeToolValue);
+function normalizeToolValue(input: unknown): Tool {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a Tool object");
   const d = input as Record<string, unknown>;
   if (d["type"] === "builtin") {
@@ -142,7 +144,8 @@ export interface ToolChoice {
   readonly parallel?: boolean;
 }
 
-export function normalizeToolChoice(input: unknown): ToolChoice {
+export const normalizeToolChoice = canonicalFactory("tool_choice", normalizeToolChoiceValue);
+function normalizeToolChoiceValue(input: unknown): ToolChoice {
   if (typeof input !== "object" || input === null) throw new TypeError("tool_choice must be a ToolChoice");
   const d = input as Record<string, unknown>;
   const mode = absent(d["mode"]) ? "auto" : requireOneOf(TOOL_CHOICE_MODES, d["mode"], "tool choice mode");
@@ -181,7 +184,8 @@ export interface Reasoning {
   readonly summary?: ReasoningSummary;
 }
 
-export function normalizeReasoning(input: unknown): Reasoning {
+export const normalizeReasoning = canonicalFactory("reasoning", normalizeReasoningValue);
+function normalizeReasoningValue(input: unknown): Reasoning {
   if (typeof input !== "object" || input === null) throw new TypeError("reasoning must be a Reasoning");
   const d = input as Record<string, unknown>;
   const effort = requireOneOf(REASONING_EFFORTS, d["effort"], "reasoning effort");
@@ -225,7 +229,8 @@ export interface CacheConfig {
   readonly resource?: string;
 }
 
-export function normalizeCacheConfig(input: unknown): CacheConfig {
+export const normalizeCacheConfig = canonicalFactory("cache_config", normalizeCacheConfigValue);
+function normalizeCacheConfigValue(input: unknown): CacheConfig {
   if (typeof input !== "object" || input === null) throw new TypeError("cache must be a CacheConfig");
   const d = input as Record<string, unknown>;
   const mode = absent(d["mode"]) ? "auto" : requireOneOf(CACHE_MODES, d["mode"], "cache mode");
@@ -323,7 +328,8 @@ function validateResponseFormat(value: JsonObject | undefined): ResponseFormat |
   return value as unknown as ResponseFormat;
 }
 
-export function normalizeConfig(input: unknown): Config {
+export const normalizeConfig = canonicalFactory("config", normalizeConfigValue);
+function normalizeConfigValue(input: unknown): Config {
   if (absent(input)) return EMPTY_CONFIG;
   if (typeof input !== "object") throw new TypeError("Request.config must be a Config");
   const d = input as Record<string, unknown>;
@@ -434,7 +440,8 @@ export interface RequestInput {
   readonly config?: Config | null;
 }
 
-export function normalizeRequest(input: unknown): Request {
+export const normalizeRequest = canonicalFactory("request", normalizeRequestValue);
+function normalizeRequestValue(input: unknown): Request {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a Request object");
   const d = input as Record<string, unknown>;
   if (typeof d["model"] !== "string" || d["model"] === "") throw new ValueError("model is required");

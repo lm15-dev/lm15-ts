@@ -3,6 +3,7 @@
  * caches, batches, image/speech generation, video jobs.
  */
 
+import { canonicalFactory } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import {
   BATCH_OUTCOMES,
@@ -73,7 +74,8 @@ export interface FileUploadRequest {
   readonly path?: string;
 }
 
-export function normalizeFileUploadRequest(input: unknown): FileUploadRequest {
+export const normalizeFileUploadRequest = canonicalFactory("file_upload_request", normalizeFileUploadRequestValue);
+function normalizeFileUploadRequestValue(input: unknown): FileUploadRequest {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a FileUploadRequest");
   const d = input as Record<string, unknown>;
   const filename = requireString(d["filename"], "FileUploadRequest.filename", false);
@@ -137,7 +139,8 @@ export interface FileInfo {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeFileInfo(input: unknown): FileInfo {
+export const normalizeFileInfo = canonicalFactory("file_info", normalizeFileInfoValue);
+function normalizeFileInfoValue(input: unknown): FileInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a FileInfo");
   const d = input as Record<string, unknown>;
   return frozen(
@@ -195,7 +198,8 @@ export interface FilePage {
   readonly nextCursor?: string;
 }
 
-export function normalizeFilePage(input: unknown): FilePage {
+export const normalizeFilePage = canonicalFactory("file_page", normalizeFilePageValue);
+function normalizeFilePageValue(input: unknown): FilePage {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a FilePage");
   const d = input as Record<string, unknown>;
   const items = absent(d["items"]) ? [] : d["items"];
@@ -232,7 +236,8 @@ export interface CacheInfo {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeCacheInfo(input: unknown): CacheInfo {
+export const normalizeCacheInfo = canonicalFactory("cache_info", normalizeCacheInfoValue);
+function normalizeCacheInfoValue(input: unknown): CacheInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a CacheInfo");
   const d = input as Record<string, unknown>;
   return frozen(
@@ -279,7 +284,8 @@ export interface CachePage {
   readonly nextCursor?: string;
 }
 
-export function normalizeCachePage(input: unknown): CachePage {
+export const normalizeCachePage = canonicalFactory("cache_page", normalizeCachePageValue);
+function normalizeCachePageValue(input: unknown): CachePage {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a CachePage");
   const d = input as Record<string, unknown>;
   const items = absent(d["items"]) ? [] : d["items"];
@@ -311,7 +317,8 @@ export interface CachedPrefix {
   readonly resource?: CacheInfo;
 }
 
-export function normalizeCachedPrefix(input: unknown): CachedPrefix {
+export const normalizeCachedPrefix = canonicalFactory("cached_prefix", normalizeCachedPrefixValue);
+function normalizeCachedPrefixValue(input: unknown): CachedPrefix {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a CachedPrefix");
   const d = input as Record<string, unknown>;
   if (typeof d["prefix"] !== "object" || d["prefix"] === null) throw new TypeError("CachedPrefix.prefix must be a Request");
@@ -393,7 +400,8 @@ export interface BatchRequest {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeBatchRequest(input: unknown): BatchRequest {
+export const normalizeBatchRequest = canonicalFactory("batch_request", normalizeBatchRequestValue);
+function normalizeBatchRequestValue(input: unknown): BatchRequest {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a BatchRequest");
   const d = input as Record<string, unknown>;
   const raw = absent(d["requests"]) ? [] : d["requests"];
@@ -440,7 +448,8 @@ export interface BatchJobInfo {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeBatchJobInfo(input: unknown): BatchJobInfo {
+export const normalizeBatchJobInfo = canonicalFactory("batch_job", normalizeBatchJobInfoValue);
+function normalizeBatchJobInfoValue(input: unknown): BatchJobInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a BatchJobInfo");
   const d = input as Record<string, unknown>;
   return frozen(
@@ -481,7 +490,8 @@ export interface BatchEntry {
   readonly error?: ErrorDetail;
 }
 
-export function normalizeBatchEntry(input: unknown): BatchEntry {
+export const normalizeBatchEntry = canonicalFactory("batch_entry", normalizeBatchEntryValue);
+function normalizeBatchEntryValue(input: unknown): BatchEntry {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a BatchEntry");
   const d = input as Record<string, unknown>;
   let index: number;
@@ -545,7 +555,8 @@ export interface ImageGenerationRequest {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeImageGenerationRequest(input: unknown): ImageGenerationRequest {
+export const normalizeImageGenerationRequest = canonicalFactory("image_generation_request", normalizeImageGenerationRequestValue);
+function normalizeImageGenerationRequestValue(input: unknown): ImageGenerationRequest {
   if (typeof input !== "object" || input === null) throw new TypeError("expected an ImageGenerationRequest");
   const d = input as Record<string, unknown>;
   const images = imageParts(d["images"], "ImageGenerationRequest");
@@ -594,7 +605,8 @@ export interface ImageGenerationResponse {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeImageGenerationResponse(input: unknown): ImageGenerationResponse {
+export const normalizeImageGenerationResponse = canonicalFactory("image_generation_response", normalizeImageGenerationResponseValue);
+function normalizeImageGenerationResponseValue(input: unknown): ImageGenerationResponse {
   if (typeof input !== "object" || input === null) throw new TypeError("expected an ImageGenerationResponse");
   const d = input as Record<string, unknown>;
   const images = imageParts(d["images"], "ImageGenerationResponse");
@@ -647,7 +659,8 @@ export interface SpeechGenerationRequest {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeSpeechGenerationRequest(input: unknown): SpeechGenerationRequest {
+export const normalizeSpeechGenerationRequest = canonicalFactory("speech_generation_request", normalizeSpeechGenerationRequestValue);
+function normalizeSpeechGenerationRequestValue(input: unknown): SpeechGenerationRequest {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a SpeechGenerationRequest");
   const d = input as Record<string, unknown>;
   return frozen(
@@ -680,7 +693,8 @@ export interface SpeechGenerationResponse {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeSpeechGenerationResponse(input: unknown): SpeechGenerationResponse {
+export const normalizeSpeechGenerationResponse = canonicalFactory("speech_generation_response", normalizeSpeechGenerationResponseValue);
+function normalizeSpeechGenerationResponseValue(input: unknown): SpeechGenerationResponse {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a SpeechGenerationResponse");
   const d = input as Record<string, unknown>;
   const audio = d["audio"];
@@ -729,7 +743,8 @@ export interface VideoGenerationRequest {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeVideoGenerationRequest(input: unknown): VideoGenerationRequest {
+export const normalizeVideoGenerationRequest = canonicalFactory("video_generation_request", normalizeVideoGenerationRequestValue);
+function normalizeVideoGenerationRequestValue(input: unknown): VideoGenerationRequest {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a VideoGenerationRequest");
   const d = input as Record<string, unknown>;
   const seconds = d["seconds"];
@@ -782,7 +797,8 @@ export interface VideoJobInfo {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeVideoJobInfo(input: unknown): VideoJobInfo {
+export const normalizeVideoJobInfo = canonicalFactory("video_job", normalizeVideoJobInfoValue);
+function normalizeVideoJobInfoValue(input: unknown): VideoJobInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a VideoJobInfo");
   const d = input as Record<string, unknown>;
   const progress = d["progress"];

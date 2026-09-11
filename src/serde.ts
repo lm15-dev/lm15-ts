@@ -5,9 +5,10 @@
  * api-family names.
  */
 
+import { canonicalKind } from "./canonical.ts";
 import type { JsonObject } from "./json.ts";
 import { CacheConfig, Config, Reasoning, Request, Tool, ToolChoice } from "./types/config.ts";
-import { Credential } from "./types/credential.ts";
+import { Credential, isCredentialValue } from "./types/credential.ts";
 import {
   BatchEntry,
   BatchJobInfo,
@@ -82,25 +83,21 @@ export const KIND_SERDE: Readonly<Record<string, KindSerde>> = Object.freeze({
 } as Record<string, KindSerde>);
 
 export function serdeForKind(name: string): KindSerde {
-  const s = KIND_SERDE[name];
+  const s = Object.hasOwn(KIND_SERDE, name) ? KIND_SERDE[name] : undefined;
   if (!s) throw new ValueError(`unknown kind: ${name}`);
   return s;
 }
 
-/** Canonical JSON of any value produced by the library (`toJSON(x)`, api-family § Types and serde). */
-export function toJSON(value: unknown): JsonObject {
+/** Canonical JSON of a constructed value. Plain literals, copies and values from
+ * another package instance must name their kind, or use `<Type>.toJSON(value)`.
+ * Structural guessing is unsafe: a text Part and a live text event can be identical.
+ */
+export function toJSON(value: unknown, kindName?: string): JsonObject {
+  if (kindName !== undefined) return serdeForKind(kindName).toJSON(value);
   if (value instanceof Response) return Response.toJSON(value);
+  if (isCredentialValue(value)) return Credential.toJSON(value);
   if (typeof value !== "object" || value === null) throw new TypeError("toJSON: expected a canonical value");
-  const v = value as Record<string, unknown>;
-  if ("role" in v && "parts" in v) return Message.toJSON(value as Message);
-  if ("model" in v && "messages" in v) return Request.toJSON(value as Request);
-  if (typeof v["type"] === "string" && Part.is(value)) return Part.toJSON(value);
-  if ("kind" in v && typeof v["kind"] === "string" && "value" in v) return Credential.toJSON(value as never);
-  if ("delta" in v || v["type"] === "start" || v["type"] === "end") return StreamEvent.toJSON(value as StreamEvent);
-  if (Delta.is(value)) return Delta.toJSON(value);
-  if ("effort" in v) return Reasoning.toJSON(value as Reasoning);
-  if ("inputTokens" in v || "outputTokens" in v || "totalTokens" in v) return Usage.toJSON(value as Usage);
-  if ("apiFamily" in v) return ModelInfo.toJSON(value as ModelInfo);
-  if ("type" in v && (v["type"] === "function" || v["type"] === "builtin")) return Tool.toJSON(value as Tool);
-  throw new TypeError("toJSON: unrecognized canonical value; use <Type>.toJSON(x) explicitly");
+  const name = canonicalKind(value);
+  if (name !== undefined) return serdeForKind(name).toJSON(value);
+  throw new TypeError("toJSON: the kind of this value is unknown; pass a kind or use <Type>.toJSON(x) explicitly");
 }

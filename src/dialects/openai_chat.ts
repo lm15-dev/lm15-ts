@@ -479,6 +479,7 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+    request = Request.create(request);
     return this.emit({
       method: "POST",
       url: `${this.base()}/chat/completions`,
