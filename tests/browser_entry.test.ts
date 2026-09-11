@@ -187,3 +187,18 @@ test("lm15/browser: every missing host service refuses by name, none is skipped"
     setDefaultPlatform(before);
   }
 });
+
+test("FetchTransport calls fetch with an undefined receiver: a browser's fetch is a Window method and rejects any other `this`", async () => {
+  const { FetchTransport } = await import("../src/transport.ts");
+  const receivers: unknown[] = [];
+  const windowLike = function (this: unknown, _input: unknown, _init?: unknown): Promise<globalThis.Response> {
+    receivers.push(this);
+    if (this !== undefined && this !== globalThis) return Promise.reject(new TypeError("Failed to execute 'fetch' on 'Window': Illegal invocation"));
+    return Promise.resolve(new globalThis.Response("{}", { status: 200, headers: { "content-type": "application/json" } }));
+  } as unknown as typeof fetch;
+  const transport = new FetchTransport({ fetch: windowLike });
+  const res = await transport.send({ method: "POST", url: "http://localhost/x", headers: [["content-type", "application/json"]], body: new TextEncoder().encode("{}") });
+  assert.equal(res.status, 200);
+  assert.equal(receivers.length, 1);
+  assert.ok(receivers[0] === undefined || receivers[0] === globalThis, "fetch must not be invoked as a method of the transport");
+});

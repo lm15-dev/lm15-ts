@@ -43,7 +43,7 @@ async function run(): Promise<void> {
     const response = await lm.complete(request);
     check("complete", response.text === "Hello, page." && response.finishReason === "stop" && response.usage?.totalTokens === 7, `text=${JSON.stringify(response.text)} finish=${response.finishReason}`);
   } catch (e) {
-    check("complete", false, String(e));
+    check("complete", false, `${String(e)} cause=${String((e as { cause?: unknown }).cause)}`);
   }
 
   // stream: chunks arrive as they are flushed; the end event carries finish + usage.

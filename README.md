@@ -3,7 +3,9 @@
 The TypeScript port of lm15: one canonical request/response model over every
 provider the [lm15-contract](https://github.com/lm15-dev/lm15-contract) names,
 byte-exact against its corpus. Async only, `fetch` + `WebSocket` (Node 22+),
-zero npm runtime dependencies. Stored-credential refresh/writes require Linux
+zero npm runtime dependencies. The same package has a web entry point,
+`lm15/browser` — the whole wire, none of the host — for pages, workers,
+PWAs and Electron renderers ([docs/browser.md](docs/browser.md)). Stored-credential refresh/writes require Linux
 and util-linux `flock`; explicit credentials work without it. One npm package serves TypeScript and plain
 JavaScript (ESM and CommonJS, with `.d.ts`).
 
@@ -74,8 +76,12 @@ npm install                    # dev tooling only: typescript, @types/node
 npm run build                  # regenerates src/surface.ts, emits dist/ (ESM + CJS + d.ts)
 npm test                       # node:test; replays ../lm15-contract when present
 npm run differential           # both probes against ../lm15-python
+npm run test:browser           # the web entry in Chromium and Firefox, headless (needs the browsers)
 cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all
 ```
+
+`npm test` also evaluates the web entry inside a realm with only web globals
+and replays the corpus through it (`tests/web_realm.test.ts`).
 
 ## Quick start
 
@@ -133,6 +139,29 @@ console.log(describeReport(explainAuth("groq")));
 ```
 
 Plain JavaScript users import the same package; the types are optional.
+
+## In a browser
+
+```ts
+import { OpenAIChatLM, Message, ResponseStream } from "lm15/browser";
+
+const lm = new OpenAIChatLM({ apiKey: userKey, baseUrl: "http://localhost:1234/v1", compat: "lmstudio" });
+const request = { model: "your-model-id", messages: [Message.user("hi")] };
+const rs = new ResponseStream(lm.stream(request, { signal }), request);
+for await (const text of rs) render(text);
+```
+
+The web entry is the Node entry minus the host services: no `process.env`,
+no files, no CLI login stores, no cloud credential chains, no SigV4. Each of
+those refuses by name (`NotConfiguredError` / `UnsupportedFeatureError`
+naming the web platform and the fix) rather than being skipped. A
+credential is explicit — the user's own, from an OAuth/PKCE exchange, or a
+short-lived token from your backend; a file is bytes you supply. A bundler
+resolving the `browser` condition gets this entry from `import "lm15"`.
+The line, what a page cannot promise (CORS; a key in a page is not a
+secret), and the evidence behind the claim — the corpus replayed in a
+web-only realm, Chromium and Firefox headless — are in
+[docs/browser.md](docs/browser.md).
 
 ## Stated deviations
 
@@ -193,7 +222,9 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 | `src/json.ts` | JSON with number fidelity: `RawNumber`, `parseJson`, `stringifyJson`, `float` |
 | `src/types/` | every canonical type: interface, validating constructor, `fromJSON`/`toJSON` |
 | `src/vocab.ts`, `src/errors.ts` | the closed vocabularies; the error hierarchy |
-| `src/auth/` | access policies (AUTH-10), stored credentials and the lock (AUTH-3/4/8/9), the doctor (AUTH-7) |
+| `src/platform.ts`, `src/platform_node.ts` | the host boundary: the `Platform` interface and the web default; Node's services, installed by the `lm15` entry |
+| `src/browser.ts`, `src/bytes.ts` | the web entry point (`lm15/browser`); base64/UTF-8 without `Buffer` |
+| `src/auth/` | access policies (AUTH-10), stored credentials and the lock (AUTH-3/4/8/9), the doctor (AUTH-7), JWT claims (`jwt.ts`) |
 | `src/cloud/` | the three cloud chains (AUTH-1/11), SigV4, RS256, host rewrites |
 | `src/compat.ts`, `src/registry.ts` | compat presets and the provider table, copied as data |
 | `src/adapter.ts`, `src/dialects/` | the shared adapter base; OpenAI Responses, OpenAI Chat, Anthropic, Gemini, xAI |
@@ -202,5 +233,5 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 | `src/testing.ts` | `lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
 | `src/canonical.ts` | Out-of-band type identity for generic serialization |
 | `src/vet.ts`, `src/vet_*.ts` | the vet shim (`node dist/vet.js`) |
-| `tools/` | surface generator, differential probes, live smoke |
+| `tools/` | surface generator, differential probes, live smoke, the browser smoke (`browser_smoke.ts`) |
 | `receipts/` | live evidence, secrets redacted (`tools/check_secrecy.py` passes) |

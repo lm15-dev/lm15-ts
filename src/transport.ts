@@ -62,7 +62,10 @@ export class FetchTransport implements Transport {
     const headTimer = setTimeout(() => controller.abort(new TransportError("response headers timed out")), this.headersTimeoutMs);
     let res: globalThis.Response;
     try {
-      const pending = this.fetchImpl(request.url, {
+      // `(0, f)(...)` calls with an undefined receiver: a browser's fetch is a
+      // Window method and throws "Illegal invocation" when called on anything
+      // else (this transport, for one); WebIDL maps undefined to the global.
+      const pending = (0, this.fetchImpl)(request.url, {
         method: request.method,
         headers,
         body: request.body.length > 0 ? (request.body as unknown as BodyInit) : null,
