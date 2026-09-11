@@ -13,7 +13,7 @@ browser lm15 application takes. It is a test, kept small; not a product.
 
 ```bash
 npm run build      # dist/browser.js and this example's build/
-npm run example    # serves the repository on the loopback; open the printed URL
+npm run example:openrouter  # serves this OAuth example; open the printed URL
 ```
 
 Click **Sign in with OpenRouter**. You are sent to openrouter.ai, which makes

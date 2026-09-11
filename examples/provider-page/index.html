@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-vzDM+wPtdfGgwcSDia6gRane5rggh7T4wuIn42/jZc4='; style-src 'self'; connect-src https: http://localhost:* http://127.0.0.1:* http://[::1]:*; base-uri 'none'; form-action 'self'">
+<title>LM15 — your provider, your key</title>
+<link rel="stylesheet" href="./app.css">
+<script type="importmap">{"imports":{"lm15/browser":"../../dist/browser.js"}}</script>
+<script type="module" src="./build/main.js"></script>
+</head>
+<body>
+<h1>LM15 — your provider, your key</h1>
+<p>This page connects directly to the provider you choose. No gateway account required.</p>
+<p class="note">Hosted requests may cost money. Browser access varies by provider. Keys stay in this tab's memory; refreshing clears them. Nothing is sent until you click List models or Send.</p>
+<label>Provider <select id="provider" aria-label="Provider"></select></label>
+<p id="status" role="status">Loading…</p>
+<details><summary>Providers with a key loaded</summary><p id="loaded">None</p></details>
+<form id="credentials">
+<label>Your API key <input id="key" type="password" autocomplete="off" spellcheck="false" aria-label="Your API key"></label>
+<button type="submit">Use key for this provider</button>
+<button type="button" id="forget">Forget all keys</button>
+</form>
+<label>Custom API root <input id="endpoint" type="url" aria-label="Custom API root" disabled></label>
+<p class="note">Custom servers use standard Chat Completions behavior. Leave the key empty only if your local server does not require authentication. Changing its address clears its key.</p>
+<label>Model ID <input id="model" list="models" autocomplete="off" spellcheck="false" aria-label="Model ID"></label>
+<datalist id="models"></datalist>
+<button id="list" type="button">List models</button>
+<p class="note">Suggested model IDs are examples, not availability guarantees. Changing the provider or model starts a new conversation.</p>
+<p id="alert" role="alert" hidden></p>
+<div id="transcript" aria-label="Conversation"></div>
+<form id="composer">
+<label for="prompt">Message</label>
+<textarea id="prompt" rows="3" required></textarea>
+<button id="send" type="submit">Send</button>
+<button id="stop" type="button" disabled>Stop</button>
+<button id="clear" type="button">New conversation</button>
+</form>
+<p id="usage" role="status"></p>
+</body>
+</html>

@@ -122,11 +122,17 @@ interface Platform {
 }
 ```
 
-## The example
+## The examples
+
+`examples/provider-page/` is the default: choose a provider and supply your
+own API key, with no gateway account required. `npm run example` opens it;
+`npm run example:local` explicitly enables a private, one-use localhost
+handoff of provider keys from `../.env` for testing. The public static page
+never contains those keys. See its README for the security boundaries.
 
 `examples/openrouter-page/` is a static page — no backend — that signs in
 to OpenRouter with PKCE (lm15's `generatePkce`), lists models, streams
-replies and cancels them, through this entry point. `npm run example`
+replies and cancels them, through this entry point. `npm run example:openrouter`
 serves it; `npm run test:example` drives its modules through a real
 redirect against a fake OpenRouter in Chromium and Firefox, and with
 `--live` and `OPENROUTER_API_KEY`, against the real one — the receipt of

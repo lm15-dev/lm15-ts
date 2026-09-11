@@ -1,0 +1,16 @@
+:root { color-scheme: light dark; font: 16px/1.6 system-ui, sans-serif; }
+body { max-width: 54rem; margin: 2rem auto; padding: 0 1rem 3rem; }
+h1 { font-size: 1.6rem; }
+label { display: block; margin: 0.75rem 0; }
+input, select, textarea, button { font: inherit; padding: 0.5rem; border: 1px solid #8888; border-radius: 5px; }
+input, select { width: min(100%, 28rem); display: block; }
+textarea { display: block; box-sizing: border-box; width: 100%; resize: vertical; margin-bottom: 0.7rem; }
+button { cursor: pointer; margin: 0.25rem 0.35rem 0.25rem 0; }
+button:disabled { cursor: default; opacity: 0.5; }
+:focus-visible { outline: 2px solid #4679db; outline-offset: 2px; }
+.note, #status { opacity: 0.8; font-size: 0.9rem; }
+#alert { white-space: pre-wrap; border-inline-start: 3px solid #d58521; padding: 0.75rem; background: #d5852115; }
+article { border-top: 1px solid #8885; padding: 0.75rem 0; }
+article p { white-space: pre-wrap; overflow-wrap: anywhere; }
+article[data-incomplete] { opacity: 0.65; }
+#transcript { margin-top: 1.5rem; }

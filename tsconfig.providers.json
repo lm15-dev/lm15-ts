@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.examples.json",
+  "compilerOptions": {
+    "rootDir": "examples/provider-page",
+    "outDir": "examples/provider-page/build"
+  },
+  "include": ["examples/provider-page/*.ts"]
+}
