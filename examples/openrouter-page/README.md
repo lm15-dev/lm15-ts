@@ -30,7 +30,15 @@ callback; a public URL gets app attribution on OpenRouter's side.
 
 ## What it proves
 
-Run `npm run test:example`. A loopback server plays OpenRouter under
+Run `npm run test:example`. It first builds the package and page, then runs
+`tools/example_ui.test.ts` using Playwright with the installed Chromium.
+These tests open the actual page, check that sign-in controls are visible,
+click the login button, simulate provider authorization, return to chat,
+forget the key, and exercise failed-login recovery. All provider traffic in
+these UI tests is intercepted; they need no account or real key. Playwright
+is a development-only dependency, not part of the SDK or the static page.
+
+Next, a loopback server plays OpenRouter under
 `/fake/` — the authorization page (a real HTTP redirect back with a code
 bound to the PKCE challenge), the code exchange (which verifies the
 verifier against that challenge as RFC 7636 says, and refuses a second
@@ -62,9 +70,10 @@ cannot run headless: it needs a person at OpenRouter's page.
   page never embeds a key of ours. *Remember on this device* puts the
   user's key in `localStorage`, readable by any script on this origin —
   their trade, made by them, undone by *Forget*.
-- **The login UX under automation.** The smoke test drives the modules
-  through the real redirect; the buttons and boxes in `main.ts` are glue,
-  loaded once for the boot check and otherwise exercised by hand.
+- **OpenRouter's own consent screen.** The UI tests exercise this page's
+  actual controls and callback, but simulate OpenRouter's authorization
+  screen and responses. A person still needs to verify the real consent
+  flow; automated checks must not be presented as that evidence.
 
 ## What building it surfaced
 
@@ -104,6 +113,12 @@ The findings that fed back into the SDK, in the order they appeared:
    label and remaining credit) before keeping it, and the wrong-key check
    is a completion. The general lesson for the docs site: a fixture
    written from an assumption is a fixture that agrees with you.
+8. **A booted page can still be unusable.** The first boot check saw
+   "Signed out" and passed, while both the sign-in and chat sections stayed
+   hidden. A user could see only the informational OpenRouter homepage
+   link. Signed-out states now restore the actual controls, and UI tests
+   exercise their visibility and clicks. Testing the modules and a status
+   string did not substitute for testing the user's path.
 
 ## Layout
 

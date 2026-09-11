@@ -54,7 +54,9 @@
     "test:browser": "node --experimental-strip-types tools/browser_smoke.ts",
     "build:examples": "tsc -p tsconfig.examples.json",
     "example": "node --experimental-strip-types tools/serve.ts examples/openrouter-page/",
-    "test:example": "node --experimental-strip-types tools/example_smoke.ts"
+    "pretest:example": "npm run build && npm run test:example:ui",
+    "test:example": "node --experimental-strip-types tools/example_smoke.ts",
+    "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts"
   },
   "keywords": [
     "ai",
@@ -79,6 +81,7 @@
   },
   "devDependencies": {
     "@types/node": "^22",
+    "playwright-core": "^1.63.0",
     "typescript": "^5.9"
   }
 }

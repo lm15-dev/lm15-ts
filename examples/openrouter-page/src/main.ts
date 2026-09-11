@@ -56,6 +56,12 @@ function setStatus(text: string): void {
   ui.status.textContent = text;
 }
 
+function showSignedOut(): void {
+  ui.signedIn.hidden = true;
+  ui.signedOut.hidden = false;
+  setStatus("Signed out");
+}
+
 async function signIn(key: string, remember: boolean): Promise<void> {
   // Verify first: OpenRouter lists models to anyone, so only its key endpoint says whether this is a key.
   setStatus("Checking the key…");
@@ -76,12 +82,10 @@ function signOut(): void {
   inFlight?.abort();
   keys.forget();
   chat = undefined;
-  ui.signedIn.hidden = true;
-  ui.signedOut.hidden = false;
   ui.transcript.replaceChildren();
   ui.models.replaceChildren();
   ui.meta.textContent = "";
-  setStatus("Signed out");
+  showSignedOut();
 }
 
 async function loadModels(): Promise<void> {
@@ -186,7 +190,7 @@ ui.pasteForm.addEventListener("submit", async (event) => {
   try {
     await signIn(key, ui.remember.checked);
   } catch (e) {
-    setStatus("Signed out");
+    showSignedOut();
     say(e instanceof LoginError ? e.message : describeError(e));
   }
 });
@@ -223,21 +227,21 @@ ui.stop.addEventListener("click", () => inFlight?.abort());
       setStatus("Finishing sign-in…");
       await signIn(await completeLogin(code), remember);
     } catch (e) {
-      setStatus("Signed out");
+      showSignedOut();
       say(e instanceof LoginError ? e.message : describeError(e));
     }
     return;
   }
   const remembered = keys.load();
   if (!remembered) {
-    setStatus("Signed out");
+    showSignedOut();
     return;
   }
   try {
     await signIn(remembered, true);
   } catch (e) {
     keys.forget(); // a remembered key OpenRouter no longer recognises is not worth keeping
-    setStatus("Signed out");
+    showSignedOut();
     say(e instanceof LoginError ? `The remembered key was dropped: ${e.message}` : describeError(e));
   }
 })();
