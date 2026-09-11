@@ -11,7 +11,7 @@
 
 import { Chat, describeError, isCancellation } from "../examples/openrouter-page/src/chat.ts";
 import { KeyStore } from "../examples/openrouter-page/src/keys.ts";
-import { LoginError, beginLogin, completeLogin, keyHash, pendingCode, type LoginEndpoints } from "../examples/openrouter-page/src/login.ts";
+import { LoginError, beginLogin, completeLogin, keyHash, keyInfo, pendingCode, type LoginEndpoints } from "../examples/openrouter-page/src/login.ts";
 
 interface Check {
   readonly ok: boolean;
@@ -24,7 +24,7 @@ const check = (name: string, ok: boolean, detail: string) => {
   checks[name] = { ok, detail };
 };
 
-const FAKE: LoginEndpoints = { authorize: `${location.origin}/fake/auth`, exchange: `${location.origin}/fake/api/v1/auth/keys`, manage: `${location.origin}/fake/keys` };
+const FAKE: LoginEndpoints = { authorize: `${location.origin}/fake/auth`, exchange: `${location.origin}/fake/api/v1/auth/keys`, manage: `${location.origin}/fake/keys`, keyInfo: `${location.origin}/fake/api/v1/auth/key` };
 const FAKE_BASE = `${location.origin}/fake/api/v1`;
 const here = location.origin + location.pathname;
 
@@ -58,7 +58,21 @@ async function phaseA(): Promise<void> {
   location.assign(url);
 }
 
-async function chatChecks(prefix: string, chat: Chat, model: string, opts: { expectText?: string; cancelPrompt: string; wrongKeyBase: string }): Promise<void> {
+async function chatChecks(prefix: string, chat: Chat, model: string, opts: { expectText?: string; cancelPrompt: string; wrongKeyBase: string; key: string; endpoints: LoginEndpoints }): Promise<void> {
+  // The key, verified: label and credit for a real one; 401 → LoginError for a wrong one. (/models is public and proves nothing.)
+  try {
+    const info = await keyInfo(opts.key, opts.endpoints);
+    check(`${prefix}key-info`, info.label.length > 0 && info.usage >= 0, `label=${info.label} usage=${info.usage} limit=${info.limit} remaining=${info.limitRemaining}`);
+  } catch (e) {
+    check(`${prefix}key-info`, false, String(e));
+  }
+  try {
+    await keyInfo("sk-or-wrong", opts.endpoints);
+    check(`${prefix}key-info-wrong`, false, "accepted a wrong key");
+  } catch (e) {
+    check(`${prefix}key-info-wrong`, e instanceof LoginError && /401/.test(e.message), String(e));
+  }
+
   try {
     const models = await chat.models();
     check(`${prefix}models`, models.length > 0 && models.some((m) => m.id === model) && models.every((m) => m.provider === "openrouter"), `${models.length} models, has ${model}: ${models.some((m) => m.id === model)}`);
@@ -117,10 +131,11 @@ async function chatChecks(prefix: string, chat: Chat, model: string, opts: { exp
     check(`${prefix}cancel`, false, describeError(e));
   }
 
-  // A wrong key: a typed AuthError with the status, described for a person, the key nowhere in it.
+  // A wrong key on a completion: a typed AuthError with the status, described for a person, the key nowhere in it.
   try {
     const wrong = new Chat({ key: "sk-or-wrong", baseUrl: opts.wrongKeyBase, referer: location.origin, title: "smoke" });
-    await wrong.models();
+    const rs = wrong.send(wrong.request(model, "hi", 1), new AbortController().signal);
+    for await (const _ of rs) void _;
     check(`${prefix}auth-error`, false, "no error");
   } catch (e) {
     const text = describeError(e);
@@ -148,18 +163,19 @@ async function phaseB(code: string): Promise<void> {
   check("key-hash", (await keyHash("abc")) === "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256('abc')");
 
   const chat = new Chat({ key, baseUrl: FAKE_BASE, referer: location.origin, title: "smoke" });
-  await chatChecks("fake-", chat, "openai/gpt-4.1-mini", { expectText: "Reply with exactly: hello from a page", cancelPrompt: "cancel me", wrongKeyBase: FAKE_BASE });
+  await chatChecks("fake-", chat, "openai/gpt-4.1-mini", { expectText: "Reply with exactly: hello from a page", cancelPrompt: "cancel me", wrongKeyBase: FAKE_BASE, key, endpoints: FAKE });
 }
 
 async function phaseLive(): Promise<void> {
   const res = await fetch("/_smoke/key");
   if (res.status !== 200) {
-    for (const name of ["models", "preview", "stream", "history", "cancel", "auth-error"]) check(`live-${name}`, false, "skipped: no OPENROUTER_API_KEY");
+    for (const name of ["key-info", "key-info-wrong", "models", "preview", "stream", "history", "cancel", "auth-error"]) check(`live-${name}`, false, "skipped: no OPENROUTER_API_KEY");
     return;
   }
   const { key, model } = (await res.json()) as { key: string; model: string };
   const chat = new Chat({ key, referer: location.origin, title: "smoke" });
-  await chatChecks("live-", chat, model, { cancelPrompt: "Count slowly from one to two hundred, one number per line.", wrongKeyBase: "https://openrouter.ai/api/v1" });
+  const { OPENROUTER } = await import("../examples/openrouter-page/src/login.ts");
+  await chatChecks("live-", chat, model, { cancelPrompt: "Count slowly from one to two hundred, one number per line.", wrongKeyBase: "https://openrouter.ai/api/v1", key, endpoints: OPENROUTER });
 }
 
 (async () => {

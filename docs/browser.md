@@ -129,8 +129,10 @@ to OpenRouter with PKCE (lm15's `generatePkce`), lists models, streams
 replies and cancels them, through this entry point. `npm run example`
 serves it; `npm run test:example` drives its modules through a real
 redirect against a fake OpenRouter in Chromium and Firefox, and with
-`--live` and `OPENROUTER_API_KEY`, against the real one. Its README lists
-what building it surfaced.
+`--live` and `OPENROUTER_API_KEY`, against the real one — the receipt of
+2026-09-11 (`receipts/2026-09-11-browser-openrouter-live/`) has 24 of 24
+checks passing in both browsers, live. Its README lists what building it
+surfaced.
 
 ## Evidence
 

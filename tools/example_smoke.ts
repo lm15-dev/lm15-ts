@@ -91,6 +91,13 @@ async function fakeOpenRouter(req: IncomingMessage, res: ServerResponse, state: 
     return true;
   }
 
+  // Public, as the real one is (observed 2026-09-11): a wrong key lists models fine.
+  if (path === "/api/v1/models" && req.method === "GET") {
+    const data = ["openai/gpt-4.1-mini", "anthropic/claude-haiku-4-5", "meta-llama/llama-3.3-70b-instruct:free"].map((id) => ({ id, name: id, context_length: 128000, pricing: { prompt: "0.0000004", completion: "0.0000016" } }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ data }));
+    return true;
+  }
+
   const auth = req.headers.authorization ?? "";
   const key = auth.startsWith("Bearer ") ? auth.slice(7) : "";
   if (!state.keys.has(key)) {
@@ -99,9 +106,8 @@ async function fakeOpenRouter(req: IncomingMessage, res: ServerResponse, state: 
   }
   state.attribution = { referer: req.headers["http-referer"] as string | undefined, title: req.headers["x-title"] as string | undefined };
 
-  if (path === "/api/v1/models" && req.method === "GET") {
-    const data = ["openai/gpt-4.1-mini", "anthropic/claude-haiku-4-5", "meta-llama/llama-3.3-70b-instruct:free"].map((id) => ({ id, name: id, context_length: 128000, pricing: { prompt: "0.0000004", completion: "0.0000016" } }));
-    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ data }));
+  if (path === "/api/v1/auth/key" && req.method === "GET") {
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ data: { label: "sk-or-fake-…", usage: 0.25, limit: 10, limit_remaining: 9.75, is_free_tier: false } }));
     return true;
   }
 

@@ -1,0 +1,214 @@
+{
+  "model": "openai/gpt-4.1-mini",
+  "keySha256Prefix": "7a1f3ac775b5",
+  "runs": [
+    {
+      "browser": "chromium",
+      "report": {
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/152.0.0.0 Safari/537.36",
+        "checks": {
+          "key-store": {
+            "ok": true,
+            "detail": "tab-only=true remembered=true forgotten=true"
+          },
+          "login-no-verifier": {
+            "ok": true,
+            "detail": "LoginError: This tab has no login in progress (the verifier is gone: a different tab, or the tab was closed). Start the sign-in again."
+          },
+          "login-url": {
+            "ok": true,
+            "detail": "?callback_url=http%3A%2F%2F127.0.0.1%3A36191%2Fexample-test&code_challenge=y4NhMwLxgscbW6zHt9Ib0gO2acxl_IP5wRyPwW21tf0&code_challenge_method=S256"
+          },
+          "login-exchange": {
+            "ok": true,
+            "detail": "key prefix ok, verifier cleared"
+          },
+          "login-single-use": {
+            "ok": true,
+            "detail": "LoginError: This tab has no login in progress (the verifier is gone: a different tab, or the tab was closed). Start the sign-in again."
+          },
+          "key-hash": {
+            "ok": true,
+            "detail": "sha256('abc')"
+          },
+          "fake-key-info": {
+            "ok": true,
+            "detail": "label=sk-or-fake-… usage=0.25 limit=10 remaining=9.75"
+          },
+          "fake-key-info-wrong": {
+            "ok": true,
+            "detail": "LoginError: OpenRouter does not recognise this key (401). Check it, or sign in to make a new one."
+          },
+          "fake-models": {
+            "ok": true,
+            "detail": "3 models, has openai/gpt-4.1-mini: true"
+          },
+          "fake-preview": {
+            "ok": true,
+            "detail": "auth=Bearer [redacted] referer=http://127.0.0.1:36191 title=smoke stream=true usage=true"
+          },
+          "fake-stream": {
+            "ok": true,
+            "detail": "pieces=7 text=\"Reply with exactly: hello from a page\" finish=stop tokens=12"
+          },
+          "fake-history": {
+            "ok": true,
+            "detail": "transcript=2 wire=3"
+          },
+          "fake-cancel": {
+            "ok": true,
+            "detail": "seen=1 cancellation=true transcript=2"
+          },
+          "fake-auth-error": {
+            "ok": true,
+            "detail": "AuthError: No auth credentials found (401) …"
+          },
+          "live-key-info": {
+            "ok": true,
+            "detail": "label=sk-or-v1-354...b11 usage=0.013546466 limit=20 remaining=19.986453534"
+          },
+          "live-key-info-wrong": {
+            "ok": true,
+            "detail": "LoginError: OpenRouter does not recognise this key (401). Check it, or sign in to make a new one."
+          },
+          "live-models": {
+            "ok": true,
+            "detail": "443 models, has openai/gpt-4.1-mini: true"
+          },
+          "live-preview": {
+            "ok": true,
+            "detail": "auth=Bearer [redacted] referer=http://127.0.0.1:36191 title=smoke stream=true usage=true"
+          },
+          "live-stream": {
+            "ok": true,
+            "detail": "pieces=4 text=\"hello from a page\" finish=stop tokens=20"
+          },
+          "live-history": {
+            "ok": true,
+            "detail": "transcript=2 wire=3"
+          },
+          "live-cancel": {
+            "ok": true,
+            "detail": "seen=7 cancellation=true transcript=2"
+          },
+          "live-auth-error": {
+            "ok": true,
+            "detail": "AuthError: Missing Authentication header (401) …"
+          },
+          "fake-attribution": {
+            "ok": true,
+            "detail": "HTTP-Referer=http://127.0.0.1:36191 X-Title=smoke"
+          },
+          "fake-server-saw-cancel": {
+            "ok": true,
+            "detail": "the stream socket closed before the second chunk"
+          }
+        }
+      }
+    },
+    {
+      "browser": "firefox",
+      "report": {
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:155.0) Gecko/20100101 Firefox/155.0",
+        "checks": {
+          "key-store": {
+            "ok": true,
+            "detail": "tab-only=true remembered=true forgotten=true"
+          },
+          "login-no-verifier": {
+            "ok": true,
+            "detail": "LoginError: This tab has no login in progress (the verifier is gone: a different tab, or the tab was closed). Start the sign-in again."
+          },
+          "login-url": {
+            "ok": true,
+            "detail": "?callback_url=http%3A%2F%2F127.0.0.1%3A37671%2Fexample-test&code_challenge=-_o6clsSMbvYIUuRPxHfn3H7sqysfD3TwGU68u6UPdQ&code_challenge_method=S256"
+          },
+          "login-exchange": {
+            "ok": true,
+            "detail": "key prefix ok, verifier cleared"
+          },
+          "login-single-use": {
+            "ok": true,
+            "detail": "LoginError: This tab has no login in progress (the verifier is gone: a different tab, or the tab was closed). Start the sign-in again."
+          },
+          "key-hash": {
+            "ok": true,
+            "detail": "sha256('abc')"
+          },
+          "fake-key-info": {
+            "ok": true,
+            "detail": "label=sk-or-fake-… usage=0.25 limit=10 remaining=9.75"
+          },
+          "fake-key-info-wrong": {
+            "ok": true,
+            "detail": "LoginError: OpenRouter does not recognise this key (401). Check it, or sign in to make a new one."
+          },
+          "fake-models": {
+            "ok": true,
+            "detail": "3 models, has openai/gpt-4.1-mini: true"
+          },
+          "fake-preview": {
+            "ok": true,
+            "detail": "auth=Bearer [redacted] referer=http://127.0.0.1:37671 title=smoke stream=true usage=true"
+          },
+          "fake-stream": {
+            "ok": true,
+            "detail": "pieces=7 text=\"Reply with exactly: hello from a page\" finish=stop tokens=12"
+          },
+          "fake-history": {
+            "ok": true,
+            "detail": "transcript=2 wire=3"
+          },
+          "fake-cancel": {
+            "ok": true,
+            "detail": "seen=1 cancellation=true transcript=2"
+          },
+          "fake-auth-error": {
+            "ok": true,
+            "detail": "AuthError: No auth credentials found (401) …"
+          },
+          "live-key-info": {
+            "ok": true,
+            "detail": "label=sk-or-v1-354...b11 usage=0.013546466 limit=20 remaining=19.986453534"
+          },
+          "live-key-info-wrong": {
+            "ok": true,
+            "detail": "LoginError: OpenRouter does not recognise this key (401). Check it, or sign in to make a new one."
+          },
+          "live-models": {
+            "ok": true,
+            "detail": "443 models, has openai/gpt-4.1-mini: true"
+          },
+          "live-preview": {
+            "ok": true,
+            "detail": "auth=Bearer [redacted] referer=http://127.0.0.1:37671 title=smoke stream=true usage=true"
+          },
+          "live-stream": {
+            "ok": true,
+            "detail": "pieces=4 text=\"hello from a page\" finish=stop tokens=20"
+          },
+          "live-history": {
+            "ok": true,
+            "detail": "transcript=2 wire=3"
+          },
+          "live-cancel": {
+            "ok": true,
+            "detail": "seen=2 cancellation=true transcript=2"
+          },
+          "live-auth-error": {
+            "ok": true,
+            "detail": "AuthError: Missing Authentication header (401) …"
+          },
+          "fake-attribution": {
+            "ok": true,
+            "detail": "HTTP-Referer=http://127.0.0.1:37671 X-Title=smoke"
+          },
+          "fake-server-saw-cancel": {
+            "ok": true,
+            "detail": "the stream socket closed before the second chunk"
+          }
+        }
+      }
+    }
+  ]
+}

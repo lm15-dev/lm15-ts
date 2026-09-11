@@ -23,12 +23,15 @@ export interface LoginEndpoints {
   readonly exchange: string;
   /** Where a key's settings and usage live, keyed by the SHA-256 of the key. */
   readonly manage: string;
+  /** The authenticated "this key": label, usage, limit. The one call that proves a key is a key. */
+  readonly keyInfo: string;
 }
 
 export const OPENROUTER: LoginEndpoints = Object.freeze({
   authorize: "https://openrouter.ai/auth",
   exchange: "https://openrouter.ai/api/v1/auth/keys",
   manage: "https://openrouter.ai/keys",
+  keyInfo: "https://openrouter.ai/api/v1/auth/key",
 });
 
 const VERIFIER = "lm15-example.pkce-verifier";
@@ -93,4 +96,40 @@ export async function keyHash(key: string): Promise<string> {
 /** The user's key page on OpenRouter, for the signed-in key. */
 export async function manageUrl(key: string, endpoints: LoginEndpoints = OPENROUTER): Promise<string> {
   return `${endpoints.manage}/${await keyHash(key)}`;
+}
+
+export interface KeyInfo {
+  /** OpenRouter's display label for the key (a redacted spelling of it). */
+  readonly label: string;
+  /** Credit spent through this key, USD. */
+  readonly usage: number;
+  /** The key's credit limit, USD, or null when unlimited. */
+  readonly limit: number | null;
+  readonly limitRemaining: number | null;
+  readonly isFreeTier: boolean;
+}
+
+/**
+ * Verify a key and describe it. OpenRouter's `/models` is public — a wrong
+ * key lists models fine — so a page that wants to know it holds a working
+ * key asks this endpoint, which answers 401 to anything else.
+ */
+export async function keyInfo(key: string, endpoints: LoginEndpoints = OPENROUTER): Promise<KeyInfo> {
+  let res: Response;
+  try {
+    res = await fetch(endpoints.keyInfo, { headers: { Authorization: `Bearer ${key}` } });
+  } catch (e) {
+    throw new LoginError(`OpenRouter could not be reached to check the key (${String(e)}).`);
+  }
+  if (res.status === 401) throw new LoginError("OpenRouter does not recognise this key (401). Check it, or sign in to make a new one.");
+  if (!res.ok) throw new LoginError(`Checking the key failed (HTTP ${res.status}).`);
+  const data = ((await res.json().catch(() => ({}))) as { data?: Record<string, unknown> }).data ?? {};
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    label: typeof data["label"] === "string" ? data["label"] : "(unlabelled key)",
+    usage: num(data["usage"]) ?? 0,
+    limit: num(data["limit"]),
+    limitRemaining: num(data["limit_remaining"]),
+    isFreeTier: data["is_free_tier"] === true,
+  };
 }

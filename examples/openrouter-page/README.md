@@ -40,14 +40,16 @@ and drives this app's modules through it in Chromium and Firefox, headless,
 through the real redirect. Then it loads the built `index.html` in Chromium
 and reads the DOM back: the boot ran under the page's CSP.
 
-Fourteen checks per browser, plus the page boot. As of 2026-09-11, all pass
-in Chromium 152 and Firefox 155.
+Sixteen checks per browser, plus the page boot. With
+`npm run test:example -- --live` and `OPENROUTER_API_KEY` set, eight more
+run against the real openrouter.ai from the page — the CORS preflights,
+the key verified (label, credit), 443 models listed, a streamed reply, a
+second turn carrying the first, a cancel, a wrong key on a completion —
+and a receipt goes under `receipts/` with the key redacted.
 
-With `npm run test:example -- --live` and `OPENROUTER_API_KEY` set, the same
-chat runs against the real openrouter.ai from the page — the CORS preflight,
-the model list, a streamed reply, a cancel, a wrong key — and a receipt goes
-under `receipts/` with the key redacted. The PKCE login itself cannot run
-headless: it needs a person at OpenRouter's page.
+As of 2026-09-11 all 24 pass in Chromium 152 and Firefox 155
+(`receipts/2026-09-11-browser-openrouter-live/`). The PKCE login itself
+cannot run headless: it needs a person at OpenRouter's page.
 
 ## What it does not prove, stated
 
@@ -87,12 +89,21 @@ The findings that fed back into the SDK, in the order they appeared:
    `HTTP-Referer` / `X-Title` ride on `access.withHeaders(access.OPENROUTER,
    {...})` — the right place (a header is part of *how you reach a
    provider*), and easy to miss; this README is where a reader learns it.
-6. **`listModels` from a page works** against OpenRouter's `/models`:
-   every model comes back as `provider: "openrouter"` with its id, which
-   is what a picker needs. OpenRouter's pricing and context length arrive
+6. **`listModels` from a page works** against OpenRouter's `/models`
+   (443 models, live): every model comes back as `provider: "openrouter"`
+   with its id, which is what a picker needs. OpenRouter's pricing and context length arrive
    too, but only as the raw entry under `origin.providerData`; nothing lifts
    them onto `inference` for this door yet, so a picker that wants to show
    a price reads the raw entry.
+7. **Listing models proves nothing about the key.** Found live, not by the
+   fake: OpenRouter's `/models` is public, so the first version of this
+   page "signed in" a wrong key happily and only failed at the first
+   message. The fake had required auth there — it mirrored an assumption,
+   not the provider. Now the fake is public too, the page verifies a key
+   against `/auth/key` (authenticated, CORS-open, answers with the key's
+   label and remaining credit) before keeping it, and the wrong-key check
+   is a completion. The general lesson for the docs site: a fixture
+   written from an assumption is a fixture that agrees with you.
 
 ## Layout
 

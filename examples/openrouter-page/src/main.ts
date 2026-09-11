@@ -6,7 +6,7 @@
 
 import { Chat, describeError, isCancellation } from "./chat.ts";
 import { KeyStore } from "./keys.ts";
-import { LoginError, beginLogin, completeLogin, manageUrl, pendingCode } from "./login.ts";
+import { LoginError, beginLogin, completeLogin, keyInfo, manageUrl, pendingCode } from "./login.ts";
 
 const TITLE = "lm15 browser example";
 const DEFAULT_MODEL = "openai/gpt-4.1-mini";
@@ -57,12 +57,16 @@ function setStatus(text: string): void {
 }
 
 async function signIn(key: string, remember: boolean): Promise<void> {
+  // Verify first: OpenRouter lists models to anyone, so only its key endpoint says whether this is a key.
+  setStatus("Checking the key…");
+  const info = await keyInfo(key); // throws LoginError; the key is not kept
   keys.set(key, remember);
   chat = new Chat({ key, referer: location.origin, title: TITLE });
   ui.signedOut.hidden = true;
   ui.signedIn.hidden = false;
   ui.manage.href = await manageUrl(key);
-  setStatus(remember ? "Signed in (remembered on this device)" : "Signed in (this tab)");
+  const credit = info.limitRemaining !== null ? `$${info.limitRemaining.toFixed(2)} left` : info.limit === null ? "no limit" : `$${(info.limit - info.usage).toFixed(2)} left`;
+  setStatus(`Signed in as ${info.label} · ${credit}${info.isFreeTier ? " · free tier" : ""}${remember ? " · remembered on this device" : " · this tab"}`);
   say("");
   await loadModels();
   ui.prompt.focus();
@@ -179,7 +183,12 @@ ui.pasteForm.addEventListener("submit", async (event) => {
   const key = ui.pasteKey.value.trim();
   ui.pasteKey.value = "";
   if (!key) return;
-  await signIn(key, ui.remember.checked);
+  try {
+    await signIn(key, ui.remember.checked);
+  } catch (e) {
+    setStatus("Signed out");
+    say(e instanceof LoginError ? e.message : describeError(e));
+  }
 });
 
 ui.forget.addEventListener("click", signOut);
@@ -220,6 +229,15 @@ ui.stop.addEventListener("click", () => inFlight?.abort());
     return;
   }
   const remembered = keys.load();
-  if (remembered) await signIn(remembered, true);
-  else setStatus("Signed out");
+  if (!remembered) {
+    setStatus("Signed out");
+    return;
+  }
+  try {
+    await signIn(remembered, true);
+  } catch (e) {
+    keys.forget(); // a remembered key OpenRouter no longer recognises is not worth keeping
+    setStatus("Signed out");
+    say(e instanceof LoginError ? `The remembered key was dropped: ${e.message}` : describeError(e));
+  }
 })();
