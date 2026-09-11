@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import assert from "node:assert/strict";
 import { Config, Request, Message, Delta, Usage, RawNumber, toJSON, stringifyJson, parseJson, Response, StreamEvent, ResponseStream, responseToEvents, materializeResponse, OpenAILM, AnthropicLM, GeminiLM, OpenAIChatLM, ValueError } from "../src/index.ts";
 import { FetchTransport } from "../src/transport.ts";
-import { TransportError } from "../src/errors.ts";
+import { StreamAssemblyError, TransportError } from "../src/errors.ts";
 import { FakeLM, FakeResponse, FakeTransport } from "../src/testing.ts";
 import type { TransportRequest } from "../src/wire.ts";
 
@@ -74,7 +74,8 @@ test("breaking on end still materializes and finalizes; explicit close never ret
   await abandoned.close();
   await abandoned.close();
   assert.equal(finalized, 2);
-  await assert.rejects(abandoned.response(), /closed/);
+  // Closed by the caller before its end event: inside the family, with what had arrived.
+  await assert.rejects(abandoned.response(), (e: unknown) => e instanceof StreamAssemblyError && /closed before its end event/.test(e.message) && e.partial?.text === "a");
 });
 
 test("ResponseStream refuses concurrent readers and remembers failure", async () => {

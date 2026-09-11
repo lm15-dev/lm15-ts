@@ -1,7 +1,8 @@
 /**
  * A dialect reaches a cloud door through a host (spec/auth.md AUTH-10).
  * Three pure functions: `resolveSettings`, `renderBaseUrl`, `finishRequest`
- * (rewrites before serialization), then `signRequest` (SigV4 after).
+ * (rewrites before serialization), then `signRequest` (SigV4 after, through
+ * the host platform's signer: `node:crypto` on Node, none on the web).
  */
 
 import { NotConfiguredError, UnsupportedFeatureError } from "../errors.ts";
@@ -10,7 +11,7 @@ import { ApiKey, AwsCredentials, type CredentialValue } from "../types/credentia
 import { ValueError } from "../types/validate.ts";
 import { selectScheme, type AccessPolicy, type HostSpec } from "../auth/policy.ts";
 import { percentEncode } from "../wire.ts";
-import { sign } from "./sigv4.ts";
+import { getDefaultPlatform, noSigV4 } from "../platform.ts";
 
 export type Clock = () => Date;
 
@@ -148,19 +149,21 @@ export function finishRequest(policy: AccessPolicy, settings: Readonly<Record<st
 }
 
 /** The headers to send: `sigv4` replaces them with the signed set; other schemes were applied already. */
-export function signRequest(
+export async function signRequest(
   policy: AccessPolicy,
   settings: Readonly<Record<string, string>>,
   opts: { method: string; url: string; headers: ReadonlyArray<readonly [string, string]>; body: Uint8Array; credential?: CredentialValue | undefined; now: Date },
-): ReadonlyArray<readonly [string, string]> {
+): Promise<ReadonlyArray<readonly [string, string]>> {
   if (!(opts.credential instanceof AwsCredentials)) return opts.headers;
   const hostSpec = policy.host;
   if (!hostSpec?.sigv4Service) throw new NotConfiguredError(`${policy.provider}: AWS credentials need a sigv4 host`, { provider: policy.provider });
   const region = settings["region"];
   if (!region) throw new NotConfiguredError(`${policy.provider}: sigv4 needs the region setting`, { provider: policy.provider });
+  const platform = getDefaultPlatform();
+  if (!platform.signSigV4) throw noSigV4(platform, policy);
   const headers: Record<string, string> = {};
   for (const [k, v] of opts.headers) if (!["authorization", "x-api-key"].includes(k.toLowerCase())) headers[k] = v;
-  const signature = sign({
+  const signed = await platform.signSigV4({
     method: opts.method,
     url: opts.url,
     headers,
@@ -170,5 +173,5 @@ export function signRequest(
     service: hostSpec.sigv4Service,
     now: opts.now,
   });
-  return Object.entries(signature.headers);
+  return Object.entries(signed);
 }

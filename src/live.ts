@@ -2,6 +2,7 @@
 import { abortable, checkAborted, positiveTimeout } from "./async.ts";
 import { TransportError, UnsupportedFeatureError } from "./errors.ts";
 import { stringifyJson, type JsonObject } from "./json.ts";
+import { getDefaultPlatform } from "./platform.ts";
 import { LiveConfig, LiveClientEvent as LiveClientEventNs, LiveServerEvent as LiveServerEventNs, type LiveClientEvent, type LiveServerEvent } from "./types/live.ts";
 import { normalizeParts, type PartInput, type PromptPart, type ToolResultContentPart } from "./types/parts.ts";
 import { encodeBase64 } from "./types/validate.ts";
@@ -10,6 +11,12 @@ import { OpenAILM } from "./dialects/openai_responses.ts";
 import type { ProviderLM } from "./adapter.ts";
 
 export interface LiveSessionOptions {
+  /**
+   * The constructor to open with. A header-capable one (Node's, the `ws`
+   * package's) may carry the OpenAI Realtime bearer header; a browser's
+   * cannot, and the session says so instead of letting the page's
+   * constructor reject an object where it expects subprotocols.
+   */
   readonly WebSocket?: typeof WebSocket;
   /** Cancel connection establishment and the lifetime of the session. */
   readonly signal?: AbortSignal;
@@ -67,7 +74,16 @@ export class LiveSession implements AsyncIterable<LiveServerEvent> {
         url = await abortable(lm.liveUrl(), controller.signal);
       } else throw new UnsupportedFeatureError(`${lm.provider}: live not supported`, { provider: lm.provider });
       checkAborted(controller.signal);
-      // The Node constructor's header extension is not available in browsers.
+      // `{ headers }` is the Node constructor's extension. A host whose WebSocket
+      // cannot carry headers (a page's) is refused by name, unless the caller
+      // supplied a constructor of their own and so vouches for it.
+      const platform = getDefaultPlatform();
+      if (Object.keys(headers).length > 0 && !platform.webSocketHeaders && opts.WebSocket === undefined) {
+        throw new UnsupportedFeatureError(
+          `${lm.provider}: live sessions need request headers on the websocket, which the ${platform.name} platform's WebSocket cannot send; use a short-lived client token where the provider offers one, or pass a header-capable WebSocket in LiveSessionOptions`,
+          { provider: lm.provider },
+        );
+      }
       const ws = new (WS as unknown as new (url: string, opts?: { headers?: Record<string, string> }) => WebSocket)(url, Object.keys(headers).length > 0 ? { headers } : undefined);
       ws.binaryType = "arraybuffer";
       session = new LiveSession(ws, encode, (raw) => lm.decodeLiveServerEvent(raw), closeTimeoutMs);

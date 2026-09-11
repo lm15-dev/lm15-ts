@@ -1,3 +1,8 @@
+// These tests import lm15 internals; the Node host is installed here as the `lm15` entry does on import.
+import { installNodePlatform } from "../src/platform_node.ts";
+
+installNodePlatform();
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { LMRouter, MissingCredentialError, resolveModel } from "../src/router.ts";

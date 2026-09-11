@@ -2,6 +2,11 @@
 // completion, a complete Response never withheld, HTTP error metadata from
 // headers. The Python suite pins the same cases
 // (tests/test_error_metadata_and_completion.py).
+// These tests import lm15 internals; the Node host is installed here as the `lm15` entry does on import.
+import { installNodePlatform } from "../src/platform_node.ts";
+
+installNodePlatform();
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {

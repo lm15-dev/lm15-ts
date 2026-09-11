@@ -11,10 +11,10 @@
 import { abortable, checkAborted } from "./async.ts";
 import type { LiveSession, LiveSessionOptions } from "./live.ts";
 import { authHeader, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
-import { loadCredential } from "./auth/stores.ts";
 import { finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
-import { AuthError, LM15Error, ProviderError, TransportError, UnsupportedFeatureError, mapHttpError, withCredentialHint } from "./errors.ts";
+import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError, UnsupportedFeatureError, mapHttpError, withCredentialHint } from "./errors.ts";
 import { isJsonObject, type JsonObject } from "./json.ts";
+import { getDefaultPlatform, noStoredCredentials, type LoadedCredential } from "./platform.ts";
 import { lookup } from "./registry.ts";
 import { coalesceStreamAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
@@ -85,6 +85,22 @@ export interface EmitOptions {
   readonly endpoint?: string | undefined;
   readonly stream?: boolean | undefined;
   readonly model?: string | undefined;
+}
+
+/**
+ * AUTH-1: an explicit credential always wins; a stored-login policy asks the
+ * host platform (AUTH-8). A host without stores refuses by name; a `key`
+ * policy with nothing given refuses naming the env keys.
+ */
+export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | undefined, credentialsPath?: string): LoadedCredential {
+  if (apiKey !== undefined && apiKey !== "") return { credential: apiKey, source: "explicit" };
+  const platform = getDefaultPlatform();
+  if (policy.credentialPolicy !== "key" && platform.storedCredentials) return platform.storedCredentials.load(policy, credentialsPath);
+  if (policy.credentialPolicy !== "key") throw noStoredCredentials(platform, policy);
+  throw new NotConfiguredError(
+    `${policy.provider}: no credential given` + (policy.envKeys.length > 0 ? `; set ${policy.envKeys.join(" or ")} or pass apiKey` : "; pass apiKey"),
+    { provider: policy.provider, envKeys: policy.envKeys, credentialHint: policy.loginHint ?? null },
+  );
 }
 
 export abstract class ProviderLM {
@@ -183,7 +199,7 @@ export abstract class ProviderLM {
     });
     if (opts.stream) req = { ...req, readTimeout: 120 };
     if (credential instanceof AwsCredentials) {
-      const signed = signRequest(this.access, this.hostSettings, {
+      const signed = await signRequest(this.access, this.hostSettings, {
         method: req.method,
         url: req.url,
         headers: req.headers,

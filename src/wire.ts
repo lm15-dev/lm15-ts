@@ -4,9 +4,9 @@
  * multipart bodies, timestamps, and the MAP-10 tool-result media policy.
  */
 
-import { readFileSync } from "node:fs";
 import { UnsupportedFeatureError, ProviderError } from "./errors.ts";
 import { isJsonObject, parseJsonBytes, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
+import { getDefaultPlatform, noFilesystem } from "./platform.ts";
 import type { FileReadiness } from "./vocab.ts";
 import { ModelInfo } from "./types/model_info.ts";
 import type { MediaPart, Message, Part, ToolResultPart } from "./types/parts.ts";
@@ -176,8 +176,11 @@ export function messageText(msg: Message): string {
   return partsToText(msg.parts);
 }
 
+/** The bytes of a path-addressed part or upload, through the host (`Platform.readFile`); a host without a filesystem refuses. */
 export function readFileBytes(path: string): Uint8Array {
-  return new Uint8Array(readFileSync(path));
+  const platform = getDefaultPlatform();
+  if (!platform.readFile) throw noFilesystem(platform, `path ${JSON.stringify(path)}`);
+  return platform.readFile(path);
 }
 
 /** The part's bytes as base64: inline `data`, or the `path` read now. */

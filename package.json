@@ -8,6 +8,21 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "import": "./dist/browser.js",
+        "require": "./dist/cjs/browser.js"
+      },
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/cjs/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/cjs/browser.js"
+    },
+    "./node": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/cjs/index.js"
@@ -31,20 +46,24 @@
   "scripts": {
     "build": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json",
     "check": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "node --experimental-strip-types --experimental-vm-modules --test tests/*.test.ts",
     "vet": "node dist/vet.js",
     "surface": "node --experimental-strip-types tools/gen_surface.ts",
     "differential": "python3 tools/differential.py && python3 tools/differential_surfaces.py",
-    "harness": "cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all"
+    "harness": "cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all",
+    "test:browser": "node --experimental-strip-types tools/browser_smoke.ts"
   },
   "keywords": [
-    "llm",
-    "openai",
-    "anthropic",
-    "gemini",
     "ai",
-    "universal",
-    "lm15"
+    "anthropic",
+    "browser",
+    "electron",
+    "gemini",
+    "llm",
+    "lm15",
+    "openai",
+    "pwa",
+    "universal"
   ],
   "author": "lm15-dev",
   "license": "MIT",

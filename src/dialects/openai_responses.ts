@@ -6,7 +6,7 @@
 
 import { ProviderLM, batchEntryHttp, type LMOptions } from "../adapter.ts";
 import { OPENAI_API, OPENAI_CODEX, authHeader, type AccessPolicy } from "../auth/policy.ts";
-import { extractChatgptAccountId } from "../auth/stores.ts";
+import { extractChatgptAccountId } from "../auth/jwt.ts";
 import {
   OPENAI_RESPONSES_PRESET_BASE_URLS,
   mergeOpenAIResponsesCompat,

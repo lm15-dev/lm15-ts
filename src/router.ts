@@ -10,11 +10,10 @@
 
 import type { ProviderLM } from "./adapter.ts";
 import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
-import { hasStoredCredential } from "./auth/stores.ts";
-import { ChainContext, credentialProvider, profileSettings } from "./cloud/chains.ts";
 import { resolveSettings } from "./cloud/hosts.ts";
 import { AmbiguousModelError, NotConfiguredError, UnknownModelError } from "./errors.ts";
 import { adapterForDefinition } from "./providers.ts";
+import { getDefaultPlatform, noCloudChain } from "./platform.ts";
 import { PROVIDERS, canonicalProvider, lookup, type ProviderDefinition } from "./registry.ts";
 import type { Transport } from "./transport.ts";
 import type { Request } from "./types/config.ts";
@@ -91,7 +90,7 @@ export interface RouterConfig {
   /** Catalog use is opt-in. */
   readonly registry?: ModelRegistry;
   readonly rules?: readonly RouteRule[];
-  /** Defaults to `process.env` at lookup time. */
+  /** Defaults to the host platform's environment at lookup time (`process.env` on Node; empty on the web). */
   readonly env?: Readonly<Record<string, string | undefined>>;
   /**
    * provider string → credential; beats env. An entry also serves a sibling
@@ -213,7 +212,7 @@ function checkProviderKeyed(config: RouterConfig): void {
 }
 
 function envOf(config: RouterConfig): Readonly<Record<string, string | undefined>> {
-  return config.env ?? process.env;
+  return config.env ?? getDefaultPlatform().env();
 }
 
 function envKeyFor(provider: string, config: RouterConfig): string | undefined {
@@ -358,11 +357,16 @@ function buildLm(res: Resolution, config: RouterConfig): ProviderLM {
   const env = envOf(config);
   if (definition.hosted) {
     const given = config.settings?.[res.provider];
-    const ctx = ChainContext.online(env);
-    const settings = resolveSettings(definition.access.host, given, env as Record<string, string>, { provider: res.provider, profile: profileSettings(definition.access, ctx) });
-    ctx.settings = settings;
-    if (apiKey === undefined && definition.access.credentialPolicy !== "key") apiKey = credentialProvider(definition.access, ctx);
-    else if (apiKey === undefined) {
+    // The cloud chain is a host service (AUTH-11): profile files, CLIs, metadata
+    // endpoints. Without one, explicit and env values still build the door.
+    const chain = getDefaultPlatform().openCloudChain?.({ env, online: true });
+    const profile = chain ? chain.profile(definition.access) : undefined;
+    const settings = resolveSettings(definition.access.host, given, env as Record<string, string>, { provider: res.provider, ...(profile ? { profile } : {}) });
+    if (chain) chain.settings = settings;
+    if (apiKey === undefined && definition.access.credentialPolicy !== "key") {
+      if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access);
+      apiKey = chain.credentialProvider(definition.access);
+    } else if (apiKey === undefined) {
       for (const key of definition.access.envKeys) {
         if (env[key]) {
           apiKey = env[key]!;
@@ -378,7 +382,7 @@ function buildLm(res: Resolution, config: RouterConfig): ProviderLM {
     }
     return adapterForDefinition(definition, { apiKey, settings, ...transport });
   }
-  if (apiKey === undefined && policy === "oauth-unless-explicit" && hasStoredCredential(definition.access)) return adapterForDefinition(definition, transport);
+  if (apiKey === undefined && policy === "oauth-unless-explicit" && getDefaultPlatform().storedCredentials?.has(definition.access)) return adapterForDefinition(definition, transport);
   if (apiKey === undefined) {
     for (const key of definition.access.envKeys) {
       if (env[key]) {

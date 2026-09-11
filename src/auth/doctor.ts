@@ -1,29 +1,21 @@
 /**
  * `explainAuth`: how a provider's credential would resolve, rung by rung,
  * with no network call and no secret material (spec/auth.md AUTH-7).
- * It walks the exact chain the router walks; divergence is a bug.
+ * It walks the exact chain the router walks; divergence is a bug. The
+ * rungs that read the host — stored logins, cloud chains — are the host
+ * platform's to describe; a host without them reports them absent, which
+ * is exactly what the router on that host does.
  */
 
-import { ChainContext, explain as explainChain, profileSettings } from "../cloud/chains.ts";
 import { resolveSettings } from "../cloud/hosts.ts";
 import { NotConfiguredError } from "../errors.ts";
+import { getDefaultPlatform, type Env } from "../platform.ts";
 import { PROVIDERS, canonicalProvider, lookup } from "../registry.ts";
 import { apiKeysSource } from "../router.ts";
 import type { CredentialLike } from "../types/credential.ts";
 import { ValueError } from "../types/validate.ts";
 import type { AuthStepState } from "../vocab.ts";
-import {
-  LocalOAuthCredential,
-  claudeCodeCredentialsPath,
-  codexCliAuthPath,
-  defaultCredentialsPath,
-  expandHome,
-  loadClaudeCodeCredential,
-  loadCodexCliCredential,
-  loadXaiCredential,
-  piAgentAuthPath,
-} from "./stores.ts";
-import { isCloudChain } from "./policy.ts";
+import { isCloudChain, type AccessPolicy } from "./policy.ts";
 
 /** One rung of the credential chain. `kind` is the language-neutral fixture identifier; `detail` carries no secret by construction. */
 export interface AuthStep {
@@ -64,54 +56,15 @@ export function describeReport(report: AuthReport): string {
   return lines.join("\n");
 }
 
-function expiryDetail(credential: LocalOAuthCredential): string {
-  if (credential.expiresAt === undefined) return "no recorded expiry";
-  const remaining = credential.expiresAt - Date.now();
-  if (remaining <= 0) return `expired, ${credential.refreshToken ? "refresh token present" : "NO refresh token"}`;
-  const minutes = Math.floor(remaining / 60_000);
-  const hours = Math.floor(minutes / 60);
-  const span = hours ? `${hours}h ${String(minutes % 60).padStart(2, "0")}m` : `${minutes % 60}m`;
-  return `fresh, expires in ${span}`;
-}
-
-function usableState(credential: LocalOAuthCredential, detail: string, shadowed: boolean): AuthStepState {
-  if (detail.includes("expired") && !credential.refreshToken) return "absent";
-  return shadowed ? "shadowed" : "selected";
-}
-
-function oauthStep(provider: string, pathOverride: string | undefined, env: Readonly<Record<string, string | undefined>>): AuthStep {
-  const envForPaths = { HOME: env["HOME"] } as NodeJS.ProcessEnv;
-  const file = pathOverride ? expandHome(pathOverride, env["HOME"]) : provider === "claude-code" ? claudeCodeCredentialsPath(envForPaths) : codexCliAuthPath(envForPaths);
-  const source = `local OAuth credential ${file}`;
-  let credential: LocalOAuthCredential;
-  try {
-    credential = provider === "claude-code" ? loadClaudeCodeCredential(file) : loadCodexCliCredential(file);
-  } catch (e) {
-    if (e instanceof NotConfiguredError) return { kind: "oauth-file", source, detail: "missing or unreadable", state: "absent" };
-    throw e;
-  }
-  const detail = expiryDetail(credential);
-  return { kind: "oauth-file", source, detail, state: usableState(credential, detail, false) };
-}
-
-function xaiOauthStep(pathOverride: string | undefined, shadowed: boolean, env: Readonly<Record<string, string | undefined>>): AuthStep {
-  const envForPaths = { HOME: env["HOME"], XDG_CONFIG_HOME: env["XDG_CONFIG_HOME"], LM15_CREDENTIALS_PATH: env["LM15_CREDENTIALS_PATH"] } as NodeJS.ProcessEnv;
-  const paths = pathOverride ? [expandHome(pathOverride, env["HOME"])] : [defaultCredentialsPath(envForPaths), piAgentAuthPath(envForPaths)];
-  for (const file of paths) {
-    let credential: LocalOAuthCredential;
-    try {
-      credential = loadXaiCredential(file);
-    } catch {
-      continue;
-    }
-    const detail = expiryDetail(credential);
-    return { kind: "oauth-file", source: `local OAuth credential ${file}`, detail, state: usableState(credential, detail, shadowed) };
-  }
-  return { kind: "oauth-file", source: `local OAuth credential ${paths.join(" or ")}`, detail: "missing or unreadable", state: "absent" };
+/** The store rung through the host platform; a host without stores reports the rung absent, as its router skips it. */
+function storeStep(policy: AccessPolicy, opts: { env: Env; credentialsPath: string | undefined; shadowed: boolean }): AuthStep {
+  const platform = getDefaultPlatform();
+  if (platform.storedCredentials) return platform.storedCredentials.describe(policy, opts);
+  return { kind: "oauth-file", source: `stored login for ${policy.provider}`, detail: `not available on the ${platform.name} platform`, state: "absent" };
 }
 
 export interface ExplainAuthOptions {
-  /** The complete environment (defaults to `process.env`). */
+  /** The complete environment (defaults to the host platform's: `process.env` on Node, empty on the web). */
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly apiKeys?: Readonly<Record<string, CredentialLike>>;
   readonly claudeCredentialsPath?: string;
@@ -139,13 +92,13 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
   const canonical = canonicalProvider(provider);
   const definition = lookup(canonical);
   if (!definition) throw new ValueError(`Unknown provider ${JSON.stringify(provider)}. Known providers: ${[...PROVIDERS.keys()].sort().join(", ")}`);
-  const env = opts.env ?? process.env;
+  const env = opts.env ?? getDefaultPlatform().env();
   const policy = definition.access;
 
   if (isCloudChain(policy) || definition.hosted) return explainCloud(canonical, opts, env);
 
   if (policy.credentialPolicy === "oauth") {
-    const step = oauthStep(canonical, canonical === "claude-code" ? opts.claudeCredentialsPath : opts.codexAuthPath, env);
+    const step = storeStep(policy, { env, credentialsPath: canonical === "claude-code" ? opts.claudeCredentialsPath : opts.codexAuthPath, shadowed: false });
     return { provider: canonical, steps: [step], configured: step.state === "selected", settings: [] };
   }
 
@@ -157,7 +110,7 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
     selected = true;
   } else steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "not provided", state: "absent" });
   if (policy.credentialPolicy === "oauth-unless-explicit") {
-    const step = xaiOauthStep(opts.xaiCredentialsPath, selected, env);
+    const step = storeStep(policy, { env, credentialsPath: opts.xaiCredentialsPath, shadowed: selected });
     steps.push(step);
     selected = selected || step.state === "selected";
   }
@@ -180,22 +133,30 @@ function explainCloud(canonical: string, opts: ExplainAuthOptions, env: Readonly
   const hasEntry = hasApiKeysEntry(opts.apiKeys, canonical);
   const values: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) if (v !== undefined) values[k] = v;
-  const ctx = new ChainContext({ env: values, home: opts.home ? expandHome(opts.home) : values["HOME"] || undefined, files: opts.files ? { ...opts.files } : undefined });
+  const platform = getDefaultPlatform();
+  const chain = platform.openCloudChain?.({ env: values, online: false, home: opts.home, files: opts.files });
+  const profile = chain ? chain.profile(policy) : undefined;
   let resolved: Record<string, string> = {};
   let settingError: string | undefined;
   try {
-    resolved = resolveSettings(policy.host, opts.settings, values, { provider: canonical, profile: profileSettings(policy, ctx) });
+    resolved = resolveSettings(policy.host, opts.settings, values, { provider: canonical, ...(profile ? { profile } : {}) });
   } catch (e) {
     if (!(e instanceof NotConfiguredError)) throw e;
     settingError = String(e.message).split("\n")[0]!;
   }
-  ctx.settings = resolved;
+  if (chain) chain.settings = resolved;
   let steps: AuthStep[];
   let configured: boolean;
-  if (isCloudChain(policy)) {
-    const [chainSteps, ok] = explainChain(policy, ctx, hasEntry);
+  if (isCloudChain(policy) && chain) {
+    const [chainSteps, ok] = chain.explain(policy, hasEntry);
     steps = chainSteps.map((s) => ({ kind: s.kind, source: s.source, detail: s.detail, state: s.state }));
     configured = ok;
+  } else if (isCloudChain(policy)) {
+    steps = [
+      { kind: "api_keys", source: "explicit api_keys entry", detail: hasEntry ? "provided (value never shown)" : "not provided", state: hasEntry ? "selected" : "absent" },
+      { kind: policy.credentialPolicy, source: `${policy.credentialPolicy} (profile files, CLIs, metadata endpoints)`, detail: `not available on the ${platform.name} platform`, state: "absent" },
+    ];
+    configured = hasEntry;
   } else {
     steps = [{ kind: "api_keys", source: "explicit api_keys entry", detail: hasEntry ? "provided (value never shown)" : "not provided", state: hasEntry ? "selected" : "absent" }];
     configured = hasEntry;

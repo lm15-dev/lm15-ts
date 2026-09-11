@@ -5,6 +5,7 @@
  * construction (INV-046).
  */
 
+import { base64Decode, base64Encode } from "../bytes.ts";
 import { RawNumber, isJsonObject, isStrictJson, type JsonObject } from "../json.ts";
 
 /** The Python reference raises ValueError for bad values; the shim reports the class name. */
@@ -153,11 +154,11 @@ export function validateBase64(partType: string, data: unknown): void {
 
 export function decodeBase64(partType: string, data: unknown): Uint8Array {
   validateBase64(partType, data);
-  return new Uint8Array(Buffer.from(base64Payload(partType, data), "base64"));
+  return base64Decode(base64Payload(partType, data));
 }
 
 export function encodeBase64(bytes: Uint8Array | ArrayBuffer): string {
-  return Buffer.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)).toString("base64");
+  return base64Encode(bytes);
 }
 
 /** Freeze the typed object (its own level; opaque payloads stay the caller's). */

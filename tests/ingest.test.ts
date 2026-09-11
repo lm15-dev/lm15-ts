@@ -4,6 +4,11 @@
  * the preset-conditioned rows, and the build→ingest identity on a rich
  * request. The corpus round trip lives in contract_corpus.test.ts.
  */
+// These tests import lm15 internals; the Node host is installed here as the `lm15` entry does on import.
+import { installNodePlatform } from "../src/platform_node.ts";
+
+installNodePlatform();
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { OpenAIChatLM, requestFromOpenAIChat } from "../src/dialects/openai_chat.ts";

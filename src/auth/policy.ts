@@ -4,6 +4,7 @@
  * rule 2) and consulted at the same named points.
  */
 
+import { looksLikeJwt } from "./jwt.ts";
 import { NotConfiguredError } from "../errors.ts";
 import { ApiKey, AwsCredentials, BearerToken, coerceCredential, type CredentialValue } from "../types/credential.ts";
 import type { AuthScheme, CredentialPolicy, ModelPlacement, StreamFraming } from "../vocab.ts";
@@ -587,18 +588,6 @@ export function selectScheme(p: AccessPolicy, credential: CredentialValue): Auth
   );
 }
 
-function looksLikeJwt(text: string): boolean {
-  const parts = text.split(".");
-  if (parts.length !== 3 || parts.some((p) => p === "")) return false;
-  try {
-    const head = parts[0]!.replace(/-/g, "+").replace(/_/g, "/");
-    const decoded = Buffer.from(head + "=".repeat((4 - (head.length % 4)) % 4), "base64").toString("utf-8");
-    const header = JSON.parse(decoded) as unknown;
-    return typeof header === "object" && header !== null && "alg" in header;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * The `[name, value]` header carrying `credential` under this policy, or

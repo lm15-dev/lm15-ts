@@ -514,7 +514,7 @@ export class ResponseStream implements AsyncIterable<string> {
     if (this.failure !== undefined) throw this.failure;
     if (!this.done) for await (const _ of this.events()) void _;
     if (this.failure !== undefined) throw this.failure;
-    if (this.result === undefined) throw new TransportError("response stream was closed before completion");
+    if (this.result === undefined) throw closedEarly(this.accumulator);
     return this.result;
   }
 
@@ -525,7 +525,7 @@ export class ResponseStream implements AsyncIterable<string> {
     if (this.reading) throw new TypeError("stop the active reader before closing ResponseStream; abort the request to interrupt a pending read");
     if (this.done) return;
     this.done = true;
-    this.failure = new TransportError("response stream was closed before completion");
+    this.failure = closedEarly(this.accumulator);
     await this.source.return?.();
   }
 
@@ -543,6 +543,24 @@ function checkTerminal(event: StreamEvent, result: Response | undefined): void {
     );
   }
   if (event.type === "error") throw exceptionFromErrorEvent(event);
+}
+
+/**
+ * The caller closed the stream before its end event: the same fact as a
+ * stream that ended without one (MAP-3), so the same error, inside the
+ * family. `partial` is what had arrived.
+ */
+function closedEarly(acc: StreamAccumulator): StreamAssemblyError {
+  let partial: Response | null = null;
+  try {
+    partial = acc.response();
+  } catch (e) {
+    partial = e instanceof StreamAssemblyError ? e.partial : null;
+  }
+  return new StreamAssemblyError(
+    "Stream closed before its end event: the response was not completed (close() was called while the stream was still open; MAP-3)",
+    { partial },
+  );
 }
 
 /** Exhausted without an end event: the finish reason and usage never arrived; the text is not a finished turn. */

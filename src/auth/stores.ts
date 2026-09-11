@@ -17,6 +17,8 @@ import * as path from "node:path";
 import { AuthError, LockTimeoutError, NotConfiguredError, UnsupportedFeatureError } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import { ApiKey, BearerToken, type CredentialLike, type CredentialValue } from "../types/credential.ts";
+import { decodeJwtPayload, extractChatgptAccountId } from "./jwt.ts";
+import type { LoadedCredential } from "../platform.ts";
 import { CLAUDE_CODE_LOGIN_HINT, OPENAI_CODEX_LOGIN_HINT, XAI_LOGIN_HINT, type AccessPolicy } from "./policy.ts";
 
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
@@ -232,17 +234,7 @@ export function readJsonFileOrUndefined(file: string): JsonObject | undefined {
   }
 }
 
-function base64UrlJson(segment: string): JsonObject {
-  const padded = segment.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (segment.length % 4)) % 4);
-  const data = parseJson(Buffer.from(padded, "base64").toString("utf-8"));
-  return isJsonObject(data) ? data : {};
-}
-
-export function decodeJwtPayload(token: string): JsonObject {
-  const parts = token.split(".");
-  if (parts.length !== 3) throw new Error("Invalid JWT");
-  return base64UrlJson(parts[1]!);
-}
+export { decodeJwtPayload, extractChatgptAccountId } from "./jwt.ts";
 
 export function jwtExpiresAtMs(token: string): number | undefined {
   try {
@@ -252,16 +244,6 @@ export function jwtExpiresAtMs(token: string): number | undefined {
   } catch {
     return undefined;
   }
-}
-
-export function extractChatgptAccountId(token: string): string | undefined {
-  try {
-    const claim = decodeJwtPayload(token)[OPENAI_CODEX_JWT_CLAIM_PATH];
-    if (isJsonObject(claim) && typeof claim["chatgpt_account_id"] === "string" && claim["chatgpt_account_id"]) return claim["chatgpt_account_id"];
-  } catch {
-    // not a JWT
-  }
-  return undefined;
 }
 
 async function postJson(url: string, payload: JsonObject): Promise<JsonObject> {
@@ -577,11 +559,7 @@ export async function getXaiAccessToken(authPath?: string, opts: { refresh?: boo
 
 // ─── AUTH-1: the credential an adapter sends under a policy ─────────
 
-export interface LoadedCredential {
-  readonly credential: CredentialLike | undefined;
-  readonly accountId?: string;
-  readonly source: "explicit" | "stored";
-}
+export type { LoadedCredential } from "../platform.ts";
 
 const LOADERS: Record<string, (credentialsPath?: string) => LoadedCredential> = {
   "claude-code": (p) => {
@@ -605,15 +583,24 @@ const LOADERS: Record<string, (credentialsPath?: string) => LoadedCredential> = 
 
 const STORED_PROBES: Record<string, () => boolean> = { xai: () => usableXaiCredential() };
 
-/** An explicit key always wins (AUTH-1); a stored-login policy loads through its loader. */
-export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | undefined, credentialsPath?: string): LoadedCredential {
-  if (apiKey !== undefined && apiKey !== "") return { credential: apiKey, source: "explicit" };
-  const loader = policy.credentialPolicy !== "key" ? LOADERS[policy.provider] : undefined;
-  if (loader) return loader(credentialsPath);
-  throw new NotConfiguredError(
+function noCredential(policy: AccessPolicy): NotConfiguredError {
+  return new NotConfiguredError(
     `${policy.provider}: no credential given` + (policy.envKeys.length > 0 ? `; set ${policy.envKeys.join(" or ")} or pass apiKey` : "; pass apiKey"),
     { provider: policy.provider, envKeys: policy.envKeys, credentialHint: policy.loginHint ?? null },
   );
+}
+
+/** AUTH-8 on Node: the stored login a policy names, re-read per request. The `StoredCredentials.load` of the Node platform. */
+export function loadStoredCredential(policy: AccessPolicy, credentialsPath?: string): LoadedCredential {
+  const loader = policy.credentialPolicy !== "key" ? LOADERS[policy.provider] : undefined;
+  if (loader) return loader(credentialsPath);
+  throw noCredential(policy);
+}
+
+/** An explicit key always wins (AUTH-1); a stored-login policy loads through its loader. */
+export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | undefined, credentialsPath?: string): LoadedCredential {
+  if (apiKey !== undefined && apiKey !== "") return { credential: apiKey, source: "explicit" };
+  return loadStoredCredential(policy, credentialsPath);
 }
 
 /** Offline probe for the router's `oauth-unless-explicit` chain. */

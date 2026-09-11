@@ -8,6 +8,11 @@
  * the op table lives in `vet_ops.ts`.
  */
 
+// The harness is a Node process: the Node host services are the default here.
+import { installNodePlatform } from "./platform_node.ts";
+
+installNodePlatform();
+
 import { createInterface } from "node:readline";
 import { handleMessage } from "./vet_ops.ts";
 import "./vet_adapter_ops.ts";
