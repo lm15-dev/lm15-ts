@@ -204,7 +204,7 @@ test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinne
     }
     compare(want, got, ["canonical_request"], new Set(), id);
   }
-  assert.deepEqual([roundTrips, lossy, foreign, refusals], [118, 21, 28, 10], "case counts moved; move CONTRACT_PIN and these constants together");
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [118, 21, 31, 11], "case counts moved; move CONTRACT_PIN and these constants together");
 });
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {

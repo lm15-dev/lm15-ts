@@ -11,7 +11,7 @@ import {
   OPENAI_RESPONSES_PRESET_BASE_URLS,
   mergeOpenAIResponsesCompat,
   openaiResponsesPreset,
-  presetKey,
+  presetBaseUrl,
   resolveOpenAIResponsesCompat,
   type OpenAIResponsesCompat,
   type ResolvedOpenAIResponsesCompat,
@@ -181,7 +181,7 @@ export class OpenAILM extends ProviderLM {
     const compat = opts.compat ?? this.registryCompat();
     if (typeof compat === "string") {
       this.compatBase = openaiResponsesPreset(compat);
-      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = OPENAI_RESPONSES_PRESET_BASE_URLS[presetKey(compat)] ?? DEFAULT_BASE_URL;
+      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = presetBaseUrl(OPENAI_RESPONSES_PRESET_BASE_URLS, compat, "Responses", "openai");
     } else this.compatBase = compat;
     if (this.access.backend === CODEX_BACKEND) {
       if (!this.accountId && typeof this.credential === "string") this.accountId = extractChatgptAccountId(this.credential);

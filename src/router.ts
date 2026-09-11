@@ -9,6 +9,7 @@
  */
 
 import type { ProviderLM } from "./adapter.ts";
+import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
 import { hasStoredCredential } from "./auth/stores.ts";
 import { ChainContext, credentialProvider, profileSettings } from "./cloud/chains.ts";
 import { resolveSettings } from "./cloud/hosts.ts";
@@ -23,6 +24,7 @@ import type { CachedPrefix } from "./types/endpoints.ts";
 import type { ModelInfo, ModelRegistry } from "./types/model_info.ts";
 import type { Response } from "./types/response.ts";
 import type { StreamEvent } from "./types/stream.ts";
+import { ResponseStream } from "./stream.ts";
 
 /** Maps a model-id prefix to a provider. That's all a rule is. */
 export interface RouteRule {
@@ -91,8 +93,14 @@ export interface RouterConfig {
   readonly rules?: readonly RouteRule[];
   /** Defaults to `process.env` at lookup time. */
   readonly env?: Readonly<Record<string, string | undefined>>;
-  /** provider string → credential; beats env. */
+  /**
+   * provider string → credential; beats env. An entry also serves a sibling
+   * provider whose declared env-key list is identical (AUTH-1 shared
+   * explicit keys, 2026-09-09): `openai` supplies `openai-chat`.
+   */
   readonly apiKeys?: Readonly<Record<string, CredentialLike>>;
+  /** provider string → the URL that provider's LM is built with; exact provider only, never shared. */
+  readonly baseUrls?: Readonly<Record<string, string>>;
   /** Cloud-host settings per provider (AUTH-10). */
   readonly settings?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly transport?: Transport;
@@ -106,10 +114,102 @@ function knownProviders(): string {
   return [...PROVIDERS.keys()].sort().join(", ");
 }
 
+function declaredEnvKeys(provider: string): readonly string[] {
+  return lookup(provider)?.access.envKeys ?? [];
+}
+
+function sameEnvKeys(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((k, i) => k === b[i]);
+}
+
+/**
+ * Select a config key, not its value; never invoke credential providers
+ * (spec/auth.md § Shared explicit keys, ratified 2026-09-09).
+ *
+ * Exact provider first, else the single entry whose declared env-key list is
+ * identical (including order) to the target's non-empty list. Empty lists do
+ * not join unrelated local servers, OAuth stores or cloud chains. Several
+ * candidates are ambiguous even if their values look equal: credential
+ * callables can change independently at request time.
+ */
+export function apiKeysSource(config: { readonly apiKeys?: Readonly<Record<string, CredentialLike>> | undefined }, provider: string): string | undefined {
+  const keys = config.apiKeys;
+  if (!keys) return undefined;
+  const names = Object.keys(keys);
+  const exact = names.filter((k) => canonicalProvider(k) === provider);
+  let candidates = exact;
+  if (exact.length === 0 && routable(provider)) {
+    const envKeys = declaredEnvKeys(provider);
+    if (envKeys.length > 0) {
+      candidates = names.filter((k) => routable(canonicalProvider(k)) !== undefined && sameEnvKeys(declaredEnvKeys(canonicalProvider(k)), envKeys));
+    }
+  }
+  if (candidates.length > 1) {
+    throw new NotConfiguredError(
+      `RouterConfig apiKeys: ambiguous credentials for ${JSON.stringify(provider)} from ${[...candidates].sort().map((k) => JSON.stringify(k)).join(", ")}; supply one entry under ${JSON.stringify(provider)} or keep only one shared entry`,
+    );
+  }
+  if (candidates.length === 0) return undefined;
+  const key = candidates[0]!;
+  const value = keys[key];
+  if (value === undefined || value === null || value === "") {
+    throw new NotConfiguredError(`RouterConfig apiKeys: empty credential under ${JSON.stringify(key)}; no environment fallback`);
+  }
+  return key;
+}
+
 function apiKeysEntry(config: RouterConfig, provider: string): [CredentialLike | undefined, boolean] {
-  if (!config.apiKeys) return [undefined, false];
-  for (const [key, value] of Object.entries(config.apiKeys)) if (canonicalProvider(key) === provider) return [value, true];
-  return [undefined, false];
+  const key = apiKeysSource(config, provider);
+  return key === undefined ? [undefined, false] : [config.apiKeys![key], true];
+}
+
+function baseUrlEntry(config: RouterConfig, provider: string): string | undefined {
+  if (!config.baseUrls) return undefined;
+  for (const [key, value] of Object.entries(config.baseUrls)) if (canonicalProvider(key) === provider) return value;
+  return undefined;
+}
+
+function levenshteinClose(word: string, candidates: string[]): string | undefined {
+  let best: string | undefined;
+  let bestScore = 0;
+  for (const c of candidates) {
+    const score = ratio(word, c);
+    if (score >= 0.6 && score > bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/**
+ * Every provider string a RouterConfig is keyed by (apiKeys, baseUrls,
+ * settings) must name a routable provider. A near miss is named: an entry
+ * that matches nothing is otherwise silently ignored, and the request goes
+ * out on whatever the environment holds — the wrong account, with nothing
+ * said (AUTH-1). Duplicate spellings of one provider under apiKeys are
+ * refused rather than resolved by map order.
+ */
+function checkProviderKeyed(config: RouterConfig): void {
+  const known = [...PROVIDERS.keys()].sort();
+  for (const field of ["apiKeys", "baseUrls", "settings"] as const) {
+    const mapping = config[field];
+    if (!mapping) continue;
+    const seen = new Set<string>();
+    for (const key of Object.keys(mapping)) {
+      const provider = canonicalProvider(key);
+      if (field === "apiKeys" && seen.has(provider)) {
+        throw new NotConfiguredError(`RouterConfig apiKeys: duplicate spellings for ${JSON.stringify(provider)}; use one entry`);
+      }
+      seen.add(provider);
+      if (PROVIDERS.has(provider)) continue;
+      const close = levenshteinClose(provider, known);
+      const hint = close ? ` Did you mean ${JSON.stringify(close)}?` : "";
+      throw new NotConfiguredError(
+        `RouterConfig ${field}: ${JSON.stringify(key)} is not a provider lm15 routes to.${hint} router.resolve(model).provider (or resolveOpenAIChat) names the one a model string uses; known: ${known.join(", ")}`,
+      );
+    }
+  }
 }
 
 function envOf(config: RouterConfig): Readonly<Record<string, string | undefined>> {
@@ -243,7 +343,16 @@ export class MissingCredentialError extends NotConfiguredError {}
 function buildLm(res: Resolution, config: RouterConfig): ProviderLM {
   const definition = lookup(res.provider)!;
   const policy = definition.access.credentialPolicy;
-  const transport = config.transport ? { transport: config.transport } : {};
+  const transport: { transport?: Transport; baseUrl?: string } = config.transport ? { transport: config.transport } : {};
+  const baseUrl = baseUrlEntry(config, res.provider);
+  if (baseUrl !== undefined) {
+    if (definition.hosted) {
+      throw new NotConfiguredError(
+        `RouterConfig baseUrls { ${JSON.stringify(res.provider)}: ... }: a cloud door's URL is built from its host settings (resource, region), not given whole; set them in RouterConfig settings { ${JSON.stringify(res.provider)}: {...} } instead.`,
+      );
+    }
+    transport.baseUrl = baseUrl;
+  }
   if (policy === "oauth") return adapterForDefinition(definition, transport);
   let [apiKey] = apiKeysEntry(config, res.provider);
   const env = envOf(config);
@@ -293,6 +402,84 @@ function routedRequest(request: Request, res: Resolution): Request {
   return request.model === res.model ? request : normalizeRequest({ ...request, model: res.model });
 }
 
+
+// ------------------------------------------------- the OpenAI-shaped door ----
+
+/**
+ * litellm's routing prefixes (`<provider>/<model>`) that name a door lm15
+ * has, copied as data. A prefix absent here is refused by name — never
+ * routed by rule — because litellm's own rule is "a leading known provider
+ * name is the provider", and an unknown one is an error there too. Where
+ * litellm's name covers two lm15 doors (bedrock, vertex_ai: Anthropic or
+ * not, by model) it is left out: choosing would be a guess.
+ */
+export const LITELLM_PROVIDER_PREFIXES: Readonly<Record<string, string>> = Object.freeze({
+  openai: "openai-chat",
+  anthropic: "anthropic",
+  gemini: "gemini",
+  groq: "groq",
+  openrouter: "openrouter",
+  deepseek: "deepseek",
+  xai: "xai",
+  ollama: "ollama",
+  ollama_chat: "ollama",
+  hosted_vllm: "vllm",
+  moonshot: "moonshotai",
+  azure: "azure-chat",
+});
+
+/** Keyword arguments of `create()` / `completion()` that configure the CLIENT, not the request: refused with the lm15 place they belong. */
+const CLIENT_KEYWORDS: Readonly<Record<string, string>> = Object.freeze({
+  api_key: "new LMRouter({ apiKeys: { provider: key } }) or the environment",
+  api_base: "new LMRouter({ baseUrls: { provider: url } })",
+  base_url: "new LMRouter({ baseUrls: { provider: url } })",
+  timeout: "RouterConfig.transport",
+  num_retries: "your own retry loop over RETRYABLE_ERRORS (lm15 never retries)",
+  max_retries: "your own retry loop over RETRYABLE_ERRORS (lm15 never retries)",
+  headers: "RouterConfig.transport",
+  extra_headers: "RouterConfig.transport",
+  extra_body: "config.extensions on the Request (build it with requestFromOpenAIChat and edit)",
+  extra_query: "RouterConfig.transport",
+  cache: "your own cache keyed on the Request (lm15 has no response cache)",
+  caching: "your own cache keyed on the Request (lm15 has no response cache)",
+  mock_response: "lm15/testing FakeLM",
+  drop_params: "nothing: lm15 refuses what it cannot carry instead of dropping it",
+  custom_llm_provider: "the model string's prefix",
+});
+
+/**
+ * The lm15 model string for a model string written for the OpenAI SDK or
+ * litellm (api-family § Ingest): an lm15 string (`provider:model`) is left
+ * alone; litellm's `provider/model` maps its prefix through
+ * `LITELLM_PROVIDER_PREFIXES` (only the first segment; a model id may
+ * contain slashes itself: `groq/openai/gpt-oss-20b`); a bare name routes by
+ * lm15's rules, except that OpenAI's models go to the Chat Completions door.
+ */
+export function openaiChatModelString(model: string): string {
+  if (model.includes(":")) return model;
+  const slash = model.indexOf("/");
+  if (slash < 0) return model;
+  const head = model.slice(0, slash);
+  const rest = model.slice(slash + 1);
+  if (!rest) return model;
+  const provider = LITELLM_PROVIDER_PREFIXES[head];
+  if (provider === undefined) {
+    throw new UnknownModelError(
+      `could not read ${JSON.stringify(model)} as a litellm model string: ${JSON.stringify(head)} is not a provider prefix lm15 has a door for (known: ${Object.keys(LITELLM_PROVIDER_PREFIXES).sort().join(", ")}); write it as lm15's provider:model instead`,
+      { model },
+    );
+  }
+  return `${provider}:${rest}`;
+}
+
+/** `(model, messages, kwargs)` → the Chat Completions body, after refusing the client keywords by name. */
+function splitOpenAIChatCall(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  for (const [key, where] of Object.entries(CLIENT_KEYWORDS)) {
+    if (key in kwargs) throw new NotConfiguredError(`${JSON.stringify(key)} configures the client, not the request; in lm15 it lives in ${where}`);
+  }
+  return { model, messages, ...kwargs };
+}
+
 /**
  * Routes model strings to provider LMs. Config is frozen; the only state is
  * an LM cache keyed by provider (one LM per provider, built lazily).
@@ -302,6 +489,7 @@ export class LMRouter {
   private readonly lms = new Map<string, ProviderLM>();
 
   constructor(config: RouterConfig = {}) {
+    checkProviderKeyed(config);
     this.config = Object.freeze({ ...config });
   }
 
@@ -338,5 +526,64 @@ export class LMRouter {
     const req = normalizeRequest(prefix);
     const res = this.resolve(req.model);
     return this.lm(req.model).cache(routedRequest(req, res), opts);
+  }
+
+  // ─── the OpenAI-shaped door (api-family § Ingest) ──────────────────
+
+  /**
+   * `resolve()` for the OpenAI-shaped door: `model` is read by
+   * `openaiChatModelString`, and a bare OpenAI name goes to Chat Completions
+   * (`openai-chat`), the endpoint the OpenAI SDK and litellm were using.
+   * Like `resolve()`: no network, no credential invocation, no secret values.
+   */
+  resolveOpenAIChat(model: string): Resolution {
+    let res = this.resolve(openaiChatModelString(model));
+    if (res.source === "rule" && res.provider === "openai") res = this.resolve(`openai-chat:${res.model}`);
+    return res;
+  }
+
+  /**
+   * The Request behind `completeFromOpenAIChat`, and the LM it routes to.
+   * `model` may be written for the OpenAI SDK, for litellm, or for lm15; the
+   * body is read with the destination door's own spellings when it speaks
+   * the Chat Completions wire, else with OpenAI's.
+   */
+  requestFromOpenAIChat(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>> = {}): [Request, ProviderLM] {
+    const res = this.resolveOpenAIChat(model);
+    const body = splitOpenAIChatCall(res.requested, messages, kwargs);
+    const lm = this.lm(res.requested);
+    const reader = (lm as ProviderLM & { requestFromOpenAIChat?: (body: unknown) => Request }).requestFromOpenAIChat;
+    const request = reader ? reader.call(lm, body) : readOpenAIChat(body);
+    return [routedRequest(request, res), lm];
+  }
+
+  /**
+   * `client.chat.completions.create({ model, messages, ...})` or
+   * `litellm.completion(...)` — the same call, answered by lm15. Messages and
+   * keywords are read by `requestFromOpenAIChat` (MAP-12: every key maps,
+   * passes through, or is refused by name); the model string by
+   * `openaiChatModelString`. Returns a canonical `Response`, or with
+   * `stream: true` a lazy `ResponseStream` (iterate for text, `.events()`
+   * for typed events, `.response()` for the assembled answer; close it when
+   * leaving early). Client keywords (`api_key`, `timeout`, …) are refused
+   * with the RouterConfig place named.
+   */
+  completeFromOpenAIChat(model: string, messages: unknown, kwargs?: Readonly<Record<string, unknown>> & { stream?: false; signal?: AbortSignal }): Promise<Response>;
+  completeFromOpenAIChat(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>> & { stream: true; signal?: AbortSignal }): Promise<ResponseStream>;
+  completeFromOpenAIChat(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>> & { stream?: boolean; signal?: AbortSignal }): Promise<Response | ResponseStream>;
+  async completeFromOpenAIChat(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>> & { stream?: boolean; signal?: AbortSignal } = {}): Promise<Response | ResponseStream> {
+    const { stream = false, signal, ...rest } = kwargs;
+    if (typeof stream !== "boolean") throw new TypeError("stream must be a boolean");
+    const [request, lm] = this.requestFromOpenAIChat(model, messages, rest);
+    const opts = signal ? { signal } : {};
+    if (stream) return new ResponseStream(lm.stream(request, opts), request);
+    return lm.complete(request, opts);
+  }
+
+  /** The raw-event twin of `completeFromOpenAIChat`: typed lm15 stream events, not OpenAI-shaped chunks. */
+  streamFromOpenAIChat(model: string, messages: unknown, kwargs: Readonly<Record<string, unknown>> & { signal?: AbortSignal } = {}): AsyncIterable<StreamEvent> {
+    const { signal, ...rest } = kwargs;
+    const [request, lm] = this.requestFromOpenAIChat(model, messages, rest);
+    return lm.stream(request, signal ? { signal } : {});
   }
 }

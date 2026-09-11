@@ -164,6 +164,7 @@ export function withHeaders(p: AccessPolicy, headers: Record<string, string>): A
 export const OPENAI_CHAT_PRESET_BASE_URLS: Readonly<Record<string, string>> = Object.freeze({
   openai: "https://api.openai.com/v1",
   ollama: "http://localhost:11434/v1",
+  lmstudio: "http://localhost:1234/v1", // lmstudio.ai docs (Local Server)
   groq: "https://api.groq.com/openai/v1",
   openrouter: "https://openrouter.ai/api/v1",
   xai: "https://api.x.ai/v1",
@@ -175,8 +176,17 @@ export const OPENAI_CHAT_PRESET_BASE_URLS: Readonly<Record<string, string>> = Ob
   moonshotai: "https://api.moonshot.ai/v1",
 });
 
+// A server's OpenAI root is one address whichever OpenAI-shaped path is used;
+// the local engines' roots are the chat table's. A preset that names a server
+// absent here (qwen, deepseek, zai: no documented Responses root) is REFUSED
+// at construction without an explicit baseUrl — never sent to the OpenAI
+// cloud (compat.ts presetBaseUrl, 2026-09-11).
 export const OPENAI_RESPONSES_PRESET_BASE_URLS: Readonly<Record<string, string>> = Object.freeze({
   openai: "https://api.openai.com/v1",
+  ollama: "http://localhost:11434/v1",
+  lmstudio: "http://localhost:1234/v1",
+  vllm: "http://localhost:8000/v1",
+  sglang: "http://localhost:30000/v1",
   openrouter: "https://openrouter.ai/api/v1",
   meta: "https://api.meta.ai/v1",
   moonshotai: "https://api.moonshot.ai/v1",

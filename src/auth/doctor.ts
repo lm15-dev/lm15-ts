@@ -8,6 +8,7 @@ import { ChainContext, explain as explainChain, profileSettings } from "../cloud
 import { resolveSettings } from "../cloud/hosts.ts";
 import { NotConfiguredError } from "../errors.ts";
 import { PROVIDERS, canonicalProvider, lookup } from "../registry.ts";
+import { apiKeysSource } from "../router.ts";
 import type { CredentialLike } from "../types/credential.ts";
 import { ValueError } from "../types/validate.ts";
 import type { AuthStepState } from "../vocab.ts";
@@ -123,8 +124,14 @@ export interface ExplainAuthOptions {
 }
 
 function hasApiKeysEntry(apiKeys: Readonly<Record<string, CredentialLike>> | undefined, provider: string): boolean {
-  if (!apiKeys) return false;
-  return Object.keys(apiKeys).some((k) => canonicalProvider(k) === provider);
+  return apiKeysSource({ apiKeys }, provider) !== undefined;
+}
+
+/** AUTH-7: the source configuration key is shown when it differs from the target; the kind stays `api_keys`. */
+function entrySource(provider: string, entry: string | undefined): string {
+  let source = "explicit api_keys entry";
+  if (entry !== undefined && canonicalProvider(entry) !== provider) source += ` (via ${JSON.stringify(entry)}, shared env-key declarations)`;
+  return source;
 }
 
 /** Explain, rung by rung, how `provider`'s credential resolves. Never returns secret values; performs no network I/O. */
@@ -144,8 +151,9 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
 
   const steps: AuthStep[] = [];
   let selected = false;
-  if (hasApiKeysEntry(opts.apiKeys, canonical)) {
-    steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "provided (value never shown)", state: "selected" });
+  const entry = apiKeysSource({ apiKeys: opts.apiKeys }, canonical);
+  if (entry !== undefined) {
+    steps.push({ kind: "api_keys", source: entrySource(canonical, entry), detail: "provided (value never shown)", state: "selected" });
     selected = true;
   } else steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "not provided", state: "absent" });
   if (policy.credentialPolicy === "oauth-unless-explicit") {

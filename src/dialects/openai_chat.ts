@@ -10,7 +10,7 @@ import {
   OPENAI_CHAT_PRESET_BASE_URLS,
   chatCompatForModel,
   openaiChatPreset,
-  presetKey,
+  presetBaseUrl,
   resolveOpenAIChatCompat,
   type OpenAIChatCompat,
   type ResolvedOpenAIChatCompat,
@@ -26,7 +26,7 @@ import {
   UnsupportedModelError,
   mapHttpError,
 } from "../errors.ts";
-import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
+import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
 import {
   Request,
@@ -49,6 +49,7 @@ import type { ModelInfo } from "../types/model_info.ts";
 import {
   Message,
   audio,
+  citation,
   document,
   guessMediaType,
   image,
@@ -59,6 +60,7 @@ import {
   toolCall,
   toolResult,
   type AssistantPart,
+  type CitationPart,
   type ImagePart,
   type Part,
   type PromptPart,
@@ -179,7 +181,7 @@ export class OpenAIChatLM extends ProviderLM {
     const compat = opts.compat ?? this.registryCompat();
     if (typeof compat === "string") {
       this.compatPartial = openaiChatPreset(compat);
-      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = OPENAI_CHAT_PRESET_BASE_URLS[presetKey(compat)] ?? DEFAULT_BASE_URL;
+      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = presetBaseUrl(OPENAI_CHAT_PRESET_BASE_URLS, compat, "Chat Completions", "openai");
     } else this.compatPartial = compat ?? {};
     this.resolvedCompat = resolveOpenAIChatCompat(this.compatPartial);
   }
@@ -493,71 +495,33 @@ export class OpenAIChatLM extends ProviderLM {
 
   // ─── Response ────────────────────────────────────────────────────
 
-  protected static finishReason(raw: unknown, hasToolCall: boolean, unmapped: Unmapped): FinishReason {
+  /** @internal shared with the module-level reader */
+  static finishReasonOf(raw: unknown, hasToolCall: boolean, unmapped: Unmapped, path = "choices[0]"): FinishReason {
+    return OpenAIChatLM.finishReason(raw, hasToolCall, unmapped, path);
+  }
+
+  protected static finishReason(raw: unknown, hasToolCall: boolean, unmapped: Unmapped, path = "choices[0]"): FinishReason {
     if (hasToolCall) return "tool_call";
     if (raw === null || raw === undefined || raw === "") return "stop";
     const mapped = FINISH_REASON_MAP[str(raw)];
     if (mapped === undefined) {
-      recordUnmapped(unmapped, "choices[0].finish_reason", raw);
+      recordUnmapped(unmapped, `${path}.finish_reason`, raw);
       return "stop";
     }
     return mapped;
   }
 
   parseResponse(request: Request, response: HttpResponse): Response {
-    const data = obj(response.json());
-    const respError = data["error"];
-    if (isJsonObject(respError)) throw this.responseError(str(respError["code"]), str(respError["message"]) || stringifyJson(respError));
+    return responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message));
+  }
 
-    const parts: Part[] = [];
-    const unmapped: Unmapped = [];
-    const choices = list(data["choices"]);
-    const choice = choices.length > 0 && isJsonObject(choices[0]) ? choices[0] : {};
-    if (choices.length > 0 && !isJsonObject(choices[0])) recordUnmapped(unmapped, "choices[0]", typeName(choices[0]));
-    const message = obj(choice["message"]);
-
-    const reasoningText = message["reasoning_content"] || message["reasoning"];
-    if (reasoningText) parts.push(normalizePart({ type: "thinking", text: str(reasoningText) }));
-
-    const content = message["content"];
-    if (typeof content === "string") {
-      if (content) parts.push(normalizePart({ type: "text", text: content }));
-    } else if (Array.isArray(content)) {
-      content.forEach((item, contentIndex) => {
-        if (isJsonObject(item) && item["type"] === "text") parts.push(normalizePart({ type: "text", text: str(item["text"]) }));
-        else recordUnmapped(unmapped, `choices[0].message.content[${contentIndex}]`, isJsonObject(item) ? item["type"] : typeName(item));
-      });
-    } else if (content !== null && content !== undefined) recordUnmapped(unmapped, "choices[0].message.content", typeName(content));
-
-    if (message["refusal"]) parts.push(normalizePart({ type: "refusal", text: str(message["refusal"]) }));
-
-    list(message["tool_calls"]).forEach((call, callIndex) => {
-      if (!isJsonObject(call)) {
-        recordUnmapped(unmapped, `choices[0].message.tool_calls[${callIndex}]`, typeName(call));
-        return;
-      }
-      const callType = call["type"] || "function";
-      if (callType !== "function") {
-        recordUnmapped(unmapped, `choices[0].message.tool_calls[${callIndex}]`, callType);
-        return;
-      }
-      const fn = obj(call["function"]);
-      if (!fn["name"]) throw unnamedToolCallError(this.provider, `choices[0].message.tool_calls[${callIndex}]`);
-      parts.push(normalizePart({ type: "tool_call", id: str(call["id"]) || `call_${parts.length}`, name: str(fn["name"]), input: parseJsonObjectLenient(fn["arguments"]) }));
-    });
-
-    if (parts.length === 0) parts.push(normalizePart({ type: "text", text: "" }));
-    const hasTool = parts.some((p) => p.type === "tool_call");
-    const logprobs = openaiTokenLogprobs(obj(choice["logprobs"])["content"]);
-    return new Response({
-      id: data["id"] ? str(data["id"]) : undefined,
-      model: str(data["model"]) || request.model,
-      message: { role: "assistant", parts },
-      finishReason: OpenAIChatLM.finishReason(choice["finish_reason"], hasTool, unmapped),
-      usage: usageFromChat(data["usage"]),
-      logprobs: logprobs.length > 0 ? logprobs : undefined,
-      providerData: attachUnmapped(data, unmapped),
-    });
+  /**
+   * A Chat Completions response body → canonical `Response` under this
+   * adapter's provider name and error mapping (MAP-12 rule 9); see
+   * `responseFromOpenAIChat`.
+   */
+  responseFromOpenAIChat(body: unknown, opts: { model?: string; choice?: number } = {}): Response {
+    return responseFromChatBody(this.provider, body, opts, (code, message) => this.responseError(code, message));
   }
 
   // ─── Stream ──────────────────────────────────────────────────────
@@ -673,6 +637,56 @@ function ingestStr(value: unknown, where: string): string {
 function present(obj: JsonObject, key: string): unknown {
   const v = obj[key];
   return v === null ? undefined : v;
+}
+
+/**
+ * Assistant-row keys that are a client library's object model, not the
+ * wire (litellm's ChatCompletionMessage dumped back into history; MAP-12
+ * addendum 2026-09-08). Their null or empty form carries nothing and reads
+ * as absent; a non-empty one is refused with the key named.
+ */
+const INGEST_CLIENT_OBJECT_KEYS: readonly string[] = Object.freeze(["provider_specific_fields", "thinking_blocks", "images"]);
+
+function ingestIsEmpty(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (isJsonObject(value)) {
+    const values = Object.values(value);
+    // A dict whose every value is null/empty (litellm: {"refusal": null}).
+    return values.length === 0 || values.every((v) => v === null || (Array.isArray(v) && v.length === 0) || (isJsonObject(v) && Object.keys(v).length === 0));
+  }
+  return false;
+}
+
+/**
+ * OpenAI's assistant `annotations` (url_citation entries with a span into
+ * the content) → CitationParts; an empty list is nothing (MAP-12 addendum).
+ */
+function ingestAnnotations(provider: string, raw: unknown, contentText: string | undefined, where: string): CitationPart[] {
+  if (!Array.isArray(raw)) throw new TypeError(`${where}.annotations must be an array`);
+  return raw.map((entryRaw, index) => {
+    const entryWhere = `${where}.annotations[${index}]`;
+    const entry = ingestObject(entryRaw, entryWhere);
+    if (entry["type"] !== "url_citation") {
+      throw ingestRefuse(provider, `${entryWhere} of type ${JSON.stringify(entry["type"] ?? null)}`, "only url_citation annotations have a canonical part (CitationPart)");
+    }
+    ingestOnlyKeys(provider, entry, ["type", "url_citation"], entryWhere);
+    const spec = ingestObject(entry["url_citation"], `${entryWhere}.url_citation`);
+    ingestOnlyKeys(provider, spec, ["url", "title", "start_index", "end_index"], `${entryWhere}.url_citation`);
+    let span: string | undefined;
+    const start = spec["start_index"];
+    const end = spec["end_index"];
+    if (contentText !== undefined && Number.isInteger(start) && Number.isInteger(end)
+        && (start as number) >= 0 && (start as number) <= (end as number) && (end as number) <= contentText.length) {
+      span = contentText.slice(start as number, end as number) || undefined;
+    }
+    const title = present(spec, "title");
+    return citation({
+      url: ingestStr(present(spec, "url"), `${entryWhere}.url_citation.url`),
+      ...(title === undefined ? {} : { title: ingestStr(title, `${entryWhere}.url_citation.title`) }),
+      ...(span === undefined ? {} : { text: span }),
+    });
+  });
 }
 
 /** An unlisted key inside a block or object is a refusal, never a drop. */
@@ -848,9 +862,14 @@ function ingestRows(provider: string, rows: unknown): IngestRows {
       out.messages.push(Message.user(parts as PromptPart[]));
     } else if (role === "assistant") {
       flush();
-      ingestOnlyKeys(provider, row, ["role", "content", "tool_calls", "refusal", "reasoning_content", "name", "audio", "function_call"], where);
+      ingestOnlyKeys(provider, row, ["role", "content", "tool_calls", "refusal", "reasoning_content", "name", "audio", "function_call", "annotations", ...INGEST_CLIENT_OBJECT_KEYS], where);
       if (present(row, "audio") !== undefined) throw ingestRefuse(provider, `${where}.audio`, "an assistant audio reference has no canonical part");
       if (present(row, "function_call") !== undefined) throw ingestRefuse(provider, `${where}.function_call`, "the deprecated function-calling shape; use tool_calls");
+      for (const key of INGEST_CLIENT_OBJECT_KEYS) {
+        // A client library's object model (litellm) dumped into history:
+        // null or empty carries nothing; anything else has no mapping.
+        if (!ingestIsEmpty(row[key])) throw ingestRefuse(provider, `${where}.${key}`, "a client library's own field with no canonical part; only its empty form reads as absent");
+      }
       const parts: Part[] = [];
       const reasoningText = present(row, "reasoning_content");
       if (reasoningText !== undefined) parts.push(thinking(ingestStr(reasoningText, `${where}.reasoning_content`)));
@@ -864,6 +883,8 @@ function ingestRows(provider: string, rows: unknown): IngestRows {
       if (refusalText !== undefined) parts.push(refusal(ingestStr(refusalText, `${where}.refusal`)));
       const calls = present(row, "tool_calls");
       if (calls !== undefined) parts.push(...ingestToolCalls(provider, calls, where));
+      const annotations = present(row, "annotations");
+      if (annotations !== undefined) parts.push(...ingestAnnotations(provider, annotations, typeof content === "string" ? content : undefined, where));
       if (parts.length === 0) parts.push(text("")); // MAP-2, applied to history
       out.messages.push(Message.assistant(parts as AssistantPart[]));
     } else if (role === "tool") {
@@ -1137,6 +1158,115 @@ function ingestOpenAIChat(provider: string, body: unknown, compat: ResolvedOpenA
     ...(rows.system === undefined ? {} : { system: rows.system as string | PromptPart[] }),
     tools,
     config,
+  });
+}
+
+/**
+ * The one Chat Completions response reader: `parseResponse` for provider
+ * traffic and `responseFromOpenAIChat` for a foreign body share it (MAP-12
+ * rule 9: ports expose their existing reader, never a second one).
+ * `choice` names the choice to read; unset means "the only one", and a body
+ * with several choices is then refused rather than silently reduced to its
+ * first (the reading-side twin of MAP-12's refusal of `n`).
+ */
+function responseFromChatBody(
+  provider: string,
+  data: unknown,
+  opts: { model?: string; choice?: number },
+  onError: (code: string, message: string) => ProviderError,
+): Response {
+  if (!isJsonObject(data)) throw new TypeError(`a Chat Completions response body is a JSON object, got ${typeName(data)}`);
+  const respError = data["error"];
+  if (isJsonObject(respError)) throw onError(str(respError["code"]), str(respError["message"]) || stringifyJson(respError));
+
+  const parts: Part[] = [];
+  const unmapped: Unmapped = [];
+  const choicesRaw = data["choices"] ?? [];
+  if (!Array.isArray(choicesRaw)) throw new TypeError("choices must be an array");
+  const choices: JsonValue[] = choicesRaw;
+  let index: number;
+  if (opts.choice === undefined) {
+    if (choices.length > 1) {
+      throw new UnsupportedFeatureError(
+        `${provider}: the body carries ${choices.length} choices; a canonical Response is one message — ` +
+        "name the choice to read (choice: i) and read each one, or send no n",
+        { provider },
+      );
+    }
+    index = 0;
+  } else {
+    if (!Number.isInteger(opts.choice) || opts.choice < 0 || opts.choice >= choices.length) {
+      throw new ValueError(`choice=${opts.choice} but the body carries ${choices.length} choice(s)`);
+    }
+    index = opts.choice;
+  }
+  const path = `choices[${index}]`;
+  const picked = choices[index];
+  const chosen: JsonObject = isJsonObject(picked) ? picked : {};
+  if (choices.length > 0 && !isJsonObject(picked)) recordUnmapped(unmapped, path, typeName(picked));
+  const message = obj(chosen["message"]);
+
+  const reasoningText = message["reasoning_content"] || message["reasoning"];
+  if (reasoningText) parts.push(normalizePart({ type: "thinking", text: str(reasoningText) }));
+
+  const content = message["content"];
+  if (typeof content === "string") {
+    if (content) parts.push(normalizePart({ type: "text", text: content }));
+  } else if (Array.isArray(content)) {
+    content.forEach((item, contentIndex) => {
+      if (isJsonObject(item) && item["type"] === "text") parts.push(normalizePart({ type: "text", text: str(item["text"]) }));
+      else recordUnmapped(unmapped, `${path}.message.content[${contentIndex}]`, isJsonObject(item) ? item["type"] : typeName(item));
+    });
+  } else if (content !== null && content !== undefined) recordUnmapped(unmapped, `${path}.message.content`, typeName(content));
+
+  if (message["refusal"]) parts.push(normalizePart({ type: "refusal", text: str(message["refusal"]) }));
+
+  list(message["tool_calls"]).forEach((call, callIndex) => {
+    if (!isJsonObject(call)) {
+      recordUnmapped(unmapped, `${path}.message.tool_calls[${callIndex}]`, typeName(call));
+      return;
+    }
+    const callType = call["type"] || "function";
+    if (callType !== "function") {
+      recordUnmapped(unmapped, `${path}.message.tool_calls[${callIndex}]`, callType);
+      return;
+    }
+    const fn = obj(call["function"]);
+    if (!fn["name"]) throw unnamedToolCallError(provider, `${path}.message.tool_calls[${callIndex}]`);
+    parts.push(normalizePart({ type: "tool_call", id: str(call["id"]) || `call_${parts.length}`, name: str(fn["name"]), input: parseJsonObjectLenient(fn["arguments"]) }));
+  });
+
+  if (parts.length === 0) parts.push(normalizePart({ type: "text", text: "" }));
+  const hasTool = parts.some((p) => p.type === "tool_call");
+  const logprobs = openaiTokenLogprobs(obj(chosen["logprobs"])["content"]);
+  const resolvedModel = str(data["model"]) || opts.model;
+  if (!resolvedModel) throw new ValueError("the body carries no model; pass model");
+  return new Response({
+    id: data["id"] ? str(data["id"]) : undefined,
+    model: resolvedModel,
+    message: { role: "assistant", parts },
+    finishReason: OpenAIChatLM.finishReasonOf(chosen["finish_reason"], hasTool, unmapped, path),
+    usage: usageFromChat(data["usage"]),
+    logprobs: logprobs.length > 0 ? logprobs : undefined,
+    providerData: attachUnmapped(data, unmapped),
+  });
+}
+
+/**
+ * A Chat Completions response body → the canonical `Response` (MAP-12
+ * rule 9). The reading-side twin of `requestFromOpenAIChat`: `body` is the
+ * JSON object a Chat Completions server (or a client library imitating one —
+ * litellm's `ModelResponse.model_dump()`) returned. It is the same reader
+ * `OpenAIChatLM.parseResponse` runs on provider traffic. `model` fills
+ * `Response.model` when the body carries none; `choice` names the choice to
+ * read — unset, a body with several choices is refused. Keys the reader does
+ * not know are neither refused nor lost: the whole body is `providerData`.
+ * No compat is taken: the response shape does not vary by server.
+ */
+export function responseFromOpenAIChat(body: unknown, opts: { model?: string; choice?: number } = {}): Response {
+  return responseFromChatBody("openai-chat", body, opts, (code, message) => {
+    const cls = RESPONSE_ERROR_CODE_MAP[code] ?? ServerError;
+    return new cls(message || code || "provider error", { provider: "openai-chat", providerCode: code || null });
   });
 }
 

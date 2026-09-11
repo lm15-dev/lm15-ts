@@ -425,6 +425,13 @@ export class ResponseStream implements AsyncIterable<string> {
   private failure: unknown;
   private done = false;
   private reading = false;
+  /**
+   * Failures that followed the end event (a read error while draining, a
+   * `return()` that threw). The Response is complete regardless; each was
+   * also emitted as a `StreamCleanupWarning` (contract
+   * 2026-09-11-stream-completion-and-error-metadata § 2).
+   */
+  cleanupErrors: readonly unknown[] = [];
 
   constructor(events: AsyncIterable<StreamEvent> | Iterable<StreamEvent>, request: Request) {
     this.accumulator = new StreamAccumulator(request);
@@ -438,8 +445,18 @@ export class ResponseStream implements AsyncIterable<string> {
     }
   }
 
+  private recordCleanup(e: unknown): void {
+    this.cleanupErrors = [...this.cleanupErrors, e];
+    warnCleanup(e);
+  }
+
   /** Breaking iteration pauses the stream; response() can drain the remainder.
    * Call close() to abandon it. Only one consumer may read at a time.
+   *
+   * The stream is held to MAP-3: exhaustion without an end event, and any
+   * event after the end event, are `StreamAssemblyError` (with `partial`).
+   * Once the end event has been yielded the Response is complete and is
+   * never withheld: a source failure after it is a warning, not a throw.
    */
   async *events(): AsyncGenerator<StreamEvent> {
     if (this.reading) throw new TypeError("ResponseStream already has an active reader");
@@ -450,21 +467,29 @@ export class ResponseStream implements AsyncIterable<string> {
       for (;;) {
         let event: StreamEvent | undefined;
         try {
-          const next = await this.source.next();
+          let next: IteratorResult<StreamEvent>;
+          try {
+            next = await this.source.next();
+          } catch (e) {
+            if (this.result === undefined) throw e;
+            // After completion: the connection's afterlife, not the answer.
+            this.recordCleanup(e);
+            next = { done: true, value: undefined };
+          }
           if (!next.done) {
             event = next.value;
-            if (event.type === "error") throw exceptionFromErrorEvent(event);
+            checkTerminal(event, this.result);
             this.accumulator.push(event);
-          }
-          if (next.done || event?.type === "end") {
-            this.result = this.accumulator.response();
+            if (event.type === "end") this.result = this.accumulator.response();
+          } else {
+            if (this.result === undefined) throw incomplete(this.accumulator);
             this.done = true;
-            await this.source.return?.();
+            await this.closeSource(undefined);
           }
         } catch (e) {
           this.failure = e;
           this.done = true;
-          try { await this.source.return?.(); } catch { /* preserve the original failure */ }
+          await this.closeSource(e);
           throw e;
         }
         if (event !== undefined) yield event;
@@ -472,6 +497,15 @@ export class ResponseStream implements AsyncIterable<string> {
       }
     } finally {
       this.reading = false;
+    }
+  }
+
+  private async closeSource(primary: unknown): Promise<void> {
+    try {
+      await this.source.return?.();
+    } catch (cleanup) {
+      if (primary === undefined) this.recordCleanup(cleanup); // complete: reported, not thrown
+      else attachCleanup(primary, cleanup); // preserve the original failure
     }
   }
 
@@ -500,29 +534,113 @@ export class ResponseStream implements AsyncIterable<string> {
   }
 }
 
+/** MAP-3 on the consumer side: an event after the end event is a source defect, never merged or dropped. */
+function checkTerminal(event: StreamEvent, result: Response | undefined): void {
+  if (result !== undefined) {
+    throw new StreamAssemblyError(
+      "Stream emitted an event after its end event (MAP-3: the end event is final); the source that produced this stream is defective",
+      { partial: result },
+    );
+  }
+  if (event.type === "error") throw exceptionFromErrorEvent(event);
+}
+
+/** Exhausted without an end event: the finish reason and usage never arrived; the text is not a finished turn. */
+function incomplete(acc: StreamAccumulator): StreamAssemblyError {
+  let partial: Response | null = null;
+  try {
+    partial = acc.response();
+  } catch (e) {
+    partial = e instanceof StreamAssemblyError ? e.partial : null;
+  }
+  return new StreamAssemblyError(
+    "Stream ended without an end event: its finish reason and usage never arrived, so the text is not a finished turn (MAP-3)",
+    { partial },
+  );
+}
+
+/** The name the warning is emitted under; make it fatal with `node --throw-deprecation`-style handling of `process.on("warning")`. */
+export const STREAM_CLEANUP_WARNING = "StreamCleanupWarning";
+
+function warnCleanup(e: unknown): void {
+  const message = `stream source failed after the response was complete (${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}); the Response is returned unchanged`;
+  const proc = (globalThis as { process?: { emitWarning?: (message: string, options: { type: string; detail?: string }) => void } }).process;
+  if (proc?.emitWarning) proc.emitWarning(message, { type: STREAM_CLEANUP_WARNING });
+  else console.warn(`${STREAM_CLEANUP_WARNING}: ${message}`);
+}
+
+function attachCleanup(primary: unknown, cleanup: unknown): void {
+  if (primary !== null && typeof primary === "object") {
+    const holder = primary as { cleanupErrors?: readonly unknown[] };
+    try {
+      holder.cleanupErrors = [...(holder.cleanupErrors ?? []), cleanup];
+    } catch {
+      // Optional diagnostics must not replace the primary failure.
+    }
+  }
+}
+
 async function* toAsync<T>(items: Iterable<T>): AsyncGenerator<T> {
   for (const item of items) yield item;
 }
 
-/** One-shot: consume events and build the Response. */
+/**
+ * One-shot: consume a complete stream, requiring a final end event and
+ * refusing events after it (MAP-3); a source failure after the end event
+ * is a warning, never a throw in place of the Response.
+ */
 export function materializeResponse(events: Iterable<StreamEvent>, request: Request): Response {
   const acc = new StreamAccumulator(request);
-  for (const event of events) {
-    if (event.type === "error") throw exceptionFromErrorEvent(event);
-    acc.push(event);
-    if (event.type === "end") break;
+  let result: Response | undefined;
+  const it = events[Symbol.iterator]();
+  try {
+    for (;;) {
+      let next: IteratorResult<StreamEvent>;
+      try {
+        next = it.next();
+      } catch (e) {
+        if (result === undefined) throw e;
+        warnCleanup(e);
+        break;
+      }
+      if (next.done) break;
+      checkTerminal(next.value, result);
+      acc.push(next.value);
+      if (next.value.type === "end") result = acc.response();
+    }
+    if (result === undefined) throw incomplete(acc);
+    return result;
+  } catch (e) {
+    try { it.return?.(); } catch (cleanup) { attachCleanup(e, cleanup); }
+    throw e;
   }
-  return acc.response();
 }
 
 export async function materializeResponseAsync(events: AsyncIterable<StreamEvent>, request: Request): Promise<Response> {
   const acc = new StreamAccumulator(request);
-  for await (const event of events) {
-    if (event.type === "error") throw exceptionFromErrorEvent(event);
-    acc.push(event);
-    if (event.type === "end") break;
+  let result: Response | undefined;
+  const it = events[Symbol.asyncIterator]();
+  try {
+    for (;;) {
+      let next: IteratorResult<StreamEvent>;
+      try {
+        next = await it.next();
+      } catch (e) {
+        if (result === undefined) throw e;
+        warnCleanup(e);
+        break;
+      }
+      if (next.done) break;
+      checkTerminal(next.value, result);
+      acc.push(next.value);
+      if (next.value.type === "end") result = acc.response();
+    }
+    if (result === undefined) throw incomplete(acc);
+    return result;
+  } catch (e) {
+    try { await it.return?.(); } catch (cleanup) { attachCleanup(e, cleanup); }
+    throw e;
   }
-  return acc.response();
 }
 
 /** Replay a complete response as canonical events. Unsupported part kinds are

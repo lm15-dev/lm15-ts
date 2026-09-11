@@ -246,7 +246,7 @@ export abstract class ProviderLM {
     const building = this.buildRequest(request, false);
     const req = await (opts.signal ? abortable(building, opts.signal) : building);
     const resp = await this.send(req, opts.signal);
-    if (resp.status >= 400) throw attachRetryAfter(this.normalizeError(resp.status, resp.text()), resp);
+    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
     return this.parseResponse(request, resp);
   }
 
@@ -268,7 +268,7 @@ export abstract class ProviderLM {
     }
     if (res.status >= 400) {
       const buffered = await bufferResponse(res);
-      throw attachRetryAfter(this.normalizeError(buffered.status, buffered.text()), buffered);
+      throw attachErrorMetadata(this.normalizeError(buffered.status, buffered.text()), buffered);
     }
     for await (const sse of parseSseAsync(splitLinesAsync(res.chunks()))) {
       for (const event of this.parseStreamEvents(request, sse)) yield event;
@@ -285,7 +285,7 @@ export abstract class ProviderLM {
 
   protected async sendOk(request: TransportRequest): Promise<HttpResponse> {
     const resp = await this.send(request);
-    if (resp.status >= 400) throw attachRetryAfter(this.normalizeError(resp.status, resp.text()), resp);
+    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
     return resp;
   }
 
@@ -611,20 +611,49 @@ function wrapTransport(e: unknown): LM15Error {
   return new TransportError(e instanceof Error ? e.message : String(e), { cause: e });
 }
 
-/** Populate `retryAfter` from a Retry-After header when the body did not. */
-function attachRetryAfter(error: ProviderError, resp: HttpResponse): ProviderError {
-  if (error.retryAfter !== null) return error;
-  const value = resp.header("retry-after");
-  if (!value) return error;
-  let seconds: number | undefined;
+/**
+ * A retry hint as seconds: delta-seconds, or an HTTP-date measured from now
+ * (never negative). A hint that is not finite, is negative, or does not
+ * parse is DROPPED, never stored: an infinite or NaN retryAfter becomes an
+ * infinite sleep in the first caller that trusts it (contract
+ * 2026-09-11-stream-completion-and-error-metadata § 3).
+ */
+export function retryAfterSeconds(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return undefined;
+  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : undefined;
+  if (typeof value !== "string") return undefined;
   const n = Number(value);
-  if (Number.isFinite(n)) seconds = n >= 0 ? n : undefined;
-  else {
-    const when = Date.parse(value);
-    if (!Number.isNaN(when)) seconds = Math.max(0, (when - Date.now()) / 1000);
+  if (value.trim() !== "" && Number.isFinite(n)) return n >= 0 ? n : undefined;
+  const when = Date.parse(value);
+  if (Number.isNaN(when)) return undefined;
+  return Math.max(0, (when - Date.now()) / 1000);
+}
+
+/** The response headers a provider's request id lives in when its error body carried none, in the order they are tried. */
+export const REQUEST_ID_HEADERS: readonly string[] = Object.freeze(["x-request-id", "request-id", "x-amzn-requestid", "x-amz-request-id", "x-ms-request-id"]);
+
+/**
+ * Fill HTTP diagnostics the error body did not say; never invent absent
+ * fields. A valid body-derived retryAfter wins; an invalid one is dropped
+ * before the header is consulted. A body request id is never replaced.
+ */
+export function attachErrorMetadata(error: ProviderError, resp: HttpResponse): ProviderError {
+  const mutable = error as { retryAfter: number | null; requestId: string | null };
+  const bodyHint = retryAfterSeconds(error.retryAfter);
+  mutable.retryAfter = bodyHint ?? null;
+  if (bodyHint === undefined) {
+    const header = retryAfterSeconds(resp.header("retry-after"));
+    if (header !== undefined) mutable.retryAfter = header;
   }
-  if (seconds === undefined) return error;
-  (error as { retryAfter: number | null }).retryAfter = seconds;
+  if (error.requestId === null || error.requestId === undefined || error.requestId === "") {
+    for (const name of REQUEST_ID_HEADERS) {
+      const value = resp.header(name);
+      if (value) {
+        mutable.requestId = value;
+        break;
+      }
+    }
+  }
   return error;
 }
 

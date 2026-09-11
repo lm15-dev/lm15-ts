@@ -10,7 +10,7 @@ import {
   ANTHROPIC_PRESET_BASE_URLS,
   EFFORT_THINKING_BUDGETS,
   anthropicPreset,
-  presetKey,
+  presetBaseUrl,
   resolveAnthropicCompat,
   type AnthropicCompat,
   type ResolvedAnthropicCompat,
@@ -192,7 +192,7 @@ export class AnthropicLM extends ProviderLM {
     const compat = opts.compat ?? this.registryCompat();
     if (typeof compat === "string") {
       this.resolvedCompat = resolveAnthropicCompat(anthropicPreset(compat));
-      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = ANTHROPIC_PRESET_BASE_URLS[presetKey(compat)] ?? DEFAULT_BASE_URL;
+      if (this.baseUrl === DEFAULT_BASE_URL) this.baseUrl = presetBaseUrl(ANTHROPIC_PRESET_BASE_URLS, compat, "Messages", "anthropic");
     } else this.resolvedCompat = resolveAnthropicCompat(compat ?? {});
   }
 

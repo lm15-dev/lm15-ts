@@ -32,7 +32,7 @@ request and no golden). Runtime correctness is tested separately; see
 | `files`, `batch`, `cache` | the three surfaces, multipart byte for byte, MAP-11 id escaping | 48 / 0, 41 / 0, 11 / 0 |
 | `generation`, `video` | image and speech generation, video jobs (MAP-11) | 20 / 0, 27 / 0 |
 | `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
-| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 118 recorded chat bodies round-trip (21 pinned lossy), 38 foreign shapes (10 refusals). Provisional; module 4b | 156 / 0 |
+| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 118 recorded chat bodies round-trip (21 pinned lossy), 42 foreign shapes (11 refusals; the SDK's and litellm's dumped message objects, `annotations` → CitationPart). Provisional; module 4b | 160 / 0 |
 
 Beyond the harness: `npm test` (node:test) covers the JSON
 fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
@@ -169,6 +169,11 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 - **No schema derivation from a function signature** (api-family.md § Tools):
   `tool(name, { parameters })` takes the JSON Schema you write. Stated once
   for all three non-Python ports.
+- **Post-completion stream failures are reported with `process.emitWarning`**
+  (contract `changes/2026-09-11-stream-completion-and-error-metadata.md` § 2;
+  Python: `StreamCleanupWarning`). The warning's `type` is
+  `StreamCleanupWarning`; `ResponseStream.cleanupErrors` holds the failures.
+  Outside Node (no `process.emitWarning`) it falls back to `console.warn`.
 - **The router's rung 0** (a `provider` attribute on a `str` subclass) is a
   Python idiom with no TypeScript equivalent; `provider:model` and catalogs
   cover the same ground (spec/vocabularies.md names only the three rungs the

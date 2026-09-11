@@ -11,6 +11,7 @@
 import { isJsonObject, type JsonObject } from "./json.ts";
 import { REASONING_EFFORTS } from "./vocab.ts";
 import { ValueError } from "./types/validate.ts";
+import { NotConfiguredError } from "./errors.ts";
 
 export {
   ANTHROPIC_PRESET_BASE_URLS,
@@ -73,6 +74,7 @@ export const OPENAI_RESPONSES_PRESETS: Readonly<Record<string, OpenAIResponsesCo
     toolResultMedia: "reject",
   },
   ollama: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "none", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
+  get lmstudio() { return this.ollama; }, // LM Studio: ollama's wire policy at its own address (api-family, 2026-09-11)
   vllm: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "reasoning_effort", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
   sglang: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "reasoning_effort", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
   qwen: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "qwen", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
@@ -188,6 +190,11 @@ const CHAT_BASE = {
 export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = Object.freeze({
   openai: { ...CHAT_BASE, maxTokensField: "max_completion_tokens", thinkingFormat: "reasoning_effort", cacheControl: "openai", toolResultMedia: "reject" },
   ollama: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "none", cacheControl: "none", toolResultMedia: "reject" },
+  // LM Studio: ollama's wire policy (lmstudio.ai docs list the same Chat
+  // Completions fields: max_tokens, no reasoning dial) at its own documented
+  // address, http://localhost:1234/v1. Until 2026-09-11 the name was an alias
+  // of "ollama" and took ollama's port. No live receipt for the policy yet.
+  get lmstudio() { return this.ollama; },
   groq: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", builtinTools: "groq", cacheControl: "none", toolResultMedia: "reject" },
   openrouter: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "openrouter", cacheControl: "openai", toolResultMedia: "reject" },
   xai: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "deepseek", cacheControl: "none", toolResultMedia: "images" },
@@ -393,8 +400,7 @@ const PRESET_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   chat_completions: "openai",
   responses: "openai",
   openai_responses: "openai",
-  lmstudio: "ollama",
-  lm_studio: "ollama",
+  lm_studio: "lmstudio",
   dashscope_qwen: "qwen",
   z_ai: "zai",
 });
@@ -402,6 +408,26 @@ const PRESET_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 export function presetKey(name: string): string {
   const key = name.toLowerCase().replace(/[-\s.]/g, "_");
   return PRESET_ALIASES[key] ?? key;
+}
+
+/**
+ * The address a preset name supplies for one dialect (api-family, 2026-09-11).
+ * A name that names a server supplies that server's root. Only the dialect's
+ * own default (`defaultPreset`: `openai` / `anthropic`) resolves to the cloud
+ * default. Any other name with no entry in `table` is refused with
+ * `NotConfiguredError`: a request meant for a named server must never be
+ * sent to the OpenAI cloud with whatever key is around because a table
+ * lacked a row (before, `compat: "lmstudio"` went to ollama's port here and
+ * to api.openai.com in Python).
+ */
+export function presetBaseUrl(table: Readonly<Record<string, string>>, name: string, dialect: string, defaultPreset: string): string {
+  const key = presetKey(name);
+  const url = table[key];
+  if (url !== undefined) return url;
+  if (key === defaultPreset) return table[defaultPreset]!;
+  throw new NotConfiguredError(
+    `compat ${JSON.stringify(name)} names a server whose ${dialect} address lm15 does not know; pass baseUrl (the server's OpenAI-compatible root, e.g. "http://localhost:PORT/v1")`,
+  );
 }
 
 export function openaiChatPreset(name: string): OpenAIChatCompat {

@@ -12,9 +12,9 @@
  */
 
 // The core loop (playbooks/api-family.md)
-export { LMRouter, DEFAULT_RULES, MissingCredentialError, describeResolution, resolveModel } from "./router.ts";
+export { LMRouter, DEFAULT_RULES, LITELLM_PROVIDER_PREFIXES, MissingCredentialError, apiKeysSource, describeResolution, openaiChatModelString, resolveModel } from "./router.ts";
 export type { Resolution, ResolutionSource, RouteRule, RouterConfig } from "./router.ts";
-export { ResponseStream, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, responseToEvents, parseSse, parseSseAsync } from "./stream.ts";
+export { ResponseStream, STREAM_CLEANUP_WARNING, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, responseToEvents, parseSse, parseSseAsync } from "./stream.ts";
 export type { SSEEvent } from "./stream.ts";
 
 // Canonical types
@@ -168,7 +168,7 @@ export type { ErrorMetadata } from "./errors.ts";
 // Providers, direct
 export { OpenAILM, OpenAICodexLM } from "./dialects/openai_responses.ts";
 export type { OpenAILMOptions } from "./dialects/openai_responses.ts";
-export { OpenAIChatLM, requestFromOpenAIChat } from "./dialects/openai_chat.ts";
+export { OpenAIChatLM, requestFromOpenAIChat, responseFromOpenAIChat } from "./dialects/openai_chat.ts";
 export type { OpenAIChatLMOptions } from "./dialects/openai_chat.ts";
 export { AnthropicLM, ClaudeCodeLM } from "./dialects/anthropic.ts";
 export type { AnthropicLMOptions, ClaudeCodeLMOptions } from "./dialects/anthropic.ts";
