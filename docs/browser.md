@@ -122,6 +122,16 @@ interface Platform {
 }
 ```
 
+## The example
+
+`examples/openrouter-page/` is a static page — no backend — that signs in
+to OpenRouter with PKCE (lm15's `generatePkce`), lists models, streams
+replies and cancels them, through this entry point. `npm run example`
+serves it; `npm run test:example` drives its modules through a real
+redirect against a fake OpenRouter in Chromium and Firefox, and with
+`--live` and `OPENROUTER_API_KEY`, against the real one. Its README lists
+what building it surfaced.
+
 ## Evidence
 
 Three tests, each a different kind:

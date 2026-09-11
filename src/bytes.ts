@@ -65,8 +65,8 @@ export function base64Decode(text: string): Uint8Array {
   return out;
 }
 
-export function utf8Encode(text: string): Uint8Array {
-  return utf8Encoder.encode(text);
+export function utf8Encode(text: string): Uint8Array<ArrayBuffer> {
+  return utf8Encoder.encode(text) as Uint8Array<ArrayBuffer>;
 }
 
 /** Lossy on malformed input (U+FFFD), like every provider body decoder here. */

@@ -13,22 +13,9 @@
  * Run: `npm run test:browser`. Not part of `npm test`: it needs browsers.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { stripTypeScriptTypes } from "node:module";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
-
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const REPORT_TIMEOUT_MS = 60_000;
-
-interface Report {
-  readonly userAgent: string;
-  readonly checks: Record<string, { ok: boolean; detail: string }>;
-}
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { findBrowsers, printReport, readBody, runInBrowser } from "./headless.ts";
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>lm15 browser smoke</title><body><script type="module" src="/tools/browser_page.ts"></script>`;
 
@@ -73,52 +60,8 @@ async function fakeDoor(req: IncomingMessage, res: ServerResponse, state: { canc
   return true;
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (c: Buffer) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf-8")));
-    req.on("error", reject);
-  });
-}
-
-/** Serve `/src/**.ts` and `/tools/**.ts` as JavaScript; nothing outside the repository. */
-function serveSource(req: IncomingMessage, res: ServerResponse): boolean {
-  const url = new URL(req.url ?? "/", "http://localhost");
-  if (!(url.pathname.startsWith("/src/") || url.pathname.startsWith("/tools/")) || !url.pathname.endsWith(".ts")) return false;
-  const file = resolve(root, "." + url.pathname);
-  if (!file.startsWith(root + sep) || !existsSync(file)) {
-    res.writeHead(404).end();
-    return true;
-  }
-  const code = stripTypeScriptTypes(readFileSync(file, "utf-8"), { mode: "strip" });
-  res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-  res.end(code);
-  return true;
-}
-
-interface Browser {
-  readonly name: string;
-  readonly bin: string;
-  args(url: string, profile: string): string[];
-}
-
-function onPath(bin: string): string | undefined {
-  for (const dir of (process.env["PATH"] ?? "").split(":")) if (dir && existsSync(join(dir, bin))) return join(dir, bin);
-  return undefined;
-}
-
-function browsers(): Browser[] {
-  const out: Browser[] = [];
-  const chromium = onPath("chromium") ?? onPath("chromium-browser") ?? onPath("google-chrome") ?? onPath("google-chrome-stable");
-  if (chromium) out.push({ name: "chromium", bin: chromium, args: (url, profile) => ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--disable-extensions", `--user-data-dir=${profile}`, url] });
-  const firefox = onPath("firefox");
-  if (firefox) out.push({ name: "firefox", bin: firefox, args: (url, profile) => ["--headless", "--no-remote", "--profile", profile, url] });
-  return out;
-}
-
 async function main(): Promise<number> {
-  const found = browsers();
+  const found = findBrowsers();
   if (found.length === 0) {
     console.error("browser smoke: no browser on PATH (looked for chromium, google-chrome, firefox)");
     return 2;
@@ -126,51 +69,17 @@ async function main(): Promise<number> {
   let failures = 0;
   for (const browser of found) {
     const state = { cancelObserved: false };
-    let resolveReport: (r: Report) => void = () => {};
-    const reported = new Promise<Report>((resolve) => (resolveReport = resolve));
-    const server = createServer((req, res) => {
-      void (async () => {
+    const report = await runInBrowser(browser, {
+      path: "/",
+      handler: async (req, res) => {
         if (req.url === "/" || req.url === "/index.html") {
           res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(PAGE);
-        } else if (req.url === "/report" && req.method === "POST") {
-          const report = JSON.parse(await readBody(req)) as Report;
-          res.writeHead(204).end();
-          resolveReport(report);
-        } else if (await fakeDoor(req, res, state)) {
-          // handled
-        } else if (!serveSource(req, res)) res.writeHead(404).end();
-      })().catch((e) => {
-        console.error("smoke server:", e);
-        if (!res.headersSent) res.writeHead(500);
-        res.end();
-      });
+          return true;
+        }
+        return fakeDoor(req, res, state);
+      },
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    const port = typeof address === "object" && address ? address.port : 0;
-    const url = `http://127.0.0.1:${port}/`;
-    const profile = mkdtempSync(join(tmpdir(), `lm15-smoke-${browser.name}-`));
-    let child: ChildProcess | undefined;
-    try {
-      child = spawn(browser.bin, browser.args(url, profile), { stdio: "ignore", env: { ...process.env, MOZ_HEADLESS: "1" } });
-      const report = await Promise.race([reported, sleep(REPORT_TIMEOUT_MS).then(() => undefined)]);
-      if (!report) {
-        console.error(`${browser.name}: no report within ${REPORT_TIMEOUT_MS / 1000}s`);
-        failures++;
-        continue;
-      }
-      const checks = { ...report.checks, "server-saw-cancel": { ok: state.cancelObserved, detail: "the stream socket closed before the second chunk" } };
-      const bad = Object.entries(checks).filter(([, c]) => !c.ok);
-      console.log(`${browser.name}: ${report.userAgent}`);
-      for (const [name, c] of Object.entries(checks)) console.log(`  ${c.ok ? "ok  " : "FAIL"} ${name}: ${c.detail}`);
-      if (bad.length > 0) failures++;
-    } finally {
-      child?.kill("SIGKILL");
-      server.close();
-      // Chromium keeps writing to the profile briefly after SIGKILL.
-      await sleep(200);
-      rmSync(profile, { recursive: true, force: true });
-    }
+    failures += printReport(browser.name, report, { "server-saw-cancel": { ok: state.cancelObserved, detail: "the stream socket closed before the second chunk" } }) > 0 ? 1 : 0;
   }
   return failures === 0 ? 0 : 1;
 }

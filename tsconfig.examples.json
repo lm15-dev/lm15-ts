@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": false,
+    "sourceMap": false,
+    "rootDir": "examples/openrouter-page/src",
+    "outDir": "examples/openrouter-page/build",
+    "types": [],
+    "lib": ["es2023", "dom", "dom.iterable"]
+  },
+  "include": ["examples/openrouter-page/src/**/*.ts"]
+}

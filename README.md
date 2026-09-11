@@ -77,6 +77,8 @@ npm run build                  # regenerates src/surface.ts, emits dist/ (ESM + 
 npm test                       # node:test; replays ../lm15-contract when present
 npm run differential           # both probes against ../lm15-python
 npm run test:browser           # the web entry in Chromium and Firefox, headless (needs the browsers)
+npm run test:example           # the example page's modules through a real PKCE redirect, same browsers
+npm run example                # serve examples/openrouter-page — a static page that talks to OpenRouter
 cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all
 ```
 
@@ -161,7 +163,9 @@ resolving the `browser` condition gets this entry from `import "lm15"`.
 The line, what a page cannot promise (CORS; a key in a page is not a
 secret), and the evidence behind the claim — the corpus replayed in a
 web-only realm, Chromium and Firefox headless — are in
-[docs/browser.md](docs/browser.md).
+[docs/browser.md](docs/browser.md). A complete page — PKCE sign-in to
+OpenRouter, models, streaming, cancel, no backend — is
+[examples/openrouter-page](examples/openrouter-page/README.md).
 
 ## Stated deviations
 
@@ -233,5 +237,6 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 | `src/testing.ts` | `lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
 | `src/canonical.ts` | Out-of-band type identity for generic serialization |
 | `src/vet.ts`, `src/vet_*.ts` | the vet shim (`node dist/vet.js`) |
-| `tools/` | surface generator, differential probes, live smoke, the browser smoke (`browser_smoke.ts`) |
+| `examples/openrouter-page/` | the browser example: PKCE sign-in, models, streaming, cancel; its README lists what building it surfaced |
+| `tools/` | surface generator, differential probes, live smoke, the headless harness (`headless.ts`), the SDK and example browser smokes, the static server |
 | `receipts/` | live evidence, secrets redacted (`tools/check_secrecy.py` passes) |

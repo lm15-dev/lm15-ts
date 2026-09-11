@@ -202,3 +202,15 @@ test("FetchTransport calls fetch with an undefined receiver: a browser's fetch i
   assert.equal(receivers.length, 1);
   assert.ok(receivers[0] === undefined || receivers[0] === globalThis, "fetch must not be invoked as a method of the transport");
 });
+
+test("PKCE (RFC 7636 S256): the RFC's own vector, a fresh pair's shape, and the verifier rule", async () => {
+  const { generatePkce, pkceChallenge } = await import("../src/auth/pkce.ts");
+  assert.equal(await pkceChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+  const one = await generatePkce();
+  const two = await generatePkce();
+  assert.equal(one.method, "S256");
+  assert.match(one.verifier, /^[A-Za-z0-9_-]{86}$/);
+  assert.equal(one.challenge, await pkceChallenge(one.verifier));
+  assert.notEqual(one.verifier, two.verifier);
+  await assert.rejects(pkceChallenge("too-short"), TypeError);
+});

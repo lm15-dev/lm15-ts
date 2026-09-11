@@ -227,3 +227,5 @@ export type { Platform, StoredCredentials, CloudChain, CloudChainOptions, ChainS
 export { loadCredential } from "./adapter.ts";
 export { base64Encode, base64Decode, base64UrlEncode, utf8Encode, utf8Decode } from "./bytes.ts";
 export { decodeJwtPayload, looksLikeJwt } from "./auth/jwt.ts";
+export { generatePkce, pkceChallenge } from "./auth/pkce.ts";
+export type { PkcePair } from "./auth/pkce.ts";

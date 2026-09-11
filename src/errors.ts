@@ -137,7 +137,7 @@ export class NotConfiguredError extends ConfigurationError {
     } else if (envKeys.length > 0 || meta.provider) {
       guidance = "\n\n  To fix:\n";
       if (envKeys.length > 0) {
-        guidance += `    - Set the provider API key in your environment: ${envKeys.map((k) => `${k}=...`).join(" or ")}\n`;
+        guidance += `    - Pass the key explicitly (apiKey, or RouterConfig apiKeys), or on a host with an environment set ${envKeys.map((k) => `${k}=...`).join(" or ")}\n`;
       }
       if (meta.provider) guidance += `    - Configure credentials for ${meta.provider}\n`;
     }
@@ -224,8 +224,8 @@ export class AuthError extends ProviderError {
       guidance = "\n\n  To fix:\n    - Check that your API key is correct and not expired\n";
       guidance +=
         envKeys.length > 0
-          ? `    - Set the provider API key in your environment: ${envKeys.map((k) => `${k}=...`).join(" or ")}\n`
-          : "    - Set the provider API key in your environment\n";
+          ? `    - Pass the key explicitly (apiKey, or RouterConfig apiKeys), or on a host with an environment set ${envKeys.map((k) => `${k}=...`).join(" or ")}\n`
+          : "    - Pass the key explicitly (apiKey, or RouterConfig apiKeys)\n";
       if (meta.provider) guidance += `    - Verify your ${meta.provider} account/project has access\n`;
     }
     super(appendGuidance(message, guidance), meta);

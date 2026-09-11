@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-vzDM+wPtdfGgwcSDia6gRane5rggh7T4wuIn42/jZc4='; style-src 'self'; connect-src 'self' https://openrouter.ai; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>lm15 in a page — OpenRouter</title>
+<link rel="stylesheet" href="./app.css">
+<script type="importmap">{"imports":{"lm15/browser":"../../dist/browser.js"}}</script>
+<script type="module" src="./build/main.js"></script>
+</head>
+<body>
+<header>
+  <h1>lm15 in a page</h1>
+  <p>A static page, no backend. It signs in to <a href="https://openrouter.ai" rel="noopener">OpenRouter</a> with a key you control, then talks to models through <code>lm15/browser</code>.</p>
+  <p id="status" role="status" aria-live="polite">Loading…</p>
+  <p id="alert" role="alert" hidden></p>
+</header>
+
+<section id="signed-out" hidden aria-labelledby="signed-out-h">
+  <h2 id="signed-out-h">Sign in</h2>
+  <p><button id="login" type="button">Sign in with OpenRouter</button></p>
+  <p class="small">You are sent to OpenRouter, which makes a key for this page and sends you back. No password touches this page; the key is yours to revoke.</p>
+  <details>
+    <summary>Or paste a key you already have</summary>
+    <form id="paste">
+      <label>OpenRouter key <input id="paste-key" type="password" autocomplete="off" spellcheck="false" required></label>
+      <button type="submit">Use key</button>
+    </form>
+  </details>
+  <p><label><input id="remember" type="checkbox"> Remember on this device</label> <span class="small">(stored in this browser for this site; anyone with this profile can use it; Forget removes it)</span></p>
+</section>
+
+<section id="signed-in" hidden aria-labelledby="signed-in-h">
+  <h2 id="signed-in-h">Chat</h2>
+  <p class="row">
+    <label>Model <input id="model" list="models" autocomplete="off" spellcheck="false" placeholder="provider/model"></label>
+    <datalist id="models"></datalist>
+    <span id="model-count" class="small"></span>
+    <a id="manage" href="#" rel="noopener" target="_blank">Manage this key</a>
+    <button id="forget" type="button">Forget key</button>
+  </p>
+  <ol id="transcript" aria-live="polite" aria-label="conversation"></ol>
+  <form id="composer">
+    <label for="prompt" class="visually-hidden">Message</label>
+    <textarea id="prompt" rows="3" placeholder="Say something. Enter sends; Shift+Enter is a new line." required></textarea>
+    <p class="row">
+      <button id="send" type="submit">Send</button>
+      <button id="stop" type="button" disabled>Stop</button>
+      <span id="meta" class="small" aria-live="polite"></span>
+    </p>
+  </form>
+  <details id="preview-toggle">
+    <summary>The request lm15 built (what goes on the wire; the key is redacted)</summary>
+    <pre id="preview"></pre>
+  </details>
+</section>
+
+<footer class="small">
+  <p>Built on the lm15 TypeScript SDK's web entry point. What a page can and cannot promise — CORS, keys — is in <code>docs/browser.md</code>. This page keeps no history, retries nothing, runs no tools: those are an app's decisions.</p>
+</footer>
+</body>
+</html>
