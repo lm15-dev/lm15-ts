@@ -38,11 +38,14 @@ provider's delayed response cannot replace the active picker. Turn discovery
 off or refresh its list in Settings. When listing fails or isn't supported,
 enter an exact model ID; it is explicitly marked unverified.
 
-Connection, Models, Request, and Streaming tabs show standalone JavaScript
-examples with the same selected provider, model, and prompt. UI actions focus
-the relevant example. The examples contain placeholder keys only. They show a
-single turn, while the actual chat retains completed turns. Copy code copies
-the example, not your credentials. On narrow screens code stacks below chat.
+Connection, Models, Request, and Streaming tabs show JavaScript examples for
+the same selected provider, model, and prompt. UI actions focus the relevant
+example. The examples contain placeholder keys only. Request and Streaming
+replay every completed turn exactly as the page holds it, in canonical JSON
+through `Message.fromJSON`, including thinking parts and continuation state,
+then append your next message. Stopped or failed turns are not replayed. Copy
+code copies the example, not your credentials. On narrow screens code stacks
+below chat.
 
 **Trade-off:** a shared example renderer maintains a small set of idiomatic
 JavaScript patterns, rather than translating arbitrary application code. Tests
@@ -102,8 +105,9 @@ one-use authorization, no caching, and refusal to serve unrelated files.
 These tests establish application behavior, not live availability of all nine
 providers. They do not spend credits or use the developer's real keys.
 
-`tests/provider_examples.test.ts` type-checks all 44 generated code variants
-against the browser package, runs them with fake network responses, and checks
-that their request bodies match the interface's. It also checks fuzzy ranking
+`tests/provider_examples.test.ts` type-checks all 88 generated code variants
+(with and without replayed history, including continuation state) against the
+browser package, runs them with fake network responses, and checks that their
+request bodies match the interface's. It also checks fuzzy ranking
 and slash-command parsing. The package tests and existing protocol examples
 remain separate checks.

@@ -49,13 +49,14 @@ function currentChoice() { return CONNECTIONS.find((choice) => choice.id === con
 function cacheKey(): string { return `${connection.provider}:${connection.endpoint}:${keyRevision.get(connection.provider) ?? 0}`; }
 function updateExample() {
   const draft = prompt.value.trim();
-  $("code").textContent = example(connection, redact(draft && !slashCommand(draft) ? draft : lastPrompt), mode);
+  const next = draft && !slashCommand(draft) ? draft : messages.length ? "Your next message" : lastPrompt;
+  $("code").textContent = example(connection, redact(next), mode, messages);
   for (const tab of document.querySelectorAll<HTMLButtonElement>("[data-example]")) tab.setAttribute("aria-pressed", String(tab.dataset.example === mode));
   $("code-purpose").textContent = {
     connect: "The provider chip chooses this client. Credentials are always placeholders here.",
     models: "The model picker calls listModels(). Listing is not proof of account access.",
-    request: "Your model and message become a Request. This example inspects it without inference.",
-    stream: "Send streams text; Stop aborts it. This is a standalone single-turn example, not the chat's full history.",
+    request: "Exactly what Send builds: the whole conversation so far, then your next message. Inspects it without inference.",
+    stream: "Exactly what Send does: replay every earlier turn, stream the reply, keep it for the next turn. Stop aborts.",
   }[mode];
 }
 function showCode(next: ExampleMode) { mode = next; updateExample(); }
@@ -227,6 +228,7 @@ $("composer").addEventListener("submit", async (event) => {
     if (version !== generation) return;
     const response = await stream.response(); messages = [...request.messages, response.message];
     $("usage").textContent = `${response.finishReason} · input ${response.usage?.inputTokens ?? "unreported"} · output ${response.usage?.outputTokens ?? "unreported"}`;
+    updateExample(); // the code now replays this turn too
   } catch (error) {
     if (version === generation) {
       notify(controller.signal.aborted ? "Stopped. This incomplete turn is not included in the next request." : errorMessage(error));

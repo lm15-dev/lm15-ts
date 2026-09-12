@@ -4,16 +4,23 @@ import { test } from "node:test";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
-import { Message } from "../dist/browser.js";
+import { Message, continuationState, thinking } from "../dist/browser.js";
 import { CONNECTIONS } from "../examples/provider-page/connections.ts";
 import { createClient, example, fuzzyScore, slashCommand, type Connection, type ExampleMode } from "../examples/provider-page/experience.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const modes: ExampleMode[] = ["connect", "request", "stream", "models"];
 const prompt = 'Quotes " and a newline\n</script> are text, not executable code.';
-const cases = CONNECTIONS.flatMap((choice) => modes.map((mode) => ({
-  mode, connection: { provider: choice.id, model: choice.model || "custom-model", endpoint: "http://localhost:1234/v1" } satisfies Connection,
-})));
+const history = [
+  Message.user("Earlier question"),
+  Message.assistant([
+    thinking("", { continuation: [continuationState("anthropic", "signature", { value: "opaque-replay-state" })] }),
+    "Earlier answer",
+  ]),
+];
+const cases = CONNECTIONS.flatMap((choice) => modes.flatMap((mode) => [[], history].map((messages) => ({
+  mode, messages, connection: { provider: choice.id, model: choice.model || "custom-model", endpoint: "http://localhost:1234/v1" } satisfies Connection,
+}))));
 
 test("fuzzy selection ranks exact names first and rejects unordered matches; slash commands stay distinct", () => {
   assert.ok(fuzzyScore("openai", "openai") > fuzzyScore("openai", "openai-chat"));
@@ -25,8 +32,9 @@ test("fuzzy selection ranks exact names first and rejects unordered matches; sla
   assert.equal(slashCommand("Explain /model to me"), undefined);
 });
 
-test("all 44 displayed JavaScript variants type-check against the browser package", () => {
-  const files = new Map(cases.map(({ connection, mode }, index) => [resolve(root, `examples/provider-page/__example_${index}.ts`), example(connection, prompt, mode)]));
+test("all 88 displayed JavaScript variants type-check against the browser package", () => {
+  assert.equal(cases.length, 88);
+  const files = new Map(cases.map(({ connection, mode, messages }, index) => [resolve(root, `examples/provider-page/__example_${index}.ts`), example(connection, prompt, mode, messages)]));
   const options: ts.CompilerOptions = { target: ts.ScriptTarget.ES2023, module: ts.ModuleKind.NodeNext, moduleResolution: ts.ModuleResolutionKind.NodeNext, strict: true, noEmit: true, skipLibCheck: true, types: [], lib: ["lib.es2023.d.ts", "lib.dom.d.ts"] };
   const host = ts.createCompilerHost(options);
   const originalRead = host.readFile, originalExists = host.fileExists, originalSource = host.getSourceFile;
@@ -68,17 +76,19 @@ test("the actual displayed code executes and builds the same request as the inte
     return reply(url, init.method === "POST");
   });
   const entry = pathToFileURL(resolve(root, "dist/browser.js")).href;
-  for (const { connection, mode } of cases) {
+  for (const [index, { connection, mode, messages }] of cases.entries()) {
     calls = [];
     // Only module resolution changes: this data URL imports the exact package's built browser entry.
-    const source = example(connection, prompt, mode).replace('"lm15/browser"', JSON.stringify(entry));
+    const source = example(connection, prompt, mode, messages).replace('"lm15/browser"', JSON.stringify(entry));
+    if (messages.length && mode !== "connect" && mode !== "models") assert.match(source, /"continuation": \[/, "Earlier turns are replayed with their continuation state");
     const exported = mode === "request" ? "lm, request, wire" : mode === "stream" ? "lm, request" : "lm";
-    const module = await import(`data:text/javascript,${encodeURIComponent('const console = { log() {} };\n' + source + `\nexport { ${exported} };`)}`);
+    // Identical source is cached by URL; the index makes every variant execute once.
+    const module = await import(`data:text/javascript,${encodeURIComponent(`// variant ${index}\nconst console = { log() {} };\n` + source + `\nexport { ${exported} };`)}`);
     assert.equal(module.lm.provider, createClient(connection, connection.provider === "ollama" ? "unused" : "YOUR_API_KEY").provider);
     assert.equal(calls.length, ["stream", "models"].includes(mode) ? 1 : 0, `${connection.provider}/${mode}`);
     if (mode !== "request" && mode !== "stream") continue;
     const expected = await createClient(connection, connection.provider === "ollama" ? "unused" : "YOUR_API_KEY").buildRequest({
-      model: connection.model, messages: [Message.user(prompt)], config: { maxTokens: 400 },
+      model: connection.model, messages: [...messages, Message.user(prompt)], config: { maxTokens: 400 },
     }, true);
     const actual = mode === "request" ? { url: module.wire.url, body: new TextDecoder().decode(module.wire.body) } : calls[0]!;
     assert.equal(actual.url, expected.url, connection.provider);

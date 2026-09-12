@@ -21,16 +21,15 @@
     <header class="chat-toolbar">
       <div class="connection">
         <button id="provider-button" class="chip" aria-label="Choose provider" aria-haspopup="dialog"><span id="provider-name">OpenAI</span><span aria-hidden="true">⌄</span></button>
-        <button id="model-button" class="chip model-chip" aria-label="Choose model" aria-haspopup="dialog"><span id="model-name">gpt-4.1-mini</span><span aria-hidden="true">⌄</span></button>
+        <button id="model-button" class="chip" aria-label="Choose model" aria-haspopup="dialog"><span id="model-name">gpt-4.1-mini</span><span aria-hidden="true">⌄</span></button>
       </div>
       <button id="clear" class="quiet" aria-label="New conversation" title="New conversation">＋ New</button>
     </header>
-    <div class="connection-status"><span class="dot" aria-hidden="true"></span><span id="key-state" role="status">Loading…</span></div>
+    <p class="connection-status" id="key-state" role="status">Loading…</p>
     <div class="chat-scroll" id="chat-scroll">
-      <div id="empty" class="empty-state">
-        <span class="eyebrow">TRY THE INTERFACE. READ THE CODE.</span>
+      <div id="empty">
         <h1>Chat with a model</h1>
-        <p>Pick a model and say hello.<br>The code beside you follows along.</p>
+        <p>Pick a model and say hello. The code beside you shows exactly what Send does.</p>
         <div class="command-hints"><kbd>/provider</kbd><kbd>/model</kbd><kbd>/settings</kbd></div>
       </div>
       <div id="transcript" aria-label="Conversation"></div>
@@ -51,7 +50,7 @@
     </div>
   </section>
   <aside class="code-panel" aria-labelledby="code-heading">
-    <header class="code-heading"><div><span class="eyebrow">JavaScript</span><h2 id="code-heading">Example code</h2></div><span class="language-badge">lm15/browser</span></header>
+    <header class="code-heading"><h2 id="code-heading">The code behind Send</h2><span class="masthead-note">lm15/browser</span></header>
     <div class="code-tabs" role="group" aria-label="Code example">
       <button data-example="connect" aria-pressed="false">Connection</button>
       <button data-example="models" aria-pressed="false">Models</button>
@@ -60,7 +59,7 @@
     </div>
     <p id="code-purpose" class="code-purpose"></p>
     <pre tabindex="0" aria-label="Runnable JavaScript example"><code id="code"></code></pre>
-    <footer class="code-footer"><span>Your keys never appear here.<br>Change a chip or use a command to explore.</span><button id="copy-code">Copy code</button><span id="copy-status" class="sr-only" role="status"></span></footer>
+    <footer class="code-footer"><span>Your keys never appear here.</span><button id="copy-code">Copy code</button><span id="copy-status" class="sr-only" role="status"></span></footer>
   </aside>
 </main>
 
