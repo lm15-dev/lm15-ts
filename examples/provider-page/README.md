@@ -9,8 +9,9 @@ npm run build
 npm run example
 ```
 
-The server opens the page in your browser. Enter your own key; it is held
-only in memory, never in localStorage or sessionStorage. Switching providers
+The server opens a split view: chat on the left, runnable JavaScript on the
+right. Keys and advanced options live in **Settings**. Enter your own key;
+it is held only in memory, never in localStorage or sessionStorage. Switching providers
 keeps their keys separate and starts a new conversation. Changing a custom
 server's address clears its old key. Refreshing clears all keys.
 
@@ -19,6 +20,34 @@ Z.AI, Meta, Moonshot/Kimi, Ollama, and a custom Chat Completions endpoint.
 The SDK supplies the provider mappings; model suggestions are examples, not
 promises that your account can access them. Model listing is optional and
 does not prove authentication or inference access.
+
+## Pickers and the code panel
+
+Click the provider or model chip, or type a command in the message box:
+
+- `/provider anth` fuzzy-filters provider IDs and names.
+- `/model gpt4mini` fuzzy-filters the current provider's model IDs.
+- `/settings` opens keys and connection options.
+- `/` lists the commands. Arrow keys move, Enter chooses, Escape dismisses.
+  Shift+Enter inserts a newline. Commands never become inference requests.
+
+Model IDs are discovered automatically once the selected connection has a
+key (or is a keyless local connection). Lists are cached per connection and
+credential revision. Typing and filtering do not make more requests; an old
+provider's delayed response cannot replace the active picker. Turn discovery
+off or refresh its list in Settings. When listing fails or isn't supported,
+enter an exact model ID; it is explicitly marked unverified.
+
+Connection, Models, Request, and Streaming tabs show standalone JavaScript
+examples with the same selected provider, model, and prompt. UI actions focus
+the relevant example. The examples contain placeholder keys only. They show a
+single turn, while the actual chat retains completed turns. Copy code copies
+the example, not your credentials. On narrow screens code stacks below chat.
+
+**Trade-off:** a shared example renderer maintains a small set of idiomatic
+JavaScript patterns, rather than translating arbitrary application code. Tests
+execute the actual generated examples and compare their requests with the
+interface's shared connection helper. Other languages are not claimed yet.
 
 ## Private local test keys
 
@@ -46,9 +75,11 @@ this feature is not a secret vault or a production credential-delivery service.
 
 **Trade-off:** loading the keys gives this page's JavaScript access to them.
 It is explicit local test functionality, never part of the public static
-site. No request goes to a provider just because keys were loaded. Only
-List models and Send contact the selected provider. Hosted inference can cost
-money; Stop cancels the browser request but does not guarantee a billing refund.
+site. With automatic discovery enabled, loading keys fetches only the selected
+provider's model IDs; switching connections may fetch another list. Your prompt
+is never sent by discovery or by a selector. Only Send starts inference. Hosted
+inference can cost money; Stop cancels the browser request but does not guarantee
+a billing refund. Discovery can fail independently of chat and is optional.
 
 ## Browser connectivity
 
@@ -64,9 +95,15 @@ in the SDK rather than claiming universal compatibility.
 `npm run test:providers` builds the actual page and runs Chromium interface
 tests with dummy keys and intercepted provider replies. It checks all nine
 provider selections, their credential isolation, real stream parsing, manual
-key entry, clearing and reload. Server tests check opt-in, Host/Origin checks,
+key entry, clearing and reload. It also exercises fuzzy slash commands, model
+caching, failed discovery with manual entry, stale-response isolation, keyboard
+dismissal, and mobile layout. Server tests check opt-in, Host/Origin checks,
 one-use authorization, no caching, and refusal to serve unrelated files.
 These tests establish application behavior, not live availability of all nine
 providers. They do not spend credits or use the developer's real keys.
 
-The package tests and the existing protocol examples remain separate checks.
+`tests/provider_examples.test.ts` type-checks all 44 generated code variants
+against the browser package, runs them with fake network responses, and checks
+that their request bodies match the interface's. It also checks fuzzy ranking
+and slash-command parsing. The package tests and existing protocol examples
+remain separate checks.

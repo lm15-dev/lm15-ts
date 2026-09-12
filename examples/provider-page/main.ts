@@ -15,7 +15,7 @@ const automatic = $<HTMLInputElement>("automatic-models");
 const connection: Connection = { provider: "openai", model: "gpt-4.1-mini", endpoint: "http://localhost:1234/v1" };
 const keys = new Map<string, string>();
 const keyRevision = new Map<string, number>();
-interface Catalogue { ids: string[]; status: string; loading: boolean }
+interface Catalogue { ids: string[]; status: string; loading: boolean; error?: string }
 const catalogues = new Map<string, Catalogue>();
 let messages: Message[] = [];
 let generation = 0;
@@ -71,6 +71,7 @@ function refreshStatus() {
   endpoint.value = connection.endpoint;
   const catalogue = catalogues.get(cacheKey());
   $("model-status").textContent = catalogue?.status ?? (automatic.checked ? "Model IDs load when this connection is ready." : "Automatic model discovery is off.");
+  $("model-status").title = catalogue?.error ?? "";
   updateExample(); picker.update();
 }
 function reset() {
@@ -120,7 +121,7 @@ async function discover(force = false) {
   } catch (error) {
     catalogue.status = "Model discovery failed. You can still enter an exact model ID.";
     // A background discovery failure must not erase a draft or block chat.
-    if (cacheKey() === cache) $("model-status").title = errorMessage(error);
+    catalogue.error = errorMessage(error);
   } finally {
     catalogue.loading = false;
     if (cacheKey() === cache) refreshStatus(); // a stale provider's response never updates the active picker
