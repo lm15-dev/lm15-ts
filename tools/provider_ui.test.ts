@@ -182,6 +182,23 @@ test("nine local keys load privately; each provider receives only its key; manua
       assert.equal(modelLists, 1, "Only the selected connection is discovered");
       assert.equal(await page.locator("#settings").isVisible(), false);
       assert.match(await page.locator("#code").textContent() ?? "", /YOUR_API_KEY/);
+      await page.emulateMedia({ colorScheme: "light" });
+      const readability = await page.evaluate(() => {
+        const luminance = (color: string) => {
+          const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((channel) => {
+            const value = channel / 255;
+            return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+          });
+          return r! * 0.2126 + g! * 0.7152 + b! * 0.0722;
+        };
+        const code = getComputedStyle(document.getElementById("code")!);
+        const background = luminance(getComputedStyle(document.querySelector(".code-panel")!).backgroundColor);
+        const foreground = luminance(code.color);
+        return { size: parseFloat(code.fontSize), background, contrast: (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05) };
+      });
+      assert.ok(readability.size >= 16, "Code text must not shrink below 16px at default zoom");
+      assert.ok(readability.background > 0.9, "Use a light code background in light mode");
+      assert.ok(readability.contrast >= 7, "Code text must have at least 7:1 contrast");
       assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
       for (const choice of choices) {
         assert.equal((await page.content()).includes(key(choice.id)), false);

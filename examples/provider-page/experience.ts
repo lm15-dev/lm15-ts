@@ -27,7 +27,9 @@ export function example(connection: Connection, prompt: string, mode: ExampleMod
   if (connection.provider === "anthropic") imports.push("access");
   if (mode === "request" || mode === "stream") imports.push("Message");
   if (mode === "stream") imports.push("ResponseStream");
-  const lines = [`import { ${imports.join(", ")} } from "lm15/browser";`, ""];
+  const lines = imports.length > 2
+    ? ["import {", ...imports.map((name) => `  ${name},`), '} from "lm15/browser";', ""]
+    : [`import { ${imports.join(", ")} } from "lm15/browser";`, ""];
   if (connection.provider === "custom") {
     lines.push("const lm = new OpenAIChatLM({", '  apiKey: "YOUR_API_KEY", // "unused" for a keyless server', `  baseUrl: ${q(connection.endpoint)},`, "});");
   } else {
