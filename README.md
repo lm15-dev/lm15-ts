@@ -78,7 +78,7 @@ npm test                       # node:test; replays ../lm15-contract when presen
 npm run differential           # both probes against ../lm15-python
 npm run test:browser           # the web entry in Chromium and Firefox, headless (needs the browsers)
 npm run test:example           # the example page's modules through a real PKCE redirect, same browsers
-npm run example                # open the provider-neutral page; enter your own API key
+npm run example                # the playground: chat, with the request in JS / Python / Rust, each runnable
 npm run example:local          # opt in to private localhost test keys from ../.env
 npm run example:openrouter     # the separate OpenRouter OAuth protocol example
 npm run test:providers         # provider selection, key isolation, and the private handoff tests
@@ -166,11 +166,14 @@ resolving the `browser` condition gets this entry from `import "lm15"`.
 The line, what a page cannot promise (CORS; a key in a page is not a
 secret), and the evidence behind the claim — the corpus replayed in a
 web-only realm, Chromium and Firefox headless — are in
-[docs/browser.md](docs/browser.md). The default
-[provider-neutral example](examples/provider-page/README.md) takes your own
-API key and connects directly to your chosen provider. The separate
+[docs/browser.md](docs/browser.md). The
+[playground](examples/provider-page/README.md) takes your own API key,
+connects directly to your chosen provider, shows the exact request in
+JavaScript, Python, Rust, JSON and curl, and runs it through the real SDK
+of each language — this one, lm15-python under Pyodide, lm15-rs under
+wasm — confirming the bytes match. The separate
 [OpenRouter OAuth example](examples/openrouter-page/README.md) tests PKCE
-sign-in; it is not required to use LM15.
+sign-in; it is not required to use lm15.
 
 ## Stated deviations
 

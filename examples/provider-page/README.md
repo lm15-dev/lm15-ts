@@ -1,113 +1,142 @@
-# Provider-neutral browser demo
+# The lm15 playground
 
-Choose a provider, supply its API key, enter a model ID, and stream a reply
-through `lm15/browser`. No OpenRouter account or shared gateway is required.
-The earlier OpenRouter OAuth demo remains a separate protocol test.
+A chat page, provider-neutral, with the exact request beside it in
+JavaScript, Python, Rust, JSON and curl — and a **Run in** switch that
+sends the turn through the real SDK of the language you pick:
 
-```sh
-npm run build
-npm run example
-```
+- **JavaScript** — `lm15/browser`, the TypeScript SDK's web entry, in this page.
+- **Python** — lm15-python under [Pyodide](https://pyodide.org) (CPython
+  compiled to WebAssembly), executing the Python text the panel shows,
+  over `lm15.transports.FetchTransport`.
+- **Rust** — the lm15-rs crate compiled to `wasm32` with its `wasm`
+  feature, building the request and decoding the stream; the page does the
+  fetch (the codec has no network by design, like `lm15/browser` has none
+  of the host).
 
-The server opens a split view: chat on the left, runnable JavaScript on the
-right. Keys and advanced options live in **Settings**. Enter your own key;
-it is held only in memory, never in localStorage or sessionStorage. Switching providers
-keeps their keys separate and starts a new conversation. Changing a custom
-server's address clears its old key. Refreshing clears all keys.
-
-Supported demo choices: OpenAI, Anthropic, Gemini, Groq, OpenRouter, DeepSeek,
-Z.AI, Meta, Moonshot/Kimi, Ollama, and a custom Chat Completions endpoint.
-The SDK supplies the provider mappings; model suggestions are examples, not
-promises that your account can access them. Model listing is optional and
-does not prove authentication or inference access.
-
-## Pickers and the code panel
-
-Click the provider or model chip, or type a command in the message box:
-
-- `/provider anth` fuzzy-filters provider IDs and names.
-- `/model gpt4mini` fuzzy-filters the current provider's model IDs.
-- `/settings` opens keys and connection options.
-- `/` lists the commands. Arrow keys move, Enter chooses, Escape dismisses.
-  Shift+Enter inserts a newline. Commands never become inference requests.
-
-Model IDs are discovered automatically once the selected connection has a
-key (or is a keyless local connection). Lists are cached per connection and
-credential revision. Typing and filtering do not make more requests; an old
-provider's delayed response cannot replace the active picker. Turn discovery
-off or refresh its list in Settings. When listing fails or isn't supported,
-enter an exact model ID; it is explicitly marked unverified.
-
-Connection, Models, Request, and Streaming tabs show JavaScript examples for
-the same selected provider, model, and prompt. UI actions focus the relevant
-example. The examples contain placeholder keys only. Request and Streaming
-replay every completed turn exactly as the page holds it, in canonical JSON
-through `Message.fromJSON`, including thinking parts and continuation state,
-then append your next message. Stopped or failed turns are not replayed. Copy
-code copies the example, not your credentials. On narrow screens code stacks
-below chat.
-
-**Trade-off:** a shared example renderer maintains a small set of idiomatic
-JavaScript patterns, rather than translating arbitrary application code. Tests
-execute the actual generated examples and compare their requests with the
-interface's shared connection helper. Other languages are not claimed yet.
-
-## Private local test keys
+After each turn the page builds the same request in every loaded runtime
+and says whether the bytes are identical: *Same request bytes from
+JavaScript, Python, Rust ✓ — three SDKs, one wire.* That line is the
+family's promise, checked live.
 
 ```sh
-npm run example:local
+npm run build          # dist/browser.js, this page, the Python wheel and the Rust codec (see below)
+npm run example        # opens the page; enter your own key
+npm run example:local  # opt in to the private, one-use localhost handoff of keys from ../.env
 ```
 
-This explicitly reads the sibling `../.env` using Node's dotenv parser
-(including `export KEY=...`). Only the nine named provider-key variables
-listed in `connections.ts` are selected; unrelated secrets are excluded.
+## Keys
 
-The server binds to `127.0.0.1`. The browser is opened with a random,
-one-use capability in the URL fragment, never a provider key. The page
-removes the fragment and fetches the keys from a protected same-origin route.
-The capability expires after 30 minutes if unused. The server deletes its
-credential handoff data after use. Requests without the capability, with
-another Host/Origin, or repeating a consumed capability are refused.
-No permissive CORS headers are returned. The dotenv file itself is not served.
+Pick a provider → **Settings → Get a key ↗** opens that provider's key
+page (the address comes from lm15's provider registry, `consoleUrl`; the
+same table the router reads) → paste it → **Use key**.
 
-The printed ordinary URL carries no capability and cannot automatically load
-keys. Restart `npm run example:local` to open a fresh authorized test session
-if you refresh or close the page. Do not expose this development server to
-the network. Local software running as you can still inspect your process;
-this feature is not a secret vault or a production credential-delivery service.
+- By default the key lives in memory for the tab. Refresh, and it is gone.
+- **Remember on this device** keeps it in this site's IndexedDB, encrypted
+  with AES-GCM under a key the browser generates as non-extractable — the
+  plaintext never sits on disk or in a backup, and no script can read the
+  AES key's bytes. A reload decrypts it back. **Forget** deletes it.
+- What that does *not* protect against, stated in the settings dialog
+  itself: a script running on this page can ask for the key. No browser
+  storage prevents that. The page's Content Security Policy (no
+  third-party script, no inline script) and Forget are the protections
+  that exist. lm15 never puts a key in a URL, a log, or the code panel.
+- Keys are never in the code panel: every snippet says `"YOUR_API_KEY"`,
+  and the Python runtime substitutes the real one only in the text it
+  executes.
 
-**Trade-off:** loading the keys gives this page's JavaScript access to them.
-It is explicit local test functionality, never part of the public static
-site. With automatic discovery enabled, loading keys fetches only the selected
-provider's model IDs; switching connections may fetch another list. Your prompt
-is never sent by discovery or by a selector. Only Send starts inference. Hosted
-inference can cost money; Stop cancels the browser request but does not guarantee
-a billing refund. Discovery can fail independently of chat and is optional.
+## Settings
 
-## Browser connectivity
+System prompt, temperature, max tokens and reasoning effort are one
+`Config` each; the code panel shows exactly how each language spells them,
+and the JSON tab shows the bytes. A model that lacks a dial refuses it
+loudly — lm15 never drops a setting to make a call succeed (see *What
+building it surfaced*, below).
 
-Requests go directly to each endpoint. Some permit browser origins; others
-may refuse due to CORS or other network restrictions. This example does not
-silently proxy requests or bypass browser protections. Anthropic connections
-include its explicit direct-browser-access opt-in header. Custom endpoints
-use the default Chat Completions policy; configure server-specific differences
-in the SDK rather than claiming universal compatibility.
+## The code panel
 
-## Checks
+Every snippet is a complete program: connect, replay the whole transcript
+so far — verbatim, in canonical JSON, thinking parts and continuation
+state included — send the next message, stream the reply, keep it for the
+next turn. The Rust and Python texts use each SDK's public API
+(`LMRouter` + `RouterConfig`; `AsyncOpenAIChatLM(compat=…)` and friends).
+Only the transport line differs between a page and a terminal, and the
+Python text says so.
 
-`npm run test:providers` builds the actual page and runs Chromium interface
-tests with dummy keys and intercepted provider replies. It checks all nine
-provider selections, their credential isolation, real stream parsing, manual
-key entry, clearing and reload. It also exercises fuzzy slash commands, model
-caching, failed discovery with manual entry, stale-response isolation, keyboard
-dismissal, and mobile layout. Server tests check opt-in, Host/Origin checks,
-one-use authorization, no caching, and refusal to serve unrelated files.
-These tests establish application behavior, not live availability of all nine
-providers. They do not spend credits or use the developer's real keys.
+## What is proven, and how
 
-`tests/provider_examples.test.ts` type-checks all 88 generated code variants
-(with and without replayed history, including continuation state) against the
-browser package, runs them with fake network responses, and checks that their
-request bodies match the interface's. It also checks fuzzy ranking
-and slash-command parsing. The package tests and existing protocol examples
-remain separate checks.
+`npm test` (from the repository root) includes:
+
+- `tests/provider_examples.test.ts` — for 11 providers × {first turn,
+  with a replayed transcript} × {default, full settings}: the JavaScript
+  text type-checks against the built package, executes, and builds the
+  page's own request; the Python text executes under Pyodide (Node-hosted,
+  fetch faked) and builds the same bytes and headers; the Rust codec builds
+  the same bytes; and `lm15-rs/examples/playground.rs` equals the
+  generator's output, so `cargo check --examples` in lm15-rs compiles
+  every Rust snippet shown.
+- `tests/pyodide.test.ts` — lm15-python's `FetchTransport` streams,
+  cancels (the server-side body sees it) and surfaces a 401 as the typed
+  error; and every request case in the contract corpus builds identically
+  in Python-under-Pyodide and TypeScript (342 identical, 24 refused
+  identically).
+- `tests/rust_wasm.test.ts` — the same corpus through the wasm codec: 342
+  requests identical (SigV4 signs inside wasm — pure Rust), 337 bodies
+  parse identically, 39 streams decoded incrementally equal their
+  whole-body replay.
+
+`npm run test:providers` builds the page and drives it in Chromium:
+settings reaching the code and the wire; a remembered key stored as
+ciphertext and decrypted after a reload; the key page from the registry;
+the private local handoff's refusals; discovery failures and stale replies
+isolated; and — the point — one conversation carried across turns sent by
+Rust, then Python, then JavaScript, with the fidelity line confirming
+identical bytes.
+
+Not proven here: live availability of any provider from a browser (CORS
+is the provider's choice; the page says so), and the JavaScript text
+under a bundler other than the import map used here.
+
+## What building it surfaced
+
+1. **The reference dropped a setting silently.** With `reasoning.effort`
+   set on a server whose compat has no reasoning field (`ollama`, LM
+   Studio), Python and TypeScript sent the request with the dial omitted;
+   Rust refused, citing the rule (MAP-5, MAP-7 rule 2: a raise or an
+   extensions door, never omission). A Python test even pinned the drop.
+   Found by building one request in three languages side by side. Fixed
+   in the reference and TypeScript; pinned by
+   `cases/ollama/reasoning_effort_refused.json` (contract change
+   `2026-09-11-reasoning-dial-without-a-field.md`, pending ratification).
+2. **`import lm15` failed under Pyodide.** `_authlock` imported `fcntl`
+   and the socket transports imported `ssl` at module level; neither
+   exists there (nor `fcntl` on Windows). Both are optional now and refuse
+   by name at use.
+3. **A `Reasoning` literal does not type-check in TypeScript.** `{ effort:
+   "low" }` widens to `string`; the shown code now uses `Request.create({…})`,
+   the validating constructor, which is the API anyway.
+4. **`Reasoning` has no `Default` in Rust.** The first `cargo check
+   --examples` over the generated snippets said so; the snippet spells
+   `Reasoning::new(effort)`.
+5. **An unknown continuation kind replays differently.** A hidden
+   thinking part carrying a continuation state no dialect recognises
+   becomes an empty text block in TypeScript and is dropped by Rust. The
+   contract pins neither (no such shape exists on any wire); recorded here
+   as a divergence for the parity ledger, not fixed in either port.
+6. **The wasm toolchain gap.** The build server ships the wasm32 std but no
+   wasm-ld; `lm15-rs/tools/wasm-ld` finds one through nix so the crate's
+   config names no machine-specific path.
+7. **`fetch` as a method** (from the earlier SDK smoke): still the one bug
+   only a real browser can find; the Rust runtime here calls `fetch`
+   bare for the same reason.
+
+## Layout
+
+| Path | What |
+|---|---|
+| `index.html`, `app.css` | the page: CSP (`wasm-unsafe-eval` for the two wasm runtimes; no inline script but the hash-allowed import map) |
+| `experience.ts` | the connection, settings, request builder, and the five renderers (JavaScript, Python, Rust, JSON, curl) |
+| `runtimes/` | the `Runtime` interface and its three implementations |
+| `credentials.ts` | memory by default; encrypted IndexedDB on request |
+| `picker.ts`, `connections.ts` | the fuzzy picker and the provider list |
+| `main.ts` | DOM glue; text nodes only, never HTML from a model |
+| `../../vendor/` | the Python wheel and the Rust codec, built from the sibling checkouts (`npm run python:wheel`, `npm run rust:wasm`); Pyodide comes from `node_modules` — the demo server serves all three under `/vendor/` |

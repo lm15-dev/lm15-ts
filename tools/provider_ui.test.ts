@@ -226,7 +226,7 @@ test("nine local keys load privately; each provider receives only its key; manua
       assert.equal(await page.locator("#model-name").textContent(), "my-custom-model-id");
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByRole("button", { name: "Forget all keys" }).click();
-      assert.equal(await page.locator("#loaded").textContent(), "None");
+      await page.waitForFunction(() => document.getElementById("loaded")?.textContent === "None");
       await page.getByRole("button", { name: "Close settings" }).click();
       selected = "openai"; expectedKey = "manual-dummy-key";
       await page.getByLabel("Message", { exact: true }).fill("/provider opnai");
@@ -246,4 +246,124 @@ test("nine local keys load privately; each provider receives only its key; manua
       assert.deepEqual(errors, []);
     } finally { await browser.close(); await close(demo.server); }
   });
+});
+
+/** A streamed reply of the right dialect for the URL: what the fake provider answers every runtime with. */
+function replyFor(url: URL): string {
+  let frames: unknown[];
+  if (url.pathname.endsWith("/responses")) frames = [
+    { type: "response.created", response: { id: "r", model: "gpt-4.1-mini" } },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Hello " },
+    { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "there." },
+    { type: "response.completed", response: { id: "r", status: "completed", output: [], usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 } } },
+  ];
+  else frames = [{ id: "r", model: "m", choices: [{ delta: { role: "assistant", content: "Hello there." } }] }, { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }];
+  return frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") + (url.pathname.endsWith("/responses") ? "" : "data: [DONE]\n\n");
+}
+
+test("the playground: settings reach the code and the wire; a remembered key survives a reload encrypted; the key page is the registry's", { timeout: 120_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const bodies: string[] = [];
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === new URL(demo.url).origin) return route.continue();
+    if (route.request().method() === "POST") bodies.push(route.request().postData() ?? "");
+    return route.fulfill({ contentType: "text/event-stream", body: replyFor(url), headers: { "Access-Control-Allow-Origin": new URL(demo.url).origin } });
+  });
+  try {
+    await page.goto(demo.url);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    assert.equal(await page.locator("#get-key").getAttribute("href"), "https://platform.openai.com/api-keys", "the key page comes from the registry");
+    await page.getByLabel("Automatically discover model IDs").uncheck();
+    await page.getByLabel("API key", { exact: true }).fill("dummy-openai-key");
+    await page.getByLabel("Remember on this device").check();
+    await page.getByRole("button", { name: "Use key for this provider" }).click();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByLabel("System prompt").fill("Answer briefly.");
+    await page.getByLabel("Max tokens").fill("64");
+    await page.getByLabel("Reasoning effort").selectOption("low");
+    await page.getByRole("button", { name: "Close settings" }).click();
+    for (const [tab, expected] of [["JavaScript", /system: "Answer briefly\."[\s\S]*maxTokens: 64[\s\S]*reasoning: \{ effort: "low" \}/], ["Python", /system="Answer briefly\."[\s\S]*Config\(max_tokens=64, reasoning=Reasoning\(effort="low"\)\)/], ["Rust", /system: Some\("Answer briefly\."\.into\(\)\)[\s\S]*Reasoning::new\("low"\.parse\(\)\?\)/], ["JSON", /"instructions": "Answer briefly\."[\s\S]*"max_output_tokens": 64[\s\S]*"reasoning": \{\s*"effort": "low"/], ["curl", /curl -X POST 'https:\/\/api\.openai\.com\/v1\/responses'[\s\S]*Bearer YOUR_API_KEY/]] as const) {
+      await page.getByRole("button", { name: tab, exact: true }).click();
+      await page.waitForFunction((pattern) => new RegExp(pattern, "s").test(document.getElementById("code")?.textContent ?? ""), expected.source);
+      assert.ok(!(await page.locator("#code").textContent())!.includes("dummy-openai-key"), `${tab}: the key never appears in the code panel`);
+    }
+    await page.getByLabel("Message", { exact: true }).fill("hello");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => document.getElementById("usage")?.textContent?.startsWith("stop"));
+    assert.equal(bodies.length, 1);
+    const sent = JSON.parse(bodies[0]!) as { instructions: string; max_output_tokens: number; reasoning: { effort: string } };
+    assert.equal(sent.instructions, "Answer briefly.");
+    assert.equal(sent.max_output_tokens, 64);
+    assert.equal(sent.reasoning.effort, "low");
+    assert.equal(await page.locator("#transcript article").last().locator("p").textContent(), "Hello there.");
+    // Encrypted at rest: the stored record is not the key; a reload decrypts it back.
+    const stored = await page.evaluate(async () => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => { const r = indexedDB.open("lm15-playground"); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+      const rows = await new Promise<Array<{ provider: string; ciphertext: ArrayBuffer }>>((resolve, reject) => { const r = db.transaction("keys").objectStore("keys").getAll(); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+      return rows.map((row) => ({ provider: row.provider, text: new TextDecoder().decode(row.ciphertext) }));
+    });
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0]!.provider, "openai");
+    assert.ok(!stored[0]!.text.includes("dummy-openai-key"), "the stored record is ciphertext");
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Key ready (remembered on this device)");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByRole("button", { name: "Forget this key" }).click();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Add key in Settings");
+    await page.reload();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Add key in Settings");
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); await close(demo.server); }
+});
+
+test("the playground runs the same turn through Python (Pyodide) and Rust (wasm) in the browser, and the three runtimes build the same bytes", { timeout: 300_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  const sent: Array<{ url: string; body: string; auth: string | undefined }> = [];
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === new URL(demo.url).origin) return route.continue();
+    sent.push({ url: url.href, body: route.request().postData() ?? "", auth: route.request().headers()["authorization"] });
+    return route.fulfill({ contentType: "text/event-stream", body: replyFor(url), headers: { "Access-Control-Allow-Origin": new URL(demo.url).origin } });
+  });
+  try {
+    await page.goto(demo.url);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page.getByLabel("Automatically discover model IDs").uncheck();
+    await page.getByLabel("API key", { exact: true }).fill("dummy-openai-key");
+    await page.getByRole("button", { name: "Use key for this provider" }).click();
+    for (const runtime of ["Rust", "Python", "JavaScript"] as const) {
+      await page.getByLabel(runtime, { exact: true }).check();
+      if (runtime !== "JavaScript") await page.waitForFunction((r) => document.getElementById("runtime-status")?.textContent?.startsWith(`${r} ready`), runtime, { timeout: 120_000 });
+      await page.getByLabel("Message", { exact: true }).fill(`hello from ${runtime}`);
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.waitForFunction((r) => document.getElementById("usage")?.textContent?.endsWith(r), runtime, { timeout: 60_000 });
+      assert.equal(await page.locator("#transcript article").last().locator("p").textContent(), "Hello there.", runtime);
+      assert.equal(await page.locator("#transcript article").last().locator("b").textContent(), `OpenAI · ${runtime}`);
+    }
+    await page.waitForFunction(() => document.getElementById("fidelity")?.textContent?.includes("Same request bytes from JavaScript, Python, Rust"));
+    assert.equal(sent.length, 3);
+    for (const call of sent) {
+      assert.equal(call.url, "https://api.openai.com/v1/responses");
+      assert.equal(call.auth, "Bearer dummy-openai-key", "every runtime sends the page's key, once, as a header");
+    }
+    // The third turn carries the first two replies, whichever runtime produced them: one transcript, three SDKs.
+    const third = JSON.parse(sent[2]!.body) as { input: Array<{ role: string }> };
+    assert.deepEqual(third.input.map((m) => m.role), ["user", "assistant", "user", "assistant", "user"]);
+    assert.match((await page.locator("#code").textContent()) ?? "", /Message\.fromJSON/);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); await close(demo.server); }
 });

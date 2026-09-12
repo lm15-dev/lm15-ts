@@ -4,16 +4,16 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-vzDM+wPtdfGgwcSDia6gRane5rggh7T4wuIn42/jZc4='; style-src 'self'; connect-src https: http://localhost:* http://127.0.0.1:* http://[::1]:*; base-uri 'none'; form-action 'self'">
-<title>LM15 · Chat and code</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-vzDM+wPtdfGgwcSDia6gRane5rggh7T4wuIn42/jZc4='; style-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; worker-src 'self' blob:; base-uri 'none'; form-action 'self'">
+<title>lm15 playground</title>
 <link rel="stylesheet" href="./app.css">
 <script type="importmap">{"imports":{"lm15/browser":"../../dist/browser.js"}}</script>
 <script type="module" src="./build/main.js"></script>
 </head>
 <body>
 <header class="masthead">
-  <a class="brand" href="./" aria-label="LM15 playground">lm15<span> / playground</span></a>
-  <span class="masthead-note">Same intent. Different providers.</span>
+  <a class="brand" href="./">lm15 <span>/ playground</span></a>
+  <span class="masthead-note">One request. Any provider. Three languages that run.</span>
   <button id="settings-button" class="quiet" aria-haspopup="dialog">Settings</button>
 </header>
 <main class="split">
@@ -23,13 +23,21 @@
         <button id="provider-button" class="chip" aria-label="Choose provider" aria-haspopup="dialog"><span id="provider-name">OpenAI</span><span aria-hidden="true">⌄</span></button>
         <button id="model-button" class="chip" aria-label="Choose model" aria-haspopup="dialog"><span id="model-name">gpt-4.1-mini</span><span aria-hidden="true">⌄</span></button>
       </div>
-      <button id="clear" class="quiet" aria-label="New conversation" title="New conversation">＋ New</button>
+      <button id="clear" class="quiet" aria-label="New conversation">＋ New</button>
     </header>
     <p class="connection-status" id="key-state" role="status">Loading…</p>
-    <div class="chat-scroll" id="chat-scroll">
+    <fieldset class="runtime" aria-describedby="runtime-claim">
+      <legend>Run in</legend>
+      <label><input type="radio" name="runtime" value="javascript" checked> JavaScript</label>
+      <label><input type="radio" name="runtime" value="python"> Python</label>
+      <label><input type="radio" name="runtime" value="rust"> Rust</label>
+      <p id="runtime-claim" class="note"></p>
+      <p id="runtime-status" class="note" role="status"></p>
+    </fieldset>
+    <div class="chat-scroll">
       <div id="empty">
         <h1>Chat with a model</h1>
-        <p>Pick a model and say hello. The code beside you shows exactly what Send does.</p>
+        <p>Pick a model and say hello. The code beside you is the exact request — and Run in chooses which SDK sends it.</p>
         <div class="command-hints"><kbd>/provider</kbd><kbd>/model</kbd><kbd>/settings</kbd></div>
       </div>
       <div id="transcript" aria-label="Conversation"></div>
@@ -37,6 +45,7 @@
     <div class="composer-area">
       <p id="alert" role="alert" hidden></p>
       <p id="usage" class="usage" role="status"></p>
+      <p id="fidelity" class="usage" role="status"></p>
       <form id="composer" class="composer">
         <div id="slash-picker" class="slash-picker" hidden>
           <p id="slash-status" class="picker-status" role="status"></p>
@@ -50,15 +59,10 @@
     </div>
   </section>
   <aside class="code-panel" aria-labelledby="code-heading">
-    <header class="code-heading"><h2 id="code-heading">The code behind Send</h2><span class="masthead-note">lm15/browser</span></header>
-    <div class="code-tabs" role="group" aria-label="Code example">
-      <button data-example="connect" aria-pressed="false">Connection</button>
-      <button data-example="models" aria-pressed="false">Models</button>
-      <button data-example="request" aria-pressed="false">Request</button>
-      <button data-example="stream" aria-pressed="true">Streaming</button>
-    </div>
-    <p id="code-purpose" class="code-purpose"></p>
-    <pre tabindex="0" aria-label="Runnable JavaScript example"><code id="code"></code></pre>
+    <header class="code-heading"><h2 id="code-heading">The code behind Send</h2></header>
+    <div id="code-tabs" class="code-tabs" role="group" aria-label="Language"></div>
+    <p id="code-note" class="code-purpose"></p>
+    <pre tabindex="0" aria-label="Example code"><code id="code"></code></pre>
     <footer class="code-footer"><span>Your keys never appear here.</span><button id="copy-code">Copy code</button><span id="copy-status" class="sr-only" role="status"></span></footer>
   </aside>
 </main>
@@ -73,17 +77,29 @@
 </dialog>
 
 <dialog id="settings" aria-labelledby="settings-heading">
-  <div class="dialog-heading"><h2 id="settings-heading">Connection settings</h2><button id="settings-close" class="quiet" aria-label="Close settings">✕</button></div>
-  <p>Current provider: <strong id="settings-provider">OpenAI</strong></p>
+  <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button id="settings-close" class="quiet" aria-label="Close settings">✕</button></div>
+  <p>Provider: <strong id="settings-provider">OpenAI</strong> · <a id="get-key" href="#" target="_blank" rel="noopener noreferrer">Get a key ↗</a></p>
   <form id="credentials">
-    <label for="key">API key</label><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your own key">
-    <p class="setting-help">This provider only. Kept in memory, never saved. Refreshing clears it.</p>
-    <button type="submit" class="primary">Use key for this provider</button>
+    <div id="key-field">
+      <label for="key">API key</label><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your own key">
+      <label class="checkbox"><input id="remember" type="checkbox"> Remember on this device</label>
+      <p class="setting-help">Kept in memory for this tab. Remembered keys are encrypted with a key this browser generates and never exports, in this site's storage. A script running on this page could still use them; nothing else can. <strong>Forget</strong> deletes them.</p>
+      <p id="remember-note" class="setting-help" hidden>This browser cannot remember keys (no IndexedDB or Web Crypto); they stay in memory.</p>
+      <button type="submit" class="primary">Use key for this provider</button>
+      <button id="forget-key" type="button" class="quiet">Forget this key</button>
+    </div>
   </form>
-  <div id="custom-endpoint" hidden><label for="endpoint">Custom API root</label><input id="endpoint" type="url"><p class="setting-help">Standard Chat Completions. Changing the address clears its key. Use a keyless endpoint only if your server permits it.</p></div>
+  <div id="custom-endpoint" hidden><label for="endpoint">Custom API root</label><input id="endpoint" type="url"><p class="setting-help">Standard Chat Completions. Changing the address clears its key.</p></div>
+  <hr>
+  <label for="system">System prompt</label><textarea id="system" rows="3" placeholder="Optional. Sent with every turn."></textarea>
+  <label for="temperature">Temperature <span id="temperature-value" class="note">provider default</span></label>
+  <input id="temperature" type="range" min="0" max="2" step="0.1" value="">
+  <label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="100000" value="400">
+  <label for="reasoning">Reasoning effort</label>
+  <select id="reasoning"><option value="">Model decides (unset)</option><option value="off">off</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select>
+  <p class="setting-help">Every setting is one field of the Request; the code panel shows exactly how each language spells it. A model that lacks a dial refuses it loudly — lm15 never drops a setting to make a call succeed.</p>
   <hr>
   <label class="checkbox"><input id="automatic-models" type="checkbox" checked> Automatically discover model IDs</label>
-  <p class="setting-help">Selecting a connection fetches its model list when credentials are available. It never sends your prompt. Listing does not prove model or account access.</p>
   <p id="model-status" class="setting-help" role="status"></p><button id="list" class="quiet" type="button">Refresh model list</button>
   <hr>
   <details><summary>Providers with a loaded key</summary><p id="loaded">None</p></details>

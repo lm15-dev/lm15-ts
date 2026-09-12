@@ -53,3 +53,13 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 1rem 0; }
 [role="option"][aria-selected="true"], [role="option"]:hover { background: var(--soft); }
 .slash-picker { position: absolute; z-index: 1; bottom: calc(100% + .5rem); left: 0; right: 0; padding: .5rem; background: Canvas; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px #0003; }
 @media (max-width: 760px) { .split { display: flex; flex-direction: column; height: auto; } .chat-panel { height: 80dvh; } .code-panel { border-left: 0; border-top: 1px solid var(--line); max-height: 40rem; } .masthead-note { display: none; } }
+.runtime { margin: 0 1rem .5rem; padding: .35rem .75rem .5rem; border: 1px solid var(--line); border-radius: 8px; display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: center; }
+.runtime legend { padding: 0 .25rem; color: var(--muted); font-size: .875rem; }
+.runtime label { margin: 0; display: inline-flex; align-items: center; gap: .3rem; }
+.runtime label[data-loaded="true"]::after { content: "●"; color: var(--accent); font-size: .6rem; }
+.runtime input { padding: 0; }
+.runtime .note { width: 100%; margin: 0; }
+dialog textarea { display: block; width: 100%; border: 1px solid var(--line); resize: vertical; }
+dialog input[type="range"] { width: 100%; padding: 0; border: 0; }
+dialog select { display: block; width: 100%; padding: .4rem; border: 1px solid var(--line); border-radius: 6px; background: Canvas; color: inherit; }
+.masthead-note { font-size: .875rem; }

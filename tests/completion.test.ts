@@ -221,3 +221,18 @@ test("router.completeFromOpenAIChat answers the OpenAI SDK's call; stream: true 
   assert.equal(responseFromOpenAIChat({ choices: chat.choices }, { model: "m" }).model, "m");
   assert.throws(() => responseFromOpenAIChat({ choices: chat.choices }), /pass model/);
 });
+
+test("a reasoning dial on a server whose compat has no reasoning field raises before the wire (MAP-5 / MAP-7 rule 2)", async () => {
+  const { adapterFor } = await import("../src/providers.ts");
+  const { Message } = await import("../src/types/parts.ts");
+  const { UnsupportedFeatureError } = await import("../src/errors.ts");
+  const lm = adapterFor("ollama", { apiKey: "unused" });
+  for (const effort of ["low", "off"] as const) {
+    await assert.rejects(
+      lm.buildRequest({ model: "qwen3.5:0.8b", messages: [Message.user("Say ok.")], config: { maxTokens: 64, reasoning: { effort } } }, true),
+      (e: unknown) => e instanceof UnsupportedFeatureError && /thinking_format='none'/.test(e.message),
+    );
+  }
+  const plain = await lm.buildRequest({ model: "qwen3.5:0.8b", messages: [Message.user("Say ok.")], config: { maxTokens: 64 } }, true);
+  assert.ok(!new TextDecoder().decode(plain.body).includes("reasoning"));
+});

@@ -402,6 +402,16 @@ export class OpenAIChatLM extends ProviderLM {
     }
     if (config.reasoning) {
       const reasoning = config.reasoning;
+      if (compat.thinkingFormat === "none") {
+        // No reasoning dial on this server (ollama / LM Studio). MAP-5 and
+        // MAP-7 rule 2: a dial the caller set and the wire cannot carry is
+        // a raise, never an omission (cases/ollama/reasoning_effort_refused.json;
+        // until 2026-09-11 this sent the request with the dial dropped).
+        throw new UnsupportedFeatureError(
+          `${this.provider}: reasoning.effort=${JSON.stringify(reasoning.effort)} has no field on this server (compat thinking_format='none'); omit config.reasoning, or pass the server's own knob through extensions`,
+          { provider: this.provider },
+        );
+      }
       if (reasoning.effort !== "off") {
         if (reasoning.thinkingBudget !== undefined) {
           throw new UnsupportedFeatureError(`${this.provider}: reasoning.thinking_budget is not supported — the Chat Completions wire has no thinking token budget; use effort`, {
@@ -442,8 +452,6 @@ export class OpenAIChatLM extends ProviderLM {
           case "qwen_chat_template":
             payload["chat_template_kwargs"] = { enable_thinking: true, preserve_thinking: true };
             break;
-          case "none":
-            break;
         }
       } else {
         switch (compat.thinkingFormat) {
@@ -462,8 +470,6 @@ export class OpenAIChatLM extends ProviderLM {
             break;
           case "qwen_chat_template":
             payload["chat_template_kwargs"] = { enable_thinking: false };
-            break;
-          case "none":
             break;
         }
       }
