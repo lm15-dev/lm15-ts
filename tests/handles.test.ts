@@ -39,15 +39,20 @@ test("VideoJob: reading properties never contacts the provider; refresh and wait
   assert.match(String(job), /VideoJob\(id="video_1", status="completed", progress=100\)/);
 });
 
-test("VideoJob.wait: failed returns (the status says so); a deadline that elapses throws the caller's TimeoutError", async () => {
+test("VideoJob.wait: failed returns (the status says so); a deadline that elapses throws the caller's TimeoutError", async (t) => {
   const failed = new OpenAILM({ apiKey: "k", transport: new FakeTransport([video("in_progress"), video("failed", { error: { message: "moderation" } })]) });
   const job = await failed.videoJob("video_1");
   await job.wait({ pollEveryMs: 1 });
   assert.equal(job.status, "failed");
 
-  const slow = new OpenAILM({ apiKey: "k", transport: new FakeTransport([video("queued"), video("queued"), video("queued"), video("queued")]) });
+  const transport = new FakeTransport([video("queued"), video("queued"), video("queued"), video("queued")]);
+  const slow = new OpenAILM({ apiKey: "k", transport });
   const stuck = await slow.videoJob("video_1");
+  // Advance two milliseconds per scripted request. Real 1 ms timers can wake
+  // early or late; their scheduling must not exhaust this finite fake script.
+  t.mock.method(Date, "now", () => transport.requests.length * 2);
   await assert.rejects(stuck.wait({ pollEveryMs: 1, timeoutMs: 5 }), (e: unknown) => e instanceof DOMException && e.name === "TimeoutError" && /video_1 still "queued" after 5 ms/.test(e.message));
+  assert.equal(transport.requests.length, 4);
   assert.equal(stuck.done, false); // the snapshot tells the truth after the deadline
   // An aborted wait throws the signal's reason and stops polling.
   const controller = new AbortController();
