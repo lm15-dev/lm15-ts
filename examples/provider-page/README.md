@@ -35,7 +35,7 @@ same table the router reads) → paste it → **Use key**.
   with AES-GCM under a key the browser generates as non-extractable — the
   plaintext never sits on disk or in a backup, and no script can read the
   AES key's bytes. A reload decrypts it back. **Forget** deletes it.
-- What that does *not* protect against, stated in the settings dialog
+- What that does *not* protect against, stated in the settings panel
   itself: a script running on this page can ask for the key. No browser
   storage prevents that. The page's Content Security Policy (no
   third-party script, no inline script) and Forget are the protections
@@ -46,9 +46,17 @@ same table the router reads) → paste it → **Use key**.
 
 ## Settings
 
-System prompt, temperature, max tokens and reasoning effort are one
-`Config` each; the code panel shows exactly how each language spells them,
-and the JSON tab shows the bytes. A model that lacks a dial refuses it
+Settings stay in a visible sidebar beside the chat and code. System prompt,
+temperature, max tokens and reasoning effort update the selected code tab as
+you edit, without sending a request. They apply to the next message, not an
+already-running turn. **Settings** (or `/settings`) focuses the sidebar.
+On tablets, settings and code sit together above the chat; phones stack the
+panels to keep them readable.
+
+**Use provider default** removes the explicit temperature from the request.
+Invalid max-token values are shown as errors rather than silently replaced.
+System prompt is a `Request` field; the other controls are `Config` fields.
+The code panel shows how each language spells them, and JSON shows the bytes. A model that lacks a dial refuses it
 loudly — lm15 never drops a setting to make a call succeed (see *What
 building it surfaced*, below).
 

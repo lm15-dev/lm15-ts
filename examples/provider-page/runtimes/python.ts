@@ -20,8 +20,9 @@ interface Pyodide {
   globals: { get(name: string): unknown; delete(name: string): void };
 }
 
-const INDEX_URL = "/vendor/pyodide/";
-const WHEEL_URL = "/vendor/python/lm15.whl";
+// Relative to the built module: works locally and under a versioned static release.
+const INDEX_URL = new URL("../../../../vendor/pyodide/", import.meta.url).href;
+const WHEEL_URL = new URL("../../../../vendor/python/lm15.whl", import.meta.url).href;
 let pyodide: Pyodide | undefined;
 let loading: Promise<Pyodide> | undefined;
 

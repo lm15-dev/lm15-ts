@@ -152,7 +152,7 @@ import { Request as RequestNs, Response as CanonicalResponse, stringifyJson, typ
 import { ANTHROPIC_BROWSER_HEADER, keyless, type Connection, type Wire } from "../experience.ts";
 import type { Runtime } from "./index.ts";
 
-const WASM_URL = "/vendor/rust/lm15.wasm";
+const WASM_URL = new URL("../../../../vendor/rust/lm15.wasm", import.meta.url).href;
 let codec: RustCodec | undefined;
 let loading: Promise<RustCodec> | undefined;
 

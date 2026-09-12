@@ -14,9 +14,42 @@
 <header class="masthead">
   <a class="brand" href="./">lm15 <span>/ playground</span></a>
   <span class="masthead-note">One request. Any provider. Three languages that run.</span>
-  <button id="settings-button" class="quiet" aria-haspopup="dialog">Settings</button>
+  <button id="settings-button" class="quiet" aria-controls="settings">Settings</button>
 </header>
 <main class="split">
+  <aside id="settings" class="settings-panel" aria-labelledby="settings-heading">
+    <h2 id="settings-heading">Settings</h2>
+    <p class="setting-help">Change a setting. Watch the code update. Changes apply to your next message.</p>
+    <label for="system">System prompt</label><textarea id="system" rows="3" placeholder="Optional. Sent with every turn."></textarea>
+    <label for="temperature">Temperature <span id="temperature-value" class="note">provider default</span></label>
+    <input id="temperature" type="range" min="0" max="2" step="0.1" value="1">
+    <button id="temperature-reset" class="quiet" type="button" disabled>Use provider default</button>
+    <label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="100000" value="400" required>
+    <label for="reasoning">Reasoning effort</label>
+    <select id="reasoning"><option value="">Model decides (unset)</option><option value="off">off</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select>
+    <p class="setting-help">An unset option leaves the choice to the provider. Not every model supports every setting; unsupported settings may be refused.</p>
+    <hr>
+    <h2>Connection</h2>
+    <p>Provider: <strong id="settings-provider">OpenAI</strong><br><a id="get-key" href="#" target="_blank" rel="noopener noreferrer">Get a key ↗</a></p>
+    <form id="credentials">
+      <div id="key-field">
+        <label for="key">API key</label><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your own key">
+        <label class="checkbox"><input id="remember" type="checkbox"> Remember on this device</label>
+        <p class="setting-help">Keys stay in this tab unless remembered. Remembered keys are encrypted in this site's browser storage, but scripts running on this page can still use them. Forget deletes them.</p>
+        <p id="remember-note" class="setting-help" hidden>This browser cannot remember keys (no IndexedDB or Web Crypto); they stay in memory.</p>
+        <button type="submit" class="primary">Use key for this provider</button>
+        <button id="forget-key" type="button" class="quiet">Forget this key</button>
+      </div>
+    </form>
+    <div id="custom-endpoint" hidden><label for="endpoint">Custom API root</label><input id="endpoint" type="url"><p class="setting-help">Standard Chat Completions. Changing the address clears its key.</p></div>
+    <hr>
+    <label class="checkbox"><input id="automatic-models" type="checkbox" checked> Automatically discover model IDs</label>
+    <p id="model-status" class="setting-help" role="status"></p><button id="list" class="quiet" type="button">Refresh model list</button>
+    <hr>
+    <details><summary>Providers with a loaded key</summary><p id="loaded">None</p></details>
+    <button id="forget" class="quiet" type="button">Forget all keys</button>
+    <p class="setting-help">Some endpoints block browser access. There is no proxy or automatic fallback.</p>
+  </aside>
   <section class="chat-panel" aria-label="Chat">
     <header class="chat-toolbar">
       <div class="connection">
@@ -76,35 +109,5 @@
   <p class="picker-help"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to choose · <kbd>Esc</kbd> to close</p>
 </dialog>
 
-<dialog id="settings" aria-labelledby="settings-heading">
-  <div class="dialog-heading"><h2 id="settings-heading">Settings</h2><button id="settings-close" class="quiet" aria-label="Close settings">✕</button></div>
-  <p>Provider: <strong id="settings-provider">OpenAI</strong> · <a id="get-key" href="#" target="_blank" rel="noopener noreferrer">Get a key ↗</a></p>
-  <form id="credentials">
-    <div id="key-field">
-      <label for="key">API key</label><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your own key">
-      <label class="checkbox"><input id="remember" type="checkbox"> Remember on this device</label>
-      <p class="setting-help">Kept in memory for this tab. Remembered keys are encrypted with a key this browser generates and never exports, in this site's storage. A script running on this page could still use them; nothing else can. <strong>Forget</strong> deletes them.</p>
-      <p id="remember-note" class="setting-help" hidden>This browser cannot remember keys (no IndexedDB or Web Crypto); they stay in memory.</p>
-      <button type="submit" class="primary">Use key for this provider</button>
-      <button id="forget-key" type="button" class="quiet">Forget this key</button>
-    </div>
-  </form>
-  <div id="custom-endpoint" hidden><label for="endpoint">Custom API root</label><input id="endpoint" type="url"><p class="setting-help">Standard Chat Completions. Changing the address clears its key.</p></div>
-  <hr>
-  <label for="system">System prompt</label><textarea id="system" rows="3" placeholder="Optional. Sent with every turn."></textarea>
-  <label for="temperature">Temperature <span id="temperature-value" class="note">provider default</span></label>
-  <input id="temperature" type="range" min="0" max="2" step="0.1" value="">
-  <label for="max-tokens">Max tokens</label><input id="max-tokens" type="number" min="1" max="100000" value="400">
-  <label for="reasoning">Reasoning effort</label>
-  <select id="reasoning"><option value="">Model decides (unset)</option><option value="off">off</option><option value="minimal">minimal</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option></select>
-  <p class="setting-help">Every setting is one field of the Request; the code panel shows exactly how each language spells it. A model that lacks a dial refuses it loudly — lm15 never drops a setting to make a call succeed.</p>
-  <hr>
-  <label class="checkbox"><input id="automatic-models" type="checkbox" checked> Automatically discover model IDs</label>
-  <p id="model-status" class="setting-help" role="status"></p><button id="list" class="quiet" type="button">Refresh model list</button>
-  <hr>
-  <details><summary>Providers with a loaded key</summary><p id="loaded">None</p></details>
-  <button id="forget" class="quiet" type="button">Forget all keys</button>
-  <p class="setting-help">Some endpoints block browser access. There is no proxy or automatic fallback.</p>
-</dialog>
 </body>
 </html>

@@ -21,7 +21,7 @@ export const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 export const rustRepo = resolve(root, "..", "lm15-rs");
 export const wasmDir = join(root, "vendor", "rust");
 export const wasmPath = join(wasmDir, "lm15.wasm");
-const BUILD_ARGS = ["build", "--profile", "wasm", "--lib", "--no-default-features", "--features", "wasm", "--target", "wasm32-unknown-unknown"];
+const BUILD_ARGS = ["build", "--locked", "--profile", "wasm", "--lib", "--no-default-features", "--features", "wasm", "--target", "wasm32-unknown-unknown"];
 const ARTIFACT = "target/wasm32-unknown-unknown/wasm/lm15.wasm";
 
 function onPath(bin: string): boolean {

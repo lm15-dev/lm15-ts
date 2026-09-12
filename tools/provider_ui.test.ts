@@ -97,7 +97,6 @@ test("discovery failures and stale provider replies cannot block manual model se
       await page.getByRole("combobox", { name: "Search choices" }).press("Escape");
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByLabel("Automatically discover model IDs").uncheck();
-      await page.getByRole("button", { name: "Close settings" }).click();
       await page.getByLabel("Message", { exact: true }).fill("/provider groq");
       await page.getByLabel("Message", { exact: true }).press("Enter");
       await page.getByRole("button", { name: "Choose model", exact: true }).click();
@@ -180,7 +179,7 @@ test("nine local keys load privately; each provider receives only its key; manua
       assert.equal(sent, 0, "Loading keys never starts inference");
       await page.waitForFunction(() => document.getElementById("model-status")?.textContent?.includes("model IDs listed"));
       assert.equal(modelLists, 1, "Only the selected connection is discovered");
-      assert.equal(await page.locator("#settings").isVisible(), false);
+      assert.equal(await page.locator("#settings").isVisible(), true);
       assert.match(await page.locator("#code").textContent() ?? "", /YOUR_API_KEY/);
       await page.emulateMedia({ colorScheme: "light" });
       const readability = await page.evaluate(() => {
@@ -227,7 +226,6 @@ test("nine local keys load privately; each provider receives only its key; manua
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByRole("button", { name: "Forget all keys" }).click();
       await page.waitForFunction(() => document.getElementById("loaded")?.textContent === "None");
-      await page.getByRole("button", { name: "Close settings" }).click();
       selected = "openai"; expectedKey = "manual-dummy-key";
       await page.getByLabel("Message", { exact: true }).fill("/provider opnai");
       await page.getByLabel("Message", { exact: true }).press("Enter");
@@ -289,7 +287,6 @@ test("the playground: settings reach the code and the wire; a remembered key sur
     await page.getByLabel("System prompt").fill("Answer briefly.");
     await page.getByLabel("Max tokens").fill("64");
     await page.getByLabel("Reasoning effort").selectOption("low");
-    await page.getByRole("button", { name: "Close settings" }).click();
     for (const [tab, expected] of [["JavaScript", /system: "Answer briefly\."[\s\S]*maxTokens: 64[\s\S]*reasoning: \{ effort: "low" \}/], ["Python", /system="Answer briefly\."[\s\S]*Config\(max_tokens=64, reasoning=Reasoning\(effort="low"\)\)/], ["Rust", /system: Some\("Answer briefly\."\.into\(\)\)[\s\S]*Reasoning::new\("low"\.parse\(\)\?\)/], ["JSON", /"instructions": "Answer briefly\."[\s\S]*"max_output_tokens": 64[\s\S]*"reasoning": \{\s*"effort": "low"/], ["curl", /curl -X POST 'https:\/\/api\.openai\.com\/v1\/responses'[\s\S]*Bearer YOUR_API_KEY/]] as const) {
       await page.getByRole("button", { name: tab, exact: true }).click();
       await page.waitForFunction((pattern) => new RegExp(pattern, "s").test(document.getElementById("code")?.textContent ?? ""), expected.source);
@@ -320,6 +317,89 @@ test("the playground: settings reach the code and the wire; a remembered key sur
     await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Add key in Settings");
     await page.reload();
     await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Add key in Settings");
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); await close(demo.server); }
+});
+
+test("settings stay beside the live code; defaults and invalid inputs stay honest", { timeout: 60_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const bodies: string[] = [];
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.origin === new URL(demo.url).origin) return route.continue();
+    assert.equal(route.request().method(), "POST", "Editing settings must not call a provider");
+    bodies.push(route.request().postData() ?? "");
+    return route.fulfill({ contentType: "text/event-stream", body: replyFor(url) });
+  });
+  try {
+    await page.goto(demo.url);
+    await page.getByLabel("Automatically discover model IDs").uncheck();
+    await page.getByLabel("API key", { exact: true }).fill("dummy-settings-key");
+    await page.getByRole("button", { name: "Use key for this provider" }).click();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Key ready (this tab)");
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    for (const tab of ["JavaScript", "Python", "Rust", "JSON", "curl"]) {
+      await page.getByRole("button", { name: tab, exact: true }).click();
+      const text = `Changed in ${tab}`;
+      await page.getByLabel("System prompt").fill(text);
+      await page.waitForFunction((text) => document.getElementById("code")?.textContent?.includes(text), text);
+      assert.equal(await page.locator(":modal").count(), 0, "No overlay hides the code");
+      assert.ok(await page.evaluate(() => {
+        const setting = document.getElementById("system")!.getBoundingClientRect();
+        const code = document.getElementById("code")!.getBoundingClientRect();
+        return setting.top >= 0 && setting.bottom < innerHeight && code.top >= 0 && code.top < innerHeight && setting.right < code.left;
+      }), "Setting and changed code are visible together");
+    }
+    await page.getByRole("button", { name: "JSON", exact: true }).click();
+    await page.getByLabel("Max tokens").fill("72");
+    await page.getByLabel("Reasoning effort").selectOption("low");
+    const slider = page.getByLabel("Temperature", { exact: false });
+    await slider.focus();
+    await slider.press("Home"); // zero is an explicit value, not the unset/default state
+    await page.waitForFunction(() => {
+      try {
+        const body = JSON.parse(document.getElementById("code")!.textContent!);
+        return body.temperature === 0 && body.max_output_tokens === 72 && body.reasoning.effort === "low";
+      } catch { return false; }
+    });
+    await page.getByRole("button", { name: "Use provider default" }).click();
+    await page.getByLabel("Reasoning effort").selectOption("");
+    await page.waitForFunction(() => {
+      try {
+        const body = JSON.parse(document.getElementById("code")!.textContent!);
+        return !("temperature" in body) && !("reasoning" in body);
+      } catch { return false; }
+    });
+    await page.getByLabel("Message", { exact: true }).fill("hello");
+    for (const invalid of ["", "0", "1.5", "100001"]) {
+      await page.getByLabel("Max tokens").fill(invalid);
+      assert.match(await page.locator("#code").textContent() ?? "", /Max tokens must be a whole number/);
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      assert.equal(bodies.length, 0, "Never replace an invalid setting with an invisible default");
+    }
+    await page.getByLabel("Max tokens").fill("72");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await page.waitForFunction(() => document.getElementById("usage")?.textContent?.startsWith("stop"));
+    assert.equal(bodies.length, 1);
+    const body = JSON.parse(bodies[0]!);
+    assert.equal(body.max_output_tokens, 72);
+    assert.equal(body.instructions, "Changed in curl");
+    assert.equal("temperature" in body, false);
+    assert.equal("reasoning" in body, false);
+    for (const width of [1024, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      assert.ok(await page.evaluate(() => document.activeElement?.id === "system"));
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "No horizontal overflow");
+      await page.getByLabel("System prompt").fill(`Width ${width}`);
+      await page.waitForFunction((width) => document.getElementById("code")?.textContent?.includes(`Width ${width}`), width);
+    }
     assert.deepEqual(errors, []);
   } finally { await browser.close(); await close(demo.server); }
 });

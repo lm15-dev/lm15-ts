@@ -44,7 +44,10 @@
     "docs"
   ],
   "scripts": {
-    "build": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && npm run build:examples && npm run python:wheel && npm run rust:wasm",
+    "build": "npm run build:typescript && npm run python:wheel && npm run rust:wasm",
+    "build:typescript": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && npm run build:examples",
+    "site:package": "node --experimental-strip-types tools/package_site.ts",
+    "site:test": "node --experimental-strip-types --test tools/site_ui.test.ts",
     "check": "tsc --noEmit && tsc -p tsconfig.examples.json --noEmit && tsc -p tsconfig.providers.json --noEmit",
     "test": "node --experimental-strip-types --experimental-vm-modules --test tests/*.test.ts",
     "vet": "node dist/vet.js",

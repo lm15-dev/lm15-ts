@@ -13,13 +13,13 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const prompt = $<HTMLTextAreaElement>("prompt");
 const send = $<HTMLButtonElement>("send");
 const stop = $<HTMLButtonElement>("stop");
-const settingsDialog = $<HTMLDialogElement>("settings");
 const keyInput = $<HTMLInputElement>("key");
 const remember = $<HTMLInputElement>("remember");
 const endpoint = $<HTMLInputElement>("endpoint");
 const automatic = $<HTMLInputElement>("automatic-models");
 const systemInput = $<HTMLTextAreaElement>("system");
 const temperatureInput = $<HTMLInputElement>("temperature");
+const temperatureReset = $<HTMLButtonElement>("temperature-reset");
 const maxTokensInput = $<HTMLInputElement>("max-tokens");
 const reasoningInput = $<HTMLSelectElement>("reasoning");
 
@@ -74,6 +74,7 @@ async function updateCode(): Promise<void> {
   let code = "";
   let note = "";
   try {
+    if (!maxTokensInput.validity.valid) throw new Error("Max tokens must be a whole number from 1 to 100000.");
     if (language === "javascript") { code = exampleJavascript(connection, settings, messages, text); note = "Runs here as the JavaScript runtime: lm15/browser in this page."; }
     else if (language === "python") { code = examplePython(connection, settings, messages, text); note = "Runs here as the Python runtime: this text, under Pyodide. On CPython drop the FetchTransport line."; }
     else if (language === "rust") { code = exampleRust(connection, settings, messages, text); note = "The Rust runtime here is lm15-rs compiled to WebAssembly building this same request; the fetch is the page's."; }
@@ -142,7 +143,7 @@ function selectModel(id: string): void {
   if (connection.model !== id) { connection.model = id; reset(); notify(); }
   refreshStatus();
 }
-function openSettings(): void { refreshStatus(); settingsDialog.showModal(); (keyless(connection.provider) ? systemInput : keyInput).focus(); }
+function openSettings(): void { systemInput.focus(); systemInput.scrollIntoView({ block: "nearest" }); }
 
 async function discover(force = false): Promise<void> {
   const selected = { ...connection };
@@ -246,6 +247,7 @@ function turn(who: string, text: string): HTMLElement {
 
 async function sendTurn(text: string): Promise<void> {
   if (active) return;
+  if (!maxTokensInput.reportValidity()) { openSettings(); maxTokensInput.focus(); return; }
   if (!connection.model.trim()) { notify("Choose a model first."); return; }
   const version = generation;
   const controller = new AbortController();
@@ -279,12 +281,11 @@ async function sendTurn(text: string): Promise<void> {
 $("provider-button").addEventListener("click", () => picker.open("provider"));
 $("model-button").addEventListener("click", () => { picker.open("model"); if (automatic.checked) void discover(); });
 $("settings-button").addEventListener("click", openSettings);
-$("settings-close").addEventListener("click", () => settingsDialog.close());
 $("credentials").addEventListener("submit", (event) => {
   event.preventDefault();
   const key = keyInput.value.trim(); keyInput.value = "";
   if (!key) return;
-  void credentials.set(connection.provider, key, remember.checked).then(() => { credentialsChanged(); notify(); settingsDialog.close(); if (automatic.checked) void discover(); });
+  void credentials.set(connection.provider, key, remember.checked).then(() => { credentialsChanged(); notify(); if (automatic.checked) void discover(); });
 });
 $("forget-key").addEventListener("click", () => { void credentials.forget(connection.provider).then(() => { keyInput.value = ""; credentialsChanged(); }); });
 $("forget").addEventListener("click", () => {
@@ -299,8 +300,9 @@ endpoint.addEventListener("change", () => {
 automatic.addEventListener("change", () => { refreshStatus(); if (automatic.checked) void discover(); });
 $("list").addEventListener("click", () => void discover(true));
 systemInput.addEventListener("input", () => { settings.system = systemInput.value; void updateCode(); });
-temperatureInput.addEventListener("input", () => { settings.temperature = temperatureInput.value === "" ? null : Number(temperatureInput.value); $("temperature-value").textContent = settings.temperature === null ? "provider default" : String(settings.temperature); void updateCode(); });
-maxTokensInput.addEventListener("input", () => { settings.maxTokens = Math.max(1, Math.floor(Number(maxTokensInput.value) || 400)); void updateCode(); });
+temperatureInput.addEventListener("input", () => { settings.temperature = Number(temperatureInput.value); temperatureReset.disabled = false; $("temperature-value").textContent = String(settings.temperature); void updateCode(); });
+temperatureReset.addEventListener("click", () => { settings.temperature = null; temperatureInput.value = "1"; temperatureReset.disabled = true; $("temperature-value").textContent = "provider default"; void updateCode(); });
+maxTokensInput.addEventListener("input", () => { if (maxTokensInput.validity.valid) settings.maxTokens = maxTokensInput.valueAsNumber; void updateCode(); });
 reasoningInput.addEventListener("change", () => { settings.reasoning = reasoningInput.value as Settings["reasoning"]; void updateCode(); });
 for (const input of document.querySelectorAll<HTMLInputElement>('input[name="runtime"]')) input.addEventListener("change", () => void selectRuntime(input.value as RuntimeId));
 for (const tab of document.querySelectorAll<HTMLButtonElement>("[data-language]")) tab.addEventListener("click", () => { language = tab.dataset.language as Language; void updateCode(); });

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'none'">
+<title>Privacy and hosting — lm15 playground</title>
+<link rel="stylesheet" href="__ASSETS__/examples/provider-page/app.css">
+</head>
+<body>
+<main class="about-page">
+<p><a href="/">← Back to the playground</a></p>
+<h1>Privacy and hosting</h1>
+<p>This is an open-source playground for LM15, not a service that runs models for you. Bring your own provider account and API key. Sending messages may cost money on that account.</p>
+<h2>Where your information goes</h2>
+<ul>
+<li>Your browser sends messages and the selected provider's key directly to that provider. There is no LM15 proxy. That provider's privacy rules apply to those requests.</li>
+<li>GitHub Pages hosts the public files and handles normal hosting traffic, including your IP address. The app does not send your keys or messages to GitHub, and includes no analytics, advertising, or third-party scripts.</li>
+<li>The conversation stays in the page's memory and is lost on refresh. It is sent again to your provider with each turn so the conversation can continue.</li>
+<li>Keys also stay in memory unless you choose <strong>Remember on this device</strong>. Remembered keys are encrypted in this site's browser storage. <strong>Forget</strong> deletes them. Keys stored on localhost or a different website do not carry over here.</li>
+<li>Encryption does not protect against scripts running on this page: they must be able to use the key to send a request. Only use the playground if you trust this site and its updates. Prefer limited-budget keys and revoke keys you no longer need.</li>
+</ul>
+<h2>What this hosting setup can and cannot do</h2>
+<p>GoDaddy manages the address. GitHub Pages serves the files and provides HTTPS, the encrypted browser connection. JavaScript, Python via Pyodide, and the Rust WebAssembly codec run in your browser. Python and Rust load only when selected; Python downloads about 13 MB the first time.</p>
+<p>Browser access is controlled by the model provider. A provider that blocks browser requests will not work here. There is no silent proxy or fallback. For local HTTP model servers, use the <a href="https://github.com/lm15-dev/lm15-ts/tree/main/examples/provider-page">local playground</a>; the public HTTPS site allows only HTTPS requests.</p>
+<p>GitHub Pages does not let us set custom HTTP security headers. The page uses a restrictive Content Security Policy to limit scripts and connections, but that is not equivalent to a server-controlled policy. Do not embed this playground in another site.</p>
+<p>Releases use versioned asset addresses so a cached script cannot silently mix with a different release's libraries. A new release may require downloading the runtimes again. Reload an old tab if a runtime can no longer be loaded after an update.</p>
+<h2>Source and licenses</h2>
+<p><a href="https://github.com/lm15-dev/lm15-ts">TypeScript and the playground</a> · <a href="https://github.com/lm15-dev/lm15-python">Python</a> · <a href="https://github.com/lm15-dev/lm15-rs">Rust</a> · <a href="/release.json">Published source revisions and file checksums</a></p>
+<ul>
+<li>LM15: <a href="__ASSETS__/licenses/lm15-typescript.txt">TypeScript license</a>, <a href="__ASSETS__/licenses/lm15-python.txt">Python license</a>, <a href="__ASSETS__/licenses/lm15-rust.txt">Rust license</a>.</li>
+<li>Rust standard library: <a href="__ASSETS__/licenses/rust-LICENSE-MIT.txt">MIT license</a> or <a href="__ASSETS__/licenses/rust-LICENSE-APACHE.txt">Apache license</a>. <a href="https://github.com/rust-lang/rust/tree/1.97.1">Corresponding source</a>.</li>
+<li>Rust dependencies: <a href="__ASSETS__/licenses/rust-dependencies.txt">license notices</a>. Dependency versions and source locations are listed in the pinned Rust repository's Cargo.lock.</li>
+<li>Pyodide, distributed unmodified: <a href="__ASSETS__/licenses/pyodide-MPL-2.0.txt">Mozilla Public License 2.0</a>. <a href="https://github.com/pyodide/pyodide/tree/72e3c78d53a32a76e0aca7443ad24e5cae1042d3">Corresponding source</a>.</li>
+<li>CPython 3.13.2, included in Pyodide: <a href="__ASSETS__/licenses/python-3.13.2.txt">Python license and acknowledgments</a>. <a href="https://github.com/python/cpython/tree/v3.13.2">Corresponding source</a>.</li>
+</ul>
+</main>
+</body>
+</html>
