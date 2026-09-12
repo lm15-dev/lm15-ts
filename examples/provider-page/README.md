@@ -128,6 +128,13 @@ under a bundler other than the import map used here.
 7. **`fetch` as a method** (from the earlier SDK smoke): still the one bug
    only a real browser can find; the Rust runtime here calls `fetch`
    bare for the same reason.
+8. **`JSON.stringify` is the wrong serializer for a transcript.** Numbers
+   parsed off a provider's wire are `RawNumber` (the lexeme, kept exact —
+   `1.0` stays `1.0`, a 20-digit id is not rounded); the page's first
+   real multi-turn Rust run threw on one. Every path that writes a
+   transcript out — the three renderers, the codec ABI — now uses lm15's
+   `stringifyJson`, and a test replays a wire-parsed transcript through
+   all of them.
 
 ## Layout
 

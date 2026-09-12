@@ -193,3 +193,21 @@ function streamFor(url: string): string {
   else frames = [{ id: "r", model: "m", choices: [{ delta: { role: "assistant", content: "Hi" } }] }, { choices: [{ delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 1, total_tokens: 3 } }];
   return frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("") + (url.includes("/responses") || url.includes("/messages") || url.includes("streamGenerateContent") ? "" : "data: [DONE]\n\n");
 }
+
+test("a transcript parsed off the wire (RawNumber lexemes in an opaque payload) renders and builds in every language", { skip: "skip" in wasm ? wasm.skip : false }, async () => {
+  const { parseJson } = await import("../dist/browser.js");
+  // What a JavaScript turn leaves in the transcript: numbers from the provider's body are RawNumber, not Number.
+  const fromWire = Message.fromJSON(parseJson('{"role":"assistant","parts":[{"type":"text","text":"Earlier answer","continuation":[{"provider":"openai","kind":"reasoning_item","data":{"n":1.0,"big":12345678901234567890}}]}]}') as never);
+  const transcript = [Message.user("Earlier question"), fromWire];
+  const connection: Connection = { provider: "openai", model: "gpt-4.1-mini", endpoint: "" };
+  for (const render of [exampleJavascript, examplePython, exampleRust]) {
+    const text = render(connection, DEFAULT_SETTINGS, transcript, prompt);
+    assert.match(text, /12345678901234567890/, `${render.name}: the wire's lexeme survives, not a rounded Number`);
+    assert.match(text, /1\.0/, `${render.name}: 1.0 stays 1.0`);
+  }
+  const rust = await RustCodec.load(readFileSync((wasm as { path: string }).path));
+  const request = buildRequest(connection, DEFAULT_SETTINGS, transcript, prompt);
+  const want = await createClient(connection, "k").buildRequest(request, true);
+  const built = rust.buildRequest({ provider: "openai", apiKey: "k" }, RequestNs.toJSON(request), true);
+  assert.deepEqual(built.body, JSON.parse(utf8Decode(want.body)), "the Rust codec builds the same body from a wire-parsed transcript");
+});

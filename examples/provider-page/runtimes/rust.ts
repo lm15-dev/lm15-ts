@@ -77,7 +77,7 @@ export class RustCodec {
   /** One op. Throws `RustCodecError` for the codec's typed failures. */
   call<T = unknown>(op: string, input: unknown = {}): T {
     const [opPtr, opLen] = this.#write(op);
-    const [inPtr, inLen] = this.#write(JSON.stringify(input));
+    const [inPtr, inLen] = this.#write(stringifyJson(input)); // not JSON.stringify: wire-parsed numbers are RawNumber and keep their lexeme
     const out = this.#exports.lm15_call(opPtr, opLen, inPtr, inLen);
     const memory = this.#exports.memory.buffer;
     const len = new DataView(memory).getUint32(out, true);
@@ -148,7 +148,7 @@ function base64(bytes: Uint8Array): string {
 
 // ─── The runtime ──────────────────────────────────────────────────────
 
-import { Request as RequestNs, Response as CanonicalResponse, type Request } from "lm15/browser";
+import { Request as RequestNs, Response as CanonicalResponse, stringifyJson, type Request } from "lm15/browser";
 import { ANTHROPIC_BROWSER_HEADER, keyless, type Connection, type Wire } from "../experience.ts";
 import type { Runtime } from "./index.ts";
 
@@ -177,7 +177,7 @@ function connectionOf(connection: Connection, key: string | undefined): CodecCon
 function wireOf(built: WireRequest): Wire {
   const url = new URL(built.url);
   for (const [k, v] of Object.entries(built.params)) url.searchParams.set(k, v);
-  const body = built.body_b64 !== undefined ? atob(built.body_b64) : built.body === null ? "" : JSON.stringify(built.body);
+  const body = built.body_b64 !== undefined ? atob(built.body_b64) : built.body === null ? "" : stringifyJson(built.body);
   return { method: built.method, url: url.href, headers: Object.entries(built.headers), body };
 }
 

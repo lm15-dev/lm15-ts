@@ -11,7 +11,7 @@
  * placeholders in the text.
  */
 
-import { Message, OpenAIChatLM, Request as RequestNs, adapterFor, access, lookup, type Config, type ProviderLM, type ReasoningEffort, type Request } from "lm15/browser";
+import { Message, OpenAIChatLM, RawNumber, Request as RequestNs, adapterFor, access, lookup, stringifyJson, type Config, type ProviderLM, type ReasoningEffort, type Request } from "lm15/browser";
 
 export interface Connection { provider: string; model: string; endpoint: string }
 export interface Settings { system: string; temperature: number | null; maxTokens: number; reasoning: ReasoningEffort | "" }
@@ -77,6 +77,7 @@ function pyLiteral(value: unknown, level = 0): string {
   if (value === null) return "None";
   if (typeof value === "boolean") return value ? "True" : "False";
   if (typeof value === "number") return String(value);
+  if (value instanceof RawNumber) return value.raw; // a number as the wire spelled it (opaque payloads keep their lexeme)
   if (typeof value === "string") return q(value);
   if (Array.isArray(value)) return value.length ? `[\n${value.map((v) => inner + pyLiteral(v, level + 1)).join(",\n")},\n${pad}]` : "[]";
   const entries = Object.entries(value as Record<string, unknown>);
@@ -117,7 +118,7 @@ export function exampleJavascript(connection: Connection, settings: Settings, me
   lines.push("", "const request = Request.create({", `  model: ${q(connection.model)},`);
   if (settings.system.trim()) lines.push(`  system: ${q(settings.system.trim())},`);
   if (messages.length) {
-    lines.push("  // Earlier turns, replayed exactly as the model produced them.", "  messages: [", ...indent(messages.map((m) => `Message.fromJSON(${JSON.stringify(Message.toJSON(m), null, 2)}),`).join("\n"), 2).split("\n"), `    Message.user(${q(prompt)}),`, "  ],");
+    lines.push("  // Earlier turns, replayed exactly as the model produced them.", "  messages: [", ...indent(messages.map((m) => `Message.fromJSON(${stringifyJson(Message.toJSON(m), { indent: 2 })}),`).join("\n"), 2).split("\n"), `    Message.user(${q(prompt)}),`, "  ],");
   } else lines.push(`  messages: [Message.user(${q(prompt)})],`);
   lines.push(...configLines(settings, "javascript"), "});", "", "const controller = new AbortController(); // Stop calls controller.abort()", "const result = new ResponseStream(lm.stream(request, { signal: controller.signal }), request);", "for await (const text of result) process.stdout.write(text);", "", "// Keep the reply for the next turn.", "const response = await result.response();", "const messages = [...request.messages, response.message];");
   return lines.join("\n");
@@ -159,7 +160,7 @@ export function exampleRust(connection: Connection, settings: Settings, messages
   lines.push(")?;", "", "let request = Request {", `    model: ${q(`${provider}:${connection.model}`)}.into(),`);
   if (settings.system.trim()) lines.push(`    system: Some(${q(settings.system.trim())}.into()),`);
   if (messages.length) {
-    lines.push("    // Earlier turns, replayed exactly as the model produced them.", "    messages: vec![", ...messages.map((m) => `        Message::from_json(&serde_json::json!(${JSON.stringify(Message.toJSON(m))}))?,`), `        Message::user(${q(prompt)})?,`, "    ],");
+    lines.push("    // Earlier turns, replayed exactly as the model produced them.", "    messages: vec![", ...messages.map((m) => `        Message::from_json(&serde_json::json!(${stringifyJson(Message.toJSON(m))}))?,`), `        Message::user(${q(prompt)})?,`, "    ],");
   } else lines.push(`    messages: vec![Message::user(${q(prompt)})?],`);
   lines.push(...configLines(settings, "rust"), "    ..Default::default()", "};", "", "let mut result = ResponseStream::new(router.stream(&request), &request); // drop it to stop", "while let Some(text) = result.text_chunks().next().await {", '    print!("{}", text?);', "}", "", "// Keep the reply for the next turn.", "let response = result.response().await?;", "let mut messages = request.messages.clone();", "messages.push(response.message.clone());");
   return lines.join("\n");
