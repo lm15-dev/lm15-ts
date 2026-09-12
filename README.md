@@ -207,6 +207,15 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 - **No schema derivation from a function signature** (api-family.md § Tools):
   `tool(name, { parameters })` takes the JSON Schema you write. Stated once
   for all three non-Python ports.
+- **Job handles and live turns** (api-family § Beyond chat, 2026-09-11,
+  pending ratification): `lm.batch(...)` / `batchJob(id)` / `batches()` →
+  `BatchJob`; `lm.videoGenerate(...)` / `videoJob(id)` / `videoJobs()` →
+  `VideoJob`; `wait({ pollEveryMs, timeoutMs, signal })` is the only thing
+  that waits, and a deadline that elapses throws a `DOMException` named
+  `TimeoutError` (the caller's own deadline; no lm15 code). `session.turn()`
+  iterates one turn (LIVE-1) and `await turn.result()` materializes it with
+  the bill summed per LIVE-2. The pure verbs are unchanged and are what the
+  harness pins.
 - **Post-completion stream failures are reported with `process.emitWarning`**
   (contract `changes/2026-09-11-stream-completion-and-error-metadata.md` § 2;
   Python: `StreamCleanupWarning`). The warning's `type` is

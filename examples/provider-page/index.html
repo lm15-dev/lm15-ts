@@ -5,38 +5,91 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'sha256-vzDM+wPtdfGgwcSDia6gRane5rggh7T4wuIn42/jZc4='; style-src 'self'; connect-src https: http://localhost:* http://127.0.0.1:* http://[::1]:*; base-uri 'none'; form-action 'self'">
-<title>LM15 — your provider, your key</title>
+<title>LM15 · Chat and code</title>
 <link rel="stylesheet" href="./app.css">
 <script type="importmap">{"imports":{"lm15/browser":"../../dist/browser.js"}}</script>
 <script type="module" src="./build/main.js"></script>
 </head>
 <body>
-<h1>LM15 — your provider, your key</h1>
-<p>This page connects directly to the provider you choose. No gateway account required.</p>
-<p class="note">Hosted requests may cost money. Browser access varies by provider. Keys stay in this tab's memory; refreshing clears them. Nothing is sent until you click List models or Send.</p>
-<label>Provider <select id="provider" aria-label="Provider"></select></label>
-<p id="status" role="status">Loading…</p>
-<details><summary>Providers with a key loaded</summary><p id="loaded">None</p></details>
-<form id="credentials">
-<label>Your API key <input id="key" type="password" autocomplete="off" spellcheck="false" aria-label="Your API key"></label>
-<button type="submit">Use key for this provider</button>
-<button type="button" id="forget">Forget all keys</button>
-</form>
-<label>Custom API root <input id="endpoint" type="url" aria-label="Custom API root" disabled></label>
-<p class="note">Custom servers use standard Chat Completions behavior. Leave the key empty only if your local server does not require authentication. Changing its address clears its key.</p>
-<label>Model ID <input id="model" list="models" autocomplete="off" spellcheck="false" aria-label="Model ID"></label>
-<datalist id="models"></datalist>
-<button id="list" type="button">List models</button>
-<p class="note">Suggested model IDs are examples, not availability guarantees. Changing the provider or model starts a new conversation.</p>
-<p id="alert" role="alert" hidden></p>
-<div id="transcript" aria-label="Conversation"></div>
-<form id="composer">
-<label for="prompt">Message</label>
-<textarea id="prompt" rows="3" required></textarea>
-<button id="send" type="submit">Send</button>
-<button id="stop" type="button" disabled>Stop</button>
-<button id="clear" type="button">New conversation</button>
-</form>
-<p id="usage" role="status"></p>
+<header class="masthead">
+  <a class="brand" href="./" aria-label="LM15 playground">lm15<span> / playground</span></a>
+  <span class="masthead-note">Same intent. Different providers.</span>
+  <button id="settings-button" class="quiet" aria-haspopup="dialog">Settings</button>
+</header>
+<main class="split">
+  <section class="chat-panel" aria-label="Chat">
+    <header class="chat-toolbar">
+      <div class="connection">
+        <button id="provider-button" class="chip" aria-label="Choose provider" aria-haspopup="dialog"><span id="provider-name">OpenAI</span><span aria-hidden="true">⌄</span></button>
+        <button id="model-button" class="chip model-chip" aria-label="Choose model" aria-haspopup="dialog"><span id="model-name">gpt-4.1-mini</span><span aria-hidden="true">⌄</span></button>
+      </div>
+      <button id="clear" class="quiet" aria-label="New conversation" title="New conversation">＋ New</button>
+    </header>
+    <div class="connection-status"><span class="dot" aria-hidden="true"></span><span id="key-state" role="status">Loading…</span></div>
+    <div class="chat-scroll" id="chat-scroll">
+      <div id="empty" class="empty-state">
+        <span class="eyebrow">TRY THE INTERFACE. READ THE CODE.</span>
+        <h1>A conversation,<br>without the machinery.</h1>
+        <p>Pick a model and say hello.<br>The code beside you follows along.</p>
+        <div class="command-hints"><kbd>/provider</kbd><kbd>/model</kbd><kbd>/settings</kbd></div>
+      </div>
+      <div id="transcript" aria-label="Conversation"></div>
+    </div>
+    <div class="composer-area">
+      <p id="alert" role="alert" hidden></p>
+      <p id="usage" class="usage" role="status"></p>
+      <form id="composer" class="composer">
+        <div id="slash-picker" class="slash-picker" hidden>
+          <p id="slash-status" class="picker-status" role="status"></p>
+          <ul id="slash-results" role="listbox" aria-label="Command suggestions"></ul>
+        </div>
+        <label class="sr-only" for="prompt">Message</label>
+        <textarea id="prompt" rows="3" placeholder="Ask something, or type / for commands…" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="slash-results"></textarea>
+        <div class="composer-actions"><span>Enter to send · Shift + Enter for a new line</span><div><button id="stop" type="button" class="quiet" disabled>Stop</button><button id="send" type="submit" class="primary">Send <span aria-hidden="true">↑</span></button></div></div>
+      </form>
+      <p class="fine-print">Direct to your provider. Hosted requests may cost money.</p>
+    </div>
+  </section>
+  <aside class="code-panel" aria-labelledby="code-heading">
+    <header class="code-heading"><div><span class="eyebrow">UNDER THE INTERFACE</span><h2 id="code-heading">Just JavaScript.</h2></div><span class="language-badge">lm15/browser</span></header>
+    <div class="code-tabs" role="group" aria-label="Code example">
+      <button data-example="connect" aria-pressed="false">Connection</button>
+      <button data-example="models" aria-pressed="false">Models</button>
+      <button data-example="request" aria-pressed="false">Request</button>
+      <button data-example="stream" aria-pressed="true">Streaming</button>
+    </div>
+    <p id="code-purpose" class="code-purpose"></p>
+    <pre tabindex="0" aria-label="Runnable JavaScript example"><code id="code"></code></pre>
+    <footer class="code-footer"><span>Your keys never appear here.<br>Change a chip or use a command to explore.</span><button id="copy-code">Copy code</button><span id="copy-status" class="sr-only" role="status"></span></footer>
+  </aside>
+</main>
+
+<dialog id="picker" aria-labelledby="picker-title">
+  <div class="dialog-heading"><h2 id="picker-title">Choose a provider</h2><button id="picker-close" class="quiet" aria-label="Close picker">✕</button></div>
+  <label class="sr-only" for="picker-search">Search choices</label>
+  <input id="picker-search" type="search" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="true" aria-controls="picker-results" aria-autocomplete="list">
+  <p id="picker-status" class="picker-status" role="status"></p>
+  <ul id="picker-results" role="listbox" aria-label="Matching choices"></ul>
+  <p class="picker-help"><kbd>↑</kbd><kbd>↓</kbd> to move · <kbd>Enter</kbd> to choose · <kbd>Esc</kbd> to close</p>
+</dialog>
+
+<dialog id="settings" aria-labelledby="settings-heading">
+  <div class="dialog-heading"><h2 id="settings-heading">Connection settings</h2><button id="settings-close" class="quiet" aria-label="Close settings">✕</button></div>
+  <p>Current provider: <strong id="settings-provider">OpenAI</strong></p>
+  <form id="credentials">
+    <label for="key">API key</label><input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your own key">
+    <p class="setting-help">This provider only. Kept in memory, never saved. Refreshing clears it.</p>
+    <button type="submit" class="primary">Use key for this provider</button>
+  </form>
+  <div id="custom-endpoint" hidden><label for="endpoint">Custom API root</label><input id="endpoint" type="url"><p class="setting-help">Standard Chat Completions. Changing the address clears its key. Use a keyless endpoint only if your server permits it.</p></div>
+  <hr>
+  <label class="checkbox"><input id="automatic-models" type="checkbox" checked> Automatically discover model IDs</label>
+  <p class="setting-help">Selecting a connection fetches its model list when credentials are available. It never sends your prompt. Listing does not prove model or account access.</p>
+  <p id="model-status" class="setting-help" role="status"></p><button id="list" class="quiet" type="button">Refresh model list</button>
+  <hr>
+  <details><summary>Providers with a loaded key</summary><p id="loaded">None</p></details>
+  <button id="forget" class="quiet" type="button">Forget all keys</button>
+  <p class="setting-help">Some endpoints block browser access. There is no proxy or automatic fallback.</p>
+</dialog>
 </body>
 </html>

@@ -1,161 +1,253 @@
-/** A provider-neutral, browser-only client. Credentials and conversations stay in memory. */
-import { Message, OpenAIChatLM, ResponseStream, adapterFor, access, type ProviderLM, type Request } from "lm15/browser";
+/** Chat UX and its live code example, using the same connection settings. */
+import { Message, ResponseStream, type Request } from "lm15/browser";
 import { CONNECTIONS } from "./connections.ts";
+import { createClient, example, fuzzyScore, slashCommand, type Connection, type ExampleMode, type PickerKind } from "./experience.ts";
+import { Picker, type PickOption, type PickResult } from "./picker.ts";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-const provider = $<HTMLSelectElement>("provider");
-const model = $<HTMLInputElement>("model");
-const endpoint = $<HTMLInputElement>("endpoint");
-const keyInput = $<HTMLInputElement>("key");
-const status = $("status");
-const alert = $("alert");
+const prompt = $<HTMLTextAreaElement>("prompt");
 const send = $<HTMLButtonElement>("send");
 const stop = $<HTMLButtonElement>("stop");
-const prompt = $<HTMLTextAreaElement>("prompt");
-const transcript = $("transcript");
+const settings = $<HTMLDialogElement>("settings");
+const keyInput = $<HTMLInputElement>("key");
+const endpoint = $<HTMLInputElement>("endpoint");
+const automatic = $<HTMLInputElement>("automatic-models");
+const connection: Connection = { provider: "openai", model: "gpt-4.1-mini", endpoint: "http://localhost:1234/v1" };
 const keys = new Map<string, string>();
+const keyRevision = new Map<string, number>();
+interface Catalogue { ids: string[]; status: string; loading: boolean }
+const catalogues = new Map<string, Catalogue>();
 let messages: Message[] = [];
 let generation = 0;
 let active: AbortController | undefined;
+let mode: ExampleMode = "stream";
+let lastPrompt = "Hello!";
 
-function notify(text = "") { alert.textContent = text; alert.hidden = !text; }
-function reset() {
-  generation++;
-  active?.abort();
-  active = undefined;
-  messages = [];
-  transcript.replaceChildren();
-  $("usage").textContent = "";
-  send.disabled = false;
-  stop.disabled = true;
-}
-function refreshStatus() {
-  const hasKey = keys.has(provider.value);
-  status.textContent = hasKey ? "Key loaded for this provider (memory only). No request sent yet." : "Enter your own key, or use a keyless local endpoint.";
-  $("loaded").textContent = [...keys.keys()].map((id) => CONNECTIONS.find((c) => c.id === id)?.label ?? id).join(", ") || "None";
-}
-function select() {
-  reset(); notify(); keyInput.value = "";
-  const choice = CONNECTIONS.find((c) => c.id === provider.value)!;
-  model.value = choice.model;
-  endpoint.value = provider.value === "custom" ? "http://localhost:1234/v1" : "";
-  endpoint.disabled = provider.value !== "custom";
-  $("models").replaceChildren();
-  refreshStatus();
-}
-function client(): ProviderLM {
-  const id = provider.value;
-  const key = keys.get(id);
-  if (!key && !["ollama", "custom"].includes(id)) throw new Error("Enter an API key for this provider first.");
-  if (id === "custom") {
-    const url = new URL(endpoint.value);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      throw new Error("Use an HTTP(S) API root without credentials, query parameters, or fragments.");
-    }
-    return new OpenAIChatLM({ apiKey: key ?? "unused", baseUrl: url.href.replace(/\/$/, "") });
+const picker = new Picker(options, (kind, id) => {
+  if (kind === "commands") {
+    if (id === "settings") openSettings();
+    else if (id === "provider") showCode("connect");
+    else { showCode("models"); if (automatic.checked) void discover(); }
+    return;
   }
-  return adapterFor(id, {
-    apiKey: key ?? "unused",
-    // Anthropic requires an explicit opt-in header for a browser-owned credential.
-    ...(id === "anthropic" ? { access: access.withHeaders(access.ANTHROPIC_API, { "anthropic-dangerous-direct-browser-access": "true" }) } : {}),
-  });
+  if (kind === "provider") selectProvider(id);
+  else selectModel(id);
+  updateExample();
+  prompt.focus();
+});
+
+function notify(text = "") { $("alert").textContent = text; $("alert").hidden = !text; }
+function redact(text: string): string {
+  for (const key of keys.values()) text = text.split(key).join("[redacted]");
+  return text;
 }
 function errorMessage(error: unknown): string {
-  let text = error instanceof Error ? error.message : String(error);
-  for (const key of keys.values()) text = text.split(key).join("[redacted]");
-  return text + "\nIf the browser blocks the connection, this may be a network or CORS restriction. This demo does not proxy requests or bypass browser protections.";
+  return redact(error instanceof Error ? error.message : String(error))
+    + "\nBrowser access depends on the provider. A network failure may be CORS or connectivity; requests are not proxied.";
 }
-function turn(who: string, text: string) {
-  const article = document.createElement("article");
-  const label = document.createElement("b"); label.textContent = who;
-  const body = document.createElement("p"); body.textContent = text;
-  article.append(label, body); transcript.append(article);
-  return body;
+function currentChoice() { return CONNECTIONS.find((choice) => choice.id === connection.provider)!; }
+function cacheKey(): string { return `${connection.provider}:${connection.endpoint}:${keyRevision.get(connection.provider) ?? 0}`; }
+function updateExample() {
+  const draft = prompt.value.trim();
+  $("code").textContent = example(connection, redact(draft && !slashCommand(draft) ? draft : lastPrompt), mode);
+  for (const tab of document.querySelectorAll<HTMLButtonElement>("[data-example]")) tab.setAttribute("aria-pressed", String(tab.dataset.example === mode));
+  $("code-purpose").textContent = {
+    connect: "The provider chip chooses this client. Credentials are always placeholders here.",
+    models: "The model picker calls listModels(). Listing is not proof of account access.",
+    request: "Your model and message become a Request. This example inspects it without inference.",
+    stream: "Send streams text; Stop aborts it. This is a standalone single-turn example, not the chat's full history.",
+  }[mode];
+}
+function showCode(next: ExampleMode) { mode = next; updateExample(); }
+function refreshStatus() {
+  $("provider-name").textContent = currentChoice().label;
+  $("settings-provider").textContent = currentChoice().label;
+  $("model-name").textContent = connection.model || "Choose model";
+  const hasKey = keys.has(connection.provider);
+  $("key-state").textContent = hasKey ? "Key ready" : ["ollama", "custom"].includes(connection.provider) ? "Local connection" : "Add key in Settings";
+  $("key-state").dataset.ready = String(hasKey);
+  $("loaded").textContent = [...keys.keys()].map((id) => CONNECTIONS.find((choice) => choice.id === id)?.label ?? id).join(", ") || "None";
+  $("custom-endpoint").hidden = connection.provider !== "custom";
+  endpoint.value = connection.endpoint;
+  const catalogue = catalogues.get(cacheKey());
+  $("model-status").textContent = catalogue?.status ?? (automatic.checked ? "Model IDs load when this connection is ready." : "Automatic model discovery is off.");
+  updateExample(); picker.update();
+}
+function reset() {
+  generation++; active?.abort(); active = undefined; messages = [];
+  $("transcript").replaceChildren(); $("usage").textContent = "";
+  $("empty").hidden = false; send.disabled = false; stop.disabled = true;
+}
+function credentialsChanged() {
+  keyRevision.set(connection.provider, (keyRevision.get(connection.provider) ?? 0) + 1);
+  reset(); refreshStatus();
+}
+function selectProvider(id: string) {
+  const choice = CONNECTIONS.find((candidate) => candidate.id === id);
+  if (!choice) return;
+  if (id !== connection.provider) {
+    connection.provider = id; connection.model = choice.model; keyInput.value = "";
+    reset(); notify(); lastPrompt = "Hello!";
+  }
+  showCode("connect"); refreshStatus();
+  if (automatic.checked) void discover();
+}
+function selectModel(id: string) {
+  if (connection.model !== id) { connection.model = id; reset(); notify(); }
+  showCode("request"); refreshStatus();
+}
+function openSettings() { refreshStatus(); settings.showModal(); keyInput.focus(); }
+
+/** Fetch only after an explicit connection choice or local credential opt-in; cache per connection. */
+async function discover(force = false) {
+  const selected = { ...connection };
+  const cache = cacheKey();
+  const existing = catalogues.get(cache);
+  if (existing?.loading || (existing && !force)) return;
+  const key = keys.get(selected.provider);
+  if (!key && !["ollama", "custom"].includes(selected.provider)) { refreshStatus(); return; }
+  const catalogue: Catalogue = { ids: [], status: "Loading model IDs…", loading: true };
+  catalogues.set(cache, catalogue); refreshStatus();
+  try {
+    const lm = createClient(selected, key);
+    if (!lm.supports.models) {
+      catalogue.status = "This provider doesn't list models here. Type an exact model ID instead.";
+    } else {
+      const models = await lm.listModels();
+      catalogue.ids = [...new Set(models.map((model) => model.id))];
+      catalogue.status = `${catalogue.ids.length} model IDs listed · account access may differ`;
+    }
+  } catch (error) {
+    catalogue.status = "Model discovery failed. You can still enter an exact model ID.";
+    // A background discovery failure must not erase a draft or block chat.
+    if (cacheKey() === cache) $("model-status").title = errorMessage(error);
+  } finally {
+    catalogue.loading = false;
+    if (cacheKey() === cache) refreshStatus(); // a stale provider's response never updates the active picker
+  }
 }
 
-for (const choice of CONNECTIONS) provider.add(new Option(choice.label, choice.id));
-provider.addEventListener("change", select);
-model.addEventListener("change", reset);
-endpoint.addEventListener("change", () => {
-  // An old custom-server key must never silently follow a new address.
-  keys.delete("custom"); keyInput.value = ""; reset(); refreshStatus();
-});
+function options(kind: PickerKind, query: string): PickResult {
+  let entries: PickOption[];
+  let status: string;
+  if (kind === "commands") {
+    entries = [
+      { id: "provider", label: "/provider", detail: "Change provider" },
+      { id: "model", label: "/model", detail: "Search models or enter an ID" },
+      { id: "settings", label: "/settings", detail: "Keys and connection options" },
+    ];
+    status = "Commands configure the app. They are never sent to a model.";
+  } else if (kind === "provider") {
+    entries = CONNECTIONS.map((choice) => ({ id: choice.id, label: choice.label, detail: keys.has(choice.id) ? "Key loaded" : choice.env ? "Add key in Settings" : "Local / custom endpoint" }));
+    status = "Choose a provider · switching starts a new conversation";
+  } else {
+    const catalogue = catalogues.get(cacheKey());
+    const listed = new Set(catalogue?.ids ?? []);
+    entries = [...new Set([connection.model, ...listed, currentChoice().model])].filter(Boolean).map((id) => ({ id, label: id, detail: `${listed.has(id) ? "Listed by provider" : "Example or entered ID · unverified"}${id === connection.model ? " · current" : ""}` }));
+    status = catalogue?.status ?? (keys.has(connection.provider) ? "Type to search, or enter an exact model ID" : "Add a key in Settings to discover models, or enter an ID");
+  }
+  const filtered = entries.map((entry, index) => ({ entry, index, score: Math.max(fuzzyScore(query, entry.id), fuzzyScore(query, entry.label)) }))
+    .filter((hit) => Number.isFinite(hit.score)).sort((a, b) => b.score - a.score || a.index - b.index);
+  const shown = filtered.slice(0, 30).map((hit) => hit.entry);
+  if (kind === "model" && query.trim() && !entries.some((entry) => entry.id === query.trim())) {
+    shown.push({ id: query.trim(), label: `Use exact ID: ${query.trim()}`, detail: "Custom model ID · not verified" });
+  }
+  if (filtered.length > 30) status += ` · showing 30 of ${filtered.length}; type to narrow`;
+  if (!shown.length) status += " · no matches";
+  return { options: shown, status };
+}
+
+$("provider-button").addEventListener("click", () => { showCode("connect"); picker.open("provider"); });
+$("model-button").addEventListener("click", () => { showCode("models"); picker.open("model"); if (automatic.checked) void discover(); });
+$("settings-button").addEventListener("click", openSettings);
+$("settings-close").addEventListener("click", () => settings.close());
 $("credentials").addEventListener("submit", (event) => {
   event.preventDefault();
   const key = keyInput.value.trim(); keyInput.value = "";
   if (!key) return;
-  keys.set(provider.value, key); reset(); notify(); refreshStatus();
+  keys.set(connection.provider, key); credentialsChanged(); notify(); settings.close();
+  if (automatic.checked) void discover();
 });
-$("forget").addEventListener("click", () => { reset(); keys.clear(); keyInput.value = ""; notify(); refreshStatus(); });
-$("clear").addEventListener("click", reset);
-$("list").addEventListener("click", async () => {
-  const version = generation;
-  try {
-    const lm = client();
-    if (!lm.supports.models) throw new Error("This connection does not support model listing. Enter the model ID directly.");
-    notify("Loading model IDs; this does not validate your key or model access.");
-    const models = await lm.listModels();
-    if (version !== generation) return;
-    $("models").replaceChildren(...models.map((m) => new Option(m.id, m.id)));
-    notify(`${models.length} model IDs listed. Availability and charges depend on your account.`);
-  } catch (error) { if (version === generation) notify(errorMessage(error)); }
+endpoint.addEventListener("change", () => {
+  if (connection.endpoint === endpoint.value.trim()) return;
+  connection.endpoint = endpoint.value.trim(); keys.delete("custom"); keyInput.value = "";
+  credentialsChanged(); if (automatic.checked) void discover();
 });
+automatic.addEventListener("change", () => { refreshStatus(); if (automatic.checked) void discover(); });
+$("list").addEventListener("click", () => { showCode("models"); void discover(true); });
+$("forget").addEventListener("click", () => {
+  for (const id of keys.keys()) keyRevision.set(id, (keyRevision.get(id) ?? 0) + 1);
+  keys.clear(); keyInput.value = ""; catalogues.clear(); reset(); notify(); refreshStatus();
+});
+$("clear").addEventListener("click", () => { reset(); notify(); prompt.focus(); });
+for (const tab of document.querySelectorAll<HTMLButtonElement>("[data-example]")) tab.addEventListener("click", () => showCode(tab.dataset.example as ExampleMode));
+prompt.addEventListener("input", () => {
+  updateExample();
+  if (slashCommand(prompt.value)?.kind === "model" && automatic.checked) void discover();
+});
+prompt.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !event.defaultPrevented) {
+    event.preventDefault(); $<HTMLFormElement>("composer").requestSubmit();
+  }
+});
+$("copy-code").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("code").textContent ?? ""); $("copy-status").textContent = "Copied"; }
+  catch { $("copy-status").textContent = "Clipboard unavailable; select the code to copy it."; }
+});
+
+function turn(who: string, text: string) {
+  $("empty").hidden = true;
+  const article = document.createElement("article");
+  const label = document.createElement("b"); label.textContent = who;
+  const body = document.createElement("p"); body.textContent = text;
+  article.append(label, body); $("transcript").append(article);
+  return body;
+}
 $("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (picker.consume()) { updateExample(); return; }
   if (active) return;
   const text = prompt.value.trim();
-  if (!text || !model.value.trim()) { notify("Enter a model ID and a message."); return; }
+  if (!text || !connection.model.trim()) { notify("Choose a model and enter a message."); return; }
   const version = generation;
   const controller = new AbortController();
   active = controller; send.disabled = true; stop.disabled = false; notify();
+  lastPrompt = text; showCode("stream");
   let body: HTMLElement | undefined;
   try {
-    const lm = client();
-    const request: Request = { model: model.value.trim(), messages: [...messages, Message.user(text)], config: { maxTokens: 400 } };
+    const lm = createClient({ ...connection }, keys.get(connection.provider));
+    const request: Request = { model: connection.model.trim(), messages: [...messages, Message.user(text)], config: { maxTokens: 400 } };
     const stream = new ResponseStream(lm.stream(request, { signal: controller.signal }), request);
-    turn("You", text); body = turn("Model", ""); prompt.value = "";
+    turn("You", text); body = turn(currentChoice().label, ""); prompt.value = "";
     for await (const piece of stream) {
       if (version !== generation) break;
       body.textContent += piece;
     }
     if (version !== generation) return;
-    const response = await stream.response();
-    messages = [...request.messages, response.message];
+    const response = await stream.response(); messages = [...request.messages, response.message];
     $("usage").textContent = `${response.finishReason} · input ${response.usage?.inputTokens ?? "unreported"} · output ${response.usage?.outputTokens ?? "unreported"}`;
   } catch (error) {
     if (version === generation) {
-      if (controller.signal.aborted) notify("Stopped. This incomplete turn is not included in the next request.");
-      else notify(errorMessage(error));
+      notify(controller.signal.aborted ? "Stopped. This incomplete turn is not included in the next request." : errorMessage(error));
       if (body) body.parentElement?.setAttribute("data-incomplete", "true");
     }
-  } finally {
-    if (version === generation) { active = undefined; send.disabled = false; stop.disabled = true; }
-  }
+  } finally { if (version === generation) { active = undefined; send.disabled = false; stop.disabled = true; } }
 });
-stop.addEventListener("click", () => active?.abort());
-select();
+stop.addEventListener("click", () => { showCode("stream"); active?.abort(); });
+refreshStatus();
 
-// Opt-in development session: a fragment capability authorizes one loopback-only
-// credential fetch. No keys in the document, URLs, logs, or persistent storage.
-const fragment = new URLSearchParams(location.hash.slice(1));
-const token = fragment.get("local-test");
+// Explicit, one-use local test handoff. Keys never enter code examples or persistent storage.
+const token = new URLSearchParams(location.hash.slice(1)).get("local-test");
 if (token) {
   history.replaceState(null, "", location.pathname + location.search);
-  if (!["127.0.0.1", "localhost", "[::1]"].includes(location.hostname)) {
-    notify("Local test credentials can only be loaded from localhost.");
-  } else {
-    void (async () => {
-      try {
-        const response = await fetch("/__lm15_test_credentials", { headers: { "X-LM15-Test-Token": token }, cache: "no-store" });
-        if (!response.ok) throw new Error("Local test session expired or is not authorized. Restart the local demo.");
-        const data = await response.json() as Record<string, string>;
-        for (const choice of CONNECTIONS) {
-          const key = data[choice.id];
-          if (typeof key === "string" && key) keys.set(choice.id, key);
-        }
-        refreshStatus();
-        notify(`${keys.size} provider keys loaded from the private local test session. Nothing has been sent to a provider. Reloading clears the keys.`);
-      } catch (error) { notify(errorMessage(error)); }
-    })();
-  }
+  if (!["127.0.0.1", "localhost", "[::1]"].includes(location.hostname)) notify("Local test credentials can only be loaded from localhost.");
+  else void (async () => {
+    try {
+      const response = await fetch("/__lm15_test_credentials", { headers: { "X-LM15-Test-Token": token }, cache: "no-store" });
+      if (!response.ok) throw new Error("Local test session expired. Restart the local demo to load keys.");
+      const data = await response.json() as Record<string, string>;
+      for (const choice of CONNECTIONS) { const key = data[choice.id]; if (typeof key === "string" && key) keys.set(choice.id, key); }
+      refreshStatus(); if (automatic.checked) void discover();
+    } catch (error) { notify(errorMessage(error)); }
+  })();
 }

@@ -5,7 +5,8 @@ import { stringifyJson, type JsonObject } from "./json.ts";
 import { getDefaultPlatform } from "./platform.ts";
 import { LiveConfig, LiveClientEvent as LiveClientEventNs, LiveServerEvent as LiveServerEventNs, type LiveClientEvent, type LiveServerEvent } from "./types/live.ts";
 import { normalizeParts, type PartInput, type PromptPart, type ToolResultContentPart } from "./types/parts.ts";
-import { encodeBase64 } from "./types/validate.ts";
+import { decodeBase64, encodeBase64 } from "./types/validate.ts";
+import { Usage, type ErrorDetail } from "./types/response.ts";
 import { GeminiLM } from "./dialects/gemini.ts";
 import { OpenAILM } from "./dialects/openai_responses.ts";
 import type { ProviderLM } from "./adapter.ts";
@@ -222,6 +223,15 @@ export class LiveSession implements AsyncIterable<LiveServerEvent> {
   /** Breaking a turn's iteration leaves the full-duplex session open. Close explicitly. */
   [Symbol.asyncIterator](): AsyncIterator<LiveServerEvent> { return { next: () => this.next() }; }
 
+  /**
+   * One turn (LIVE-1, LIVE-2; api-family § Beyond chat): iterate its
+   * events until `turn_end` / `interrupted` / `error`, or `await
+   * turn.result()` for the materialized `Turn`. A `tool_call` is yielded
+   * mid-turn and does not end iteration; `result()` returns at it (you
+   * must answer with `sendToolResult`). The session itself stays open.
+   */
+  turn(): TurnView { return new TurnView(this); }
+
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     if (this.closed) return Promise.resolve();
@@ -234,6 +244,132 @@ export class LiveSession implements AsyncIterable<LiveServerEvent> {
   }
 
   async [Symbol.asyncDispose](): Promise<void> { await this.close(); }
+}
+
+// ─── Turn: half-duplex ergonomics over the event stream ───────────────
+//
+// A live session is FULL-duplex; plain iteration is the primary surface.
+// `turn()` serves the half-duplex idiom (send, then listen until the turn
+// ends). The boundary and the bill are contract rules LIVE-1 and LIVE-2
+// (changes/2026-09-11-job-handles-live-turns-profiles.md), not this
+// port's habit.
+
+const TURN_TERMINAL = new Set(["turn_end", "interrupted", "error"]);
+
+export interface ToolCallInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly input: JsonObject;
+}
+
+/**
+ * One materialized turn. `endedBy` is `turn_end` / `interrupted` / `error`
+ * / `tool_call`; `usage` is the field-wise sum of every `usage` and
+ * `turn_end` event the turn saw (a counter absent on either side stays
+ * absent, INV-029). Materializing buffers text and audio in memory until
+ * the turn ends; for latency-sensitive playback iterate events instead.
+ */
+export interface Turn {
+  readonly endedBy: "turn_end" | "interrupted" | "error" | "tool_call";
+  readonly ok: boolean;
+  readonly text: string;
+  readonly audio: Uint8Array;
+  readonly audioMediaType?: string;
+  readonly toolCalls: readonly ToolCallInfo[];
+  readonly usage?: Usage;
+  readonly error?: ErrorDetail;
+  readonly events: readonly LiveServerEvent[];
+}
+
+const USAGE_FIELDS = ["inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "inputAudioTokens", "outputAudioTokens"] as const;
+
+/** Field-wise sum of two Usage values from one session; absent on either side is unknown in the sum, never zero (INV-029). */
+export function sumUsage(acc: Usage | undefined, more: Usage): Usage {
+  if (acc === undefined) return more;
+  const out: Record<string, number> = {};
+  for (const name of USAGE_FIELDS) {
+    const a = acc[name], b = more[name];
+    if (a !== undefined && b !== undefined) out[name] = a + b;
+  }
+  return Usage.create(out);
+}
+
+export function materializeTurn(events: readonly LiveServerEvent[]): Turn {
+  const text: string[] = [];
+  const audio: Uint8Array[] = [];
+  let audioMediaType: string | undefined;
+  const toolCalls: ToolCallInfo[] = [];
+  let usage: Usage | undefined;
+  let error: ErrorDetail | undefined;
+  for (const event of events) {
+    switch (event.type) {
+      case "text": text.push(event.text); break;
+      case "audio":
+        audio.push(decodeBase64("audio", event.data));
+        if (audioMediaType === undefined && event.mediaType !== undefined) audioMediaType = event.mediaType;
+        break;
+      case "tool_call": toolCalls.push({ id: event.id, name: event.name, input: event.input }); break;
+      case "turn_end":
+      case "usage":
+        // A turn's bill is every usage-bearing event it saw (LIVE-2).
+        usage = sumUsage(usage, event.usage);
+        break;
+      case "error": error = event.error; break;
+      default: break;
+    }
+  }
+  const last = events[events.length - 1];
+  const endedBy = last !== undefined && (TURN_TERMINAL.has(last.type) || last.type === "tool_call") ? (last.type as Turn["endedBy"]) : "error";
+  const total = audio.reduce((n, a) => n + a.length, 0);
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of audio) { bytes.set(chunk, offset); offset += chunk.length; }
+  return Object.freeze({
+    endedBy,
+    ok: endedBy === "turn_end",
+    text: text.join(""),
+    audio: bytes,
+    ...(audioMediaType !== undefined ? { audioMediaType } : {}),
+    toolCalls: Object.freeze(toolCalls),
+    ...(usage !== undefined ? { usage } : {}),
+    ...(error !== undefined ? { error } : {}),
+    events: Object.freeze([...events]),
+  });
+}
+
+/**
+ * Iterator over one turn's server events. Ends itself after yielding the
+ * terminal event (`turn_end` / `interrupted` / `error`) — the same
+ * self-ending idiom as `stream()`. A `tool_call` is yielded mid-iteration
+ * (you hold the session, so you can answer and keep iterating);
+ * `result()` cannot answer for you, so it returns at a `tool_call` instead
+ * of deadlocking against a model that is waiting for your result.
+ */
+export class TurnView implements AsyncIterable<LiveServerEvent> {
+  private readonly session: LiveSession;
+  private done = false;
+
+  constructor(session: LiveSession) {
+    this.session = session;
+  }
+
+  async *[Symbol.asyncIterator](): AsyncGenerator<LiveServerEvent> {
+    while (!this.done) {
+      const event = await this.session.recv();
+      if (event === undefined) { this.done = true; return; } // the socket closed: nothing more to yield
+      if (TURN_TERMINAL.has(event.type)) this.done = true;
+      yield event;
+    }
+  }
+
+  async result(): Promise<Turn> {
+    const events: LiveServerEvent[] = [];
+    for await (const event of this) {
+      events.push(event);
+      if (event.type === "tool_call") break;
+    }
+    return materializeTurn(events);
+  }
 }
 
 function frameBytes(data: unknown): Uint8Array | string {

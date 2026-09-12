@@ -10,6 +10,7 @@
 
 import { abortable, checkAborted } from "./async.ts";
 import type { LiveSession, LiveSessionOptions } from "./live.ts";
+import { BatchJob, VideoJob } from "./jobs.ts";
 import { authHeader, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
 import { finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
 import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError, UnsupportedFeatureError, mapHttpError, withCredentialHint } from "./errors.ts";
@@ -470,6 +471,20 @@ export abstract class ProviderLM {
     return this.batchJobsFromListBody((await this.sendOk(await this.batchListRequest(limit))).text());
   }
 
+  // Job handles (api-family § Beyond chat): sugar over the four verbs above.
+
+  /** Submit and wrap the ticket in a `BatchJob` handle. */
+  async batch(request: BatchRequest): Promise<BatchJob> {
+    return new BatchJob(this, await this.batchSubmit(request));
+  }
+  /** Re-attach to an existing job by id alone (the primary pattern for real workloads). */
+  async batchJob(batchId: string): Promise<BatchJob> {
+    return new BatchJob(this, await this.batchStatus(batchId));
+  }
+  async batches(limit = 20): Promise<BatchJob[]> {
+    return (await this.batchList(limit)).map((info) => new BatchJob(this, info));
+  }
+
   // ─── Caches (the stored tier of MAP-6) ─────────────────────────────
 
   protected cachesUnsupported(): UnsupportedFeatureError {
@@ -618,6 +633,19 @@ export abstract class ProviderLM {
   async videoList(limit = 20, model?: string): Promise<VideoJobInfo[]> {
     this.require("video");
     return this.videoJobsFromListBody((await this.sendOk(await this.videoListRequest(limit, model))).text());
+  }
+
+  /** Submit and wrap the ticket in a `VideoJob` handle. */
+  async videoGenerate(request: VideoGenerationRequest): Promise<VideoJob> {
+    return new VideoJob(this, await this.videoSubmit(request));
+  }
+  /** Re-attach to an existing job by id alone; on xAI the id you stored is the only copy (no list endpoint). */
+  async videoJob(videoId: string): Promise<VideoJob> {
+    return new VideoJob(this, await this.videoStatus(videoId));
+  }
+  /** This credential's video jobs as handles, where the wire lists them (OpenAI account-wide; Gemini per `model`; xAI raises). */
+  async videoJobs(limit = 20, model?: string): Promise<VideoJob[]> {
+    return (await this.videoList(limit, model)).map((info) => new VideoJob(this, info));
   }
 }
 

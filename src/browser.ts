@@ -189,7 +189,8 @@ export type { LMOptions } from "./adapter.ts";
 export { adapterFor } from "./providers.ts";
 export { PROVIDERS, lookup, canonicalProvider, DIALECT_API_FAMILY } from "./registry.ts";
 export type { ProviderDefinition, Dialect } from "./registry.ts";
-export { LiveSession } from "./live.ts";
+export { LiveSession, TurnView, materializeTurn, sumUsage } from "./live.ts";
+export type { Turn, ToolCallInfo } from "./live.ts";
 export type { LiveSessionOptions } from "./live.ts";
 
 // Compat presets
