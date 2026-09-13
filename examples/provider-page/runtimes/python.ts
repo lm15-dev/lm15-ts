@@ -25,12 +25,15 @@ const INDEX_URL = new URL("../../../../vendor/pyodide/", import.meta.url).href;
 const WHEEL_URL = new URL("../../../../vendor/python/lm15.whl", import.meta.url).href;
 let pyodide: Pyodide | undefined;
 let loading: Promise<Pyodide> | undefined;
+let bootAttempts = 0;
 
 async function boot(report: (status: string) => void): Promise<Pyodide> {
   if (pyodide) return pyodide;
   loading ??= (async () => {
     report("Loading Pyodide (13 MB, cached after the first time)…");
-    const module = (await import(/* @vite-ignore */ `${INDEX_URL}pyodide.mjs`)) as { loadPyodide(options: { indexURL: string }): Promise<Pyodide> };
+    // Browsers can cache a failed module import. A retry needs a fresh module URL.
+    const retry = bootAttempts++ === 0 ? "" : `?retry=${bootAttempts}`;
+    const module = (await import(/* @vite-ignore */ `${INDEX_URL}pyodide.mjs${retry}`)) as { loadPyodide(options: { indexURL: string }): Promise<Pyodide> };
     const py = await module.loadPyodide({ indexURL: INDEX_URL });
     report("Installing lm15 for Python…");
     await py.loadPackage(WHEEL_URL, { messageCallback: () => {} });
@@ -38,7 +41,7 @@ async function boot(report: (status: string) => void): Promise<Pyodide> {
     report(`Python ready: ${version}`);
     pyodide = py;
     return py;
-  })();
+  })().catch((error) => { loading = undefined; throw error; });
   return loading;
 }
 

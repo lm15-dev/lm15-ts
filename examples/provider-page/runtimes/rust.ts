@@ -164,7 +164,7 @@ async function boot(report: (status: string) => void): Promise<RustCodec> {
     report(`Rust ready: lm15-rs ${loaded.version().version} (wasm32)`);
     codec = loaded;
     return loaded;
-  })();
+  })().catch((error) => { loading = undefined; throw error; });
   return loading;
 }
 

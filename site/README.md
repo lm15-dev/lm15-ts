@@ -14,7 +14,7 @@ and test without deploying. The job:
 2. Installs pinned build tools and npm's locked dependencies.
 3. Builds the Python wheel and Rust wasm codec from source on GitHub's runner.
 4. Collects the Rust dependency license notices from its locked wasm graph.
-5. Runs type checks, the SDK suite and the six provider-browser tests.
+5. Runs type checks, the SDK suite and the provider-browser tests.
 6. Packages an explicit allowlist of public files into `_site/`.
 7. Drives that exact static artifact in Chromium, including all three runtimes,
    multi-turn replay, settings, encrypted remembered keys, forgetting, mobile

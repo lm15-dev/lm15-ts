@@ -233,6 +233,7 @@ test("nine local keys load privately; each provider receives only its key; manua
       await page.getByRole("button", { name: "Settings", exact: true }).click();
       await page.getByLabel("API key", { exact: true }).fill(expectedKey);
       await page.getByRole("button", { name: "Use key for this provider" }).click();
+      await page.waitForFunction(() => (document.getElementById("key") as HTMLInputElement).value === "" && document.getElementById("key-state")?.textContent === "Key ready (this tab)");
       assert.equal(await page.getByLabel("API key", { exact: true }).inputValue(), "");
       await page.getByLabel("Message", { exact: true }).fill("Hello");
       await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -401,6 +402,172 @@ test("settings stay beside the live code; defaults and invalid inputs stay hones
       await page.waitForFunction((width) => document.getElementById("code")?.textContent?.includes(`Width ${width}`), width);
     }
     assert.deepEqual(errors, []);
+  } finally { await browser.close(); await close(demo.server); }
+});
+
+test("workspace design: guided setup, safe code coloring, copying, reset and small-screen navigation", { timeout: 90_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, reducedMotion: "reduce" });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(demo.url).origin });
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  let externalRequests = 0;
+  await page.route("**/*", (route) => {
+    if (new URL(route.request().url()).origin === new URL(demo.url).origin) return route.continue();
+    externalRequests++; return route.abort();
+  });
+  try {
+    await page.goto(demo.url);
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    await page.getByRole("button", { name: /Explain something/ }).click();
+    const draft = await page.locator("#prompt").inputValue();
+    assert.match(draft, /sky is blue/);
+    assert.equal(externalRequests, 0, "Starting prompts do not send or load a provider");
+    await page.locator("#send").click();
+    assert.equal(await page.evaluate(() => document.activeElement?.id), "key");
+    assert.equal(await page.locator("#prompt").inputValue(), draft);
+    assert.equal(await page.locator("#transcript article").count(), 0, "Missing-key setup preserves the draft without creating a failed turn");
+    await page.getByLabel("Automatically discover model IDs").uncheck();
+    await page.getByLabel("API key", { exact: true }).fill("dummy-design-key");
+    await page.getByRole("button", { name: "Use key for this provider" }).click();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Key ready (this tab)");
+    assert.equal(await page.locator("#start-setup").isVisible(), false);
+    await page.getByLabel("System prompt").fill('<script>window.hacked=true</script> <img src=x onerror=alert(1)> dummy-design-key');
+    assert.equal(await page.locator("#code script, #code img").count(), 0);
+    assert.ok(await page.locator("#code .token-string").count() > 0);
+    assert.ok(!(await page.locator("#code").textContent())?.includes("dummy-design-key"));
+    const code = await page.locator("#code").textContent();
+    await page.getByRole("button", { name: "Copy code", exact: true }).click();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), code, "Copied text has no line numbers or styling markup");
+    assert.match(await page.locator("#copy-code").textContent() ?? "", /Copied/);
+    await page.getByLabel("Max tokens").fill("64");
+    await page.getByLabel("Reasoning effort").selectOption("low");
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    assert.equal(await page.getByLabel("System prompt").inputValue(), "");
+    assert.equal(await page.getByLabel("Max tokens").inputValue(), "400");
+    assert.equal(await page.getByLabel("Reasoning effort").inputValue(), "");
+    assert.equal(await page.locator("#prompt").inputValue(), draft, "Reset settings does not erase the draft or key");
+    assert.match(await page.locator("#key-state").textContent() ?? "", /Key ready/);
+    await page.getByRole("button", { name: "Wrap lines", exact: true }).click();
+    assert.equal(await page.locator("#wrap-code").getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#code-scroll").evaluate((e) => getComputedStyle(e).whiteSpace), "pre-wrap");
+    await page.getByRole("button", { name: "Jump to request", exact: false }).click();
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme, reducedMotion: "reduce" });
+      const contrast = await page.evaluate(() => {
+        const luminance = (color: string) => {
+          const [r, g, b] = color.match(/[\d.]+/g)!.slice(0, 3).map(Number).map((value) => { value /= 255; return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4; });
+          return r! * .2126 + g! * .7152 + b! * .0722;
+        };
+        const code = getComputedStyle(document.getElementById("code")!);
+        const panel = getComputedStyle(document.getElementById("code-panel")!);
+        const a = luminance(code.color), b = luminance(panel.backgroundColor);
+        return (Math.max(a, b) + .05) / (Math.min(a, b) + .05);
+      });
+      assert.ok(contrast >= 7, `${scheme}: readable code contrast`);
+    }
+    for (const width of [1024, 700, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await page.getByLabel("System prompt").fill(`Screen ${width}`);
+      await page.locator('[data-view-target="code"]').click();
+      assert.equal(await page.locator("#code-panel").isVisible(), true);
+      assert.match(await page.locator("#code").textContent() ?? "", new RegExp(`Screen ${width}`));
+      assert.equal(await page.locator("#settings").isVisible(), width > 700);
+      await page.locator('[data-view-target="chat"]').click();
+      assert.equal(await page.locator("#chat-panel").isVisible(), true);
+      assert.equal(await page.locator("#prompt").inputValue(), draft);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), `No page overflow at ${width}px`);
+    }
+    assert.equal(externalRequests, 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); await close(demo.server); }
+});
+
+test("runtime loading can be retried, never silently switches language, and does not allow sending while loading", { timeout: 90_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const page = await browser.newPage();
+  let attempts = 0;
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let releaseReply = () => {};
+  const heldReply = new Promise<void>((resolve) => { releaseReply = resolve; });
+  let posts = 0;
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/vendor/rust/lm15.wasm")) {
+      attempts++;
+      if (attempts === 1) return route.fulfill({ status: 503, body: "Temporary test failure" });
+      await held;
+      return route.continue();
+    }
+    if (url.origin === new URL(demo.url).origin) return route.continue();
+    assert.equal(route.request().method(), "POST");
+    posts++;
+    await heldReply;
+    return route.fulfill({ contentType: "text/event-stream", body: replyFor(url) });
+  });
+  try {
+    await page.goto(demo.url);
+    await page.getByLabel("Automatically discover model IDs").uncheck();
+    await page.getByLabel("API key", { exact: true }).fill("dummy-loading-key");
+    await page.getByRole("button", { name: "Use key for this provider" }).click();
+    await page.waitForFunction(() => document.getElementById("key-state")?.textContent === "Key ready (this tab)");
+    await page.getByLabel("Message", { exact: true }).fill("Keep this draft");
+    await page.getByLabel("Rust", { exact: true }).check();
+    await page.getByRole("button", { name: "Retry loading" }).waitFor({ state: "visible" });
+    assert.equal(await page.getByLabel("Rust", { exact: true }).isChecked(), true);
+    assert.equal(await page.locator('[data-language="rust"]').getAttribute("aria-pressed"), "true");
+    assert.equal(await page.locator("#send").isDisabled(), true);
+    await page.getByRole("button", { name: "Retry loading" }).click();
+    await page.getByLabel("Message", { exact: true }).press("Enter");
+    assert.equal(posts, 0, "Keyboard sending is blocked too while the runtime loads");
+    assert.equal(await page.locator("#prompt").inputValue(), "Keep this draft");
+    await page.getByLabel("JavaScript", { exact: true }).check();
+    assert.equal(await page.locator("#send").isDisabled(), false);
+    release();
+    await page.getByLabel("Rust", { exact: true }).check();
+    await page.waitForFunction(() => document.getElementById("runtime-status")?.textContent?.startsWith("Rust ready"));
+    assert.equal(attempts, 2, "Retry actually refetches, rather than reusing a rejected promise");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    for (const name of ["JavaScript", "Python", "Rust"]) assert.equal(await page.getByLabel(name, { exact: true }).isDisabled(), true, "The executing language cannot change mid-turn");
+    releaseReply();
+    await page.waitForFunction(() => document.getElementById("usage")?.textContent?.endsWith("Rust"));
+    assert.equal(posts, 1);
+    assert.equal(await page.getByLabel("JavaScript", { exact: true }).isDisabled(), false);
+  } finally { release(); releaseReply(); await browser.close(); await close(demo.server); }
+});
+
+test("Python can retry a failed module download without reloading the page", { timeout: 120_000 }, async () => {
+  const installed = findBrowsers().find((b) => b.name === "chromium");
+  assert.ok(installed);
+  const demo = await startDemo();
+  const browser = await chromium.launch({ executablePath: installed.bin });
+  const page = await browser.newPage();
+  let attempts = 0;
+  await page.route("**/*", (route) => {
+    const url = new URL(route.request().url());
+    assert.equal(url.origin, new URL(demo.url).origin, "Runtime setup never sends a provider request");
+    if (url.pathname.endsWith("/pyodide.mjs") && ++attempts === 1) return route.fulfill({ status: 503, body: "Temporary test failure" });
+    return route.continue();
+  });
+  try {
+    await page.goto(demo.url);
+    await page.getByLabel("Python", { exact: true }).check();
+    await page.getByRole("button", { name: "Retry loading" }).waitFor({ state: "visible" });
+    assert.equal(await page.getByLabel("Python", { exact: true }).isChecked(), true);
+    await page.getByRole("button", { name: "Retry loading" }).click();
+    await page.waitForFunction(() => document.getElementById("runtime-status")?.textContent?.startsWith("Python ready"), undefined, { timeout: 90_000 });
+    assert.equal(attempts, 2);
+    assert.equal(await page.locator("#code-file").textContent(), "playground.py");
+    assert.equal(await page.locator("#retry-runtime").isVisible(), false);
   } finally { await browser.close(); await close(demo.server); }
 });
 

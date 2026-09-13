@@ -50,8 +50,10 @@ Settings stay in a visible sidebar beside the chat and code. System prompt,
 temperature, max tokens and reasoning effort update the selected code tab as
 you edit, without sending a request. They apply to the next message, not an
 already-running turn. **Settings** (or `/settings`) focuses the sidebar.
-On tablets, settings and code sit together above the chat; phones stack the
-panels to keep them readable.
+Desktop keeps settings, chat, and code visible together. Tablets keep settings
+beside the selected Chat or Code view. Phones use Settings / Chat / Code
+navigation; drafts and settings survive view changes. This trades simultaneous
+visibility on small screens for readable controls and an accessible composer.
 
 **Use provider default** removes the explicit temperature from the request.
 Invalid max-token values are shown as errors rather than silently replaced.
@@ -60,7 +62,27 @@ The code panel shows how each language spells them, and JSON shows the bytes. A 
 loudly — lm15 never drops a setting to make a call succeed (see *What
 building it surfaced*, below).
 
+## Workspace interaction
+
+- Starting prompts fill the composer; they never send a paid request.
+- Sending without a key focuses setup and preserves the draft.
+- Reset restores generation settings, not the key or conversation.
+- Choosing **Run in** also selects that language's code preview. Browsing code
+  tabs alone never changes execution or downloads another runtime.
+- Loading failures offer a real retry and never silently switch languages.
+  Runtime selection is locked while a turn is executing.
+- Replies follow the bottom of the conversation only while you're already
+  near the bottom, so reading earlier messages isn't interrupted.
+- Light/dark colors follow the browser preference. Reduced-motion preferences
+  are respected. No external fonts or interface libraries are loaded.
+
 ## The code panel
+
+Code coloring uses text nodes, never HTML from a prompt or provider. Line numbers
+are decorative; copying preserves the exact source without numbers or markup.
+**Jump to request** skips setup lines, and **Wrap lines** trades horizontal
+scrolling for longer wrapped lines. Responses remain plain text; this redesign
+does not introduce an HTML or Markdown renderer into the key-bearing page.
 
 Every snippet is a complete program: connect, replay the whole transcript
 so far — verbatim, in canonical JSON, thinking parts and continuation
