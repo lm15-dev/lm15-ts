@@ -124,17 +124,18 @@ interface Platform {
 
 ## The examples
 
-`examples/provider-page/` is the playground: choose a provider, supply
+The [website repository](https://github.com/lm15-dev/website) owns the
+playground (`src/playground/`): choose a provider, supply
 your own key (**Get a key ↗** opens the provider's key page from the
 registry), and chat — with the exact request beside you in JavaScript,
 Python, Rust, JSON and curl, and a **Run in** switch that sends the turn
 through the real SDK of each language: this entry point, lm15-python
 under Pyodide, or lm15-rs compiled to wasm32. After a turn the page
 builds the request in every loaded runtime and confirms the bytes match.
-`npm run example` opens it; `npm run example:local` enables a private,
-one-use localhost handoff of keys from `../.env` for testing. Its README
-lists what building it surfaced, including a silent-omission bug in the
-reference that only three languages side by side could show.
+From that repository, `npm run dev` previews the website and playground.
+`npm run playground:local` enables a private, one-use localhost handoff of
+keys from `../.env` for testing. The playground's interface, runtime packages,
+and cross-language browser tests are maintained there, not in this SDK.
 
 `examples/openrouter-page/` is a static page — no backend — that signs in
 to OpenRouter with PKCE (lm15's `generatePkce`), lists models, streams

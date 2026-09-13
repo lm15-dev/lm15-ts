@@ -78,15 +78,17 @@ npm test                       # node:test; replays ../lm15-contract when presen
 npm run differential           # both probes against ../lm15-python
 npm run test:browser           # the web entry in Chromium and Firefox, headless (needs the browsers)
 npm run test:example           # the example page's modules through a real PKCE redirect, same browsers
-npm run example                # the playground: chat, with the request in JS / Python / Rust, each runnable
-npm run example:local          # opt in to private localhost test keys from ../.env
-npm run example:openrouter     # the separate OpenRouter OAuth protocol example
-npm run test:providers         # provider selection, key isolation, and the private handoff tests
+npm run example:openrouter     # the OpenRouter OAuth protocol example
 cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all
 ```
 
 `npm test` also evaluates the web entry inside a realm with only web globals
 and replays the corpus through it (`tests/web_realm.test.ts`).
+
+The website, documentation hub, playground, and cross-language browser tests
+live in the separate [website repository](https://github.com/lm15-dev/website).
+To work on them locally, use `cd ../website && npm run dev` after `npm ci`
+in that repository. This SDK no longer builds or deploys the website.
 
 ## Quick start
 
@@ -167,7 +169,7 @@ The line, what a page cannot promise (CORS; a key in a page is not a
 secret), and the evidence behind the claim — the corpus replayed in a
 web-only realm, Chromium and Firefox headless — are in
 [docs/browser.md](docs/browser.md). The
-[playground](examples/provider-page/README.md) takes your own API key,
+[playground](https://github.com/lm15-dev/website/tree/main/src/playground) takes your own API key,
 connects directly to your chosen provider, shows the exact request in
 JavaScript, Python, Rust, JSON and curl, and runs it through the real SDK
 of each language — this one, lm15-python under Pyodide, lm15-rs under

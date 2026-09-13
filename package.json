@@ -44,28 +44,20 @@
     "docs"
   ],
   "scripts": {
-    "build": "npm run build:typescript && npm run python:wheel && npm run rust:wasm",
+    "build": "npm run build:typescript",
     "build:typescript": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && npm run build:examples",
-    "site:package": "node --experimental-strip-types tools/package_site.ts",
-    "site:test": "node --experimental-strip-types --test tools/site_ui.test.ts",
-    "check": "tsc --noEmit && tsc -p tsconfig.examples.json --noEmit && tsc -p tsconfig.providers.json --noEmit",
+    "check": "tsc --noEmit && tsc -p tsconfig.examples.json --noEmit",
     "test": "node --experimental-strip-types --experimental-vm-modules --test tests/*.test.ts",
     "vet": "node dist/vet.js",
     "surface": "node --experimental-strip-types tools/gen_surface.ts",
     "differential": "python3 tools/differential.py && python3 tools/differential_surfaces.py",
     "harness": "cd ../lm15-contract && python3 harness/check.py --shim typescript --direction all",
     "test:browser": "node --experimental-strip-types tools/browser_smoke.ts",
-    "build:examples": "tsc -p tsconfig.examples.json && tsc -p tsconfig.providers.json",
-    "example": "node --experimental-strip-types tools/provider_demo.ts --open",
-    "example:local": "node --experimental-strip-types tools/provider_demo.ts --local-keys --open",
+    "build:examples": "tsc -p tsconfig.examples.json",
     "example:openrouter": "node --experimental-strip-types tools/serve.ts examples/openrouter-page/",
-    "test:providers": "npm run build && node --experimental-strip-types --test tools/provider_ui.test.ts",
     "pretest:example": "npm run build && npm run test:example:ui",
     "test:example": "node --experimental-strip-types tools/example_smoke.ts",
-    "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts",
-    "python:wheel": "node --experimental-strip-types tools/python_wheel.ts",
-    "rust:wasm": "node --experimental-strip-types tools/rust_wasm.ts",
-    "rust:snippets": "node --experimental-strip-types tools/rust_snippets.ts"
+    "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts"
   },
   "keywords": [
     "ai",
@@ -91,7 +83,6 @@
   "devDependencies": {
     "@types/node": "^22",
     "playwright-core": "^1.63.0",
-    "pyodide": "^0.29.3",
     "typescript": "^5.9"
   }
 }

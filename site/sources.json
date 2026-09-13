@@ -1,6 +1,0 @@
-{
-  "python": "3bbbd3ee1bab40a1a61cc74db120c4a8eb7eb22b",
-  "rust": "62dcbff9afa2688f68fd2c22f7e7f93dcba14377",
-  "contract": "cfed00771dffef2a218b5549151950bf5060ca06",
-  "rustToolchain": "1.97.1"
-}

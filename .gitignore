@@ -1,5 +1,3 @@
 node_modules/
 dist/
 examples/*/build/
-vendor/
-_site/
