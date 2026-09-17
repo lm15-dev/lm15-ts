@@ -125,6 +125,7 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "user_id",
       "store",
       "logprobs",
+      "probabilities",
       "extensions"
     ],
     "ContinuationDelta": [
@@ -141,6 +142,13 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "provider",
       "kind",
       "data"
+    ],
+    "DataPart": [
+      "type",
+      "value",
+      "probabilities",
+      "method",
+      "continuation"
     ],
     "DocumentPart": [
       "type",

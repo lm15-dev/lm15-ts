@@ -21,6 +21,8 @@ import {
   type ReasoningEffort,
   type ReasoningSummary,
   type ToolChoiceMode,
+  PROBABILITY_POLICIES,
+  type ProbabilityPolicy,
 } from "../vocab.ts";
 import {
   Message,
@@ -299,6 +301,8 @@ export interface Config {
   readonly store?: boolean;
   /** `undefined` = do not request; `0` = chosen tokens only; `n` = also top-n alternatives. */
   readonly logprobs?: number;
+  /** Ask for a distribution over the keys the json_schema declares (MAP-14); `off` = absent (changes/2026-09-17-judgments.md D3). */
+  readonly probabilities?: ProbabilityPolicy;
   /** Provider-syntax passthrough; `{}` normalizes to absent (INV-004). */
   readonly extensions?: JsonObject;
 }
@@ -358,6 +362,7 @@ function normalizeConfigValue(input: unknown): Config {
     userId: optionalString(d["userId"], "Config.user_id", false),
     store: optionalBool(d["store"], "Config.store"),
     logprobs: optionalInt(d["logprobs"], "logprobs", { min: 0 }),
+    probabilities: optionalOneOf(PROBABILITY_POLICIES, d["probabilities"], "Config.probabilities"),
     extensions: extensionsField(d["extensions"]),
   });
   return frozen(config);
@@ -397,6 +402,7 @@ export const Config = {
       userId: d["user_id"],
       store: d["store"],
       logprobs: d["logprobs"],
+      probabilities: d["probabilities"],
       extensions: d["extensions"],
     });
   },
@@ -418,6 +424,7 @@ export const Config = {
     // false / 0 are data, not emptiness — emitted.
     if (c.store !== undefined) out["store"] = c.store;
     if (c.logprobs !== undefined) out["logprobs"] = c.logprobs;
+    if (c.probabilities !== undefined) out["probabilities"] = c.probabilities;
     return out;
   },
 };

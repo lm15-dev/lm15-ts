@@ -9,8 +9,8 @@
  */
 
 import { canonicalFactory } from "../canonical.ts";
-import { isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
-import { IMAGE_DETAILS, ROLES, type ImageDetail, type Role } from "../vocab.ts";
+import { float, isJsonObject, isStrictJson, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
+import { IMAGE_DETAILS, JUDGMENT_METHODS, ROLES, type ImageDetail, type JudgmentMethod, type Role } from "../vocab.ts";
 import {
   ValueError,
   absent,
@@ -23,6 +23,7 @@ import {
   requireJsonObject,
   requireString,
   validateBase64,
+  requireFloat,
 } from "./validate.ts";
 
 // ─── Continuation state ──────────────────────────────────────────────
@@ -129,6 +130,21 @@ export interface CitationPart extends WithContinuation {
   readonly text?: string;
 }
 
+/**
+ * Structured data as content (changes/2026-09-17-judgments.md, D2). In a
+ * user/system message: structured input (`value` alone, INV-052). In an
+ * assistant message: the answer to a json_schema request that declares
+ * judgments (MAP-14) — `value` the model's JSON, `probabilities` one
+ * distribution per judgment over its declared keys when measured, `method`
+ * how. `value` is opaque and verbatim (INV-002); `null` is a value.
+ */
+export interface DataPart extends WithContinuation {
+  readonly type: "data";
+  readonly value: JsonValue;
+  readonly probabilities?: Readonly<Record<string, Readonly<Record<string, number>>>>;
+  readonly method?: JudgmentMethod;
+}
+
 /** Shared by the five media parts: exactly one of `data`/`url`/`fileId`/`path` (INV-011). */
 interface MediaFields extends WithContinuation {
   /** Defaults per part kind; always emitted. */
@@ -187,10 +203,11 @@ export type Part =
   | ToolResultPart
   | ThinkingPart
   | RefusalPart
-  | CitationPart;
+  | CitationPart
+  | DataPart;
 
 export type ToolResultContentPart = TextPart | MediaPart | CitationPart;
-export type PromptPart = TextPart | MediaPart;
+export type PromptPart = TextPart | MediaPart | DataPart;
 export type AssistantPart = Exclude<Part, ToolResultPart>;
 
 /** What a factory accepts as content: a string, a part, or a list of either (INV-021). */
@@ -209,8 +226,9 @@ const PART_TYPE_SET = new Set([
   "thinking",
   "refusal",
   "citation",
+  "data",
 ]);
-const TOOL_RESULT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal"]);
+const TOOL_RESULT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal", "data"]);
 const PROMPT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal", "citation"]);
 
 export const DEFAULT_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({
@@ -233,6 +251,7 @@ const PART_CLASS_NAMES: Readonly<Record<string, string>> = Object.freeze({
   thinking: "ThinkingPart",
   refusal: "RefusalPart",
   citation: "CitationPart",
+  data: "DataPart",
 });
 
 export function isPart(value: unknown): value is Part {
@@ -283,6 +302,17 @@ function normalizePartValue(input: unknown): Part {
         throw new ValueError("CitationPart requires at least one of url, title, or text");
       }
       return frozen(part);
+    }
+    case "data": {
+      if (!("value" in d)) throw new ValueError("DataPart.value is required (null is a value; absence is not)");
+      const value = d["value"];
+      if (!isStrictJson(value)) throw new TypeError("DataPart.value must be a JSON-compatible value");
+      const probabilities = normalizeProbabilities(d["probabilities"]);
+      const method = optionalOneOf(JUDGMENT_METHODS, d["method"], "DataPart.method");
+      if ((method === undefined) !== (probabilities === undefined)) {
+        throw new ValueError("DataPart.method is present iff DataPart.probabilities is (INV-052)");
+      }
+      return frozen(compact({ type: "data" as const, value: value as JsonValue, probabilities, method, ...cont }));
     }
     case "image":
     case "audio":
@@ -541,6 +571,16 @@ function partToJSON(part: Part): JsonObject {
       out["content"] = part.content.map(partToJSON);
       if (part.isError) out["is_error"] = true;
       break;
+    case "data":
+      out["value"] = part.value; // opaque, always emitted (null is a value)
+      if (part.probabilities !== undefined) {
+        // canonical data, not an opaque payload: floats stay JSON floats (Number rule)
+        out["probabilities"] = Object.fromEntries(
+          Object.entries(part.probabilities).map(([name, dist]) => [name, Object.fromEntries(Object.entries(dist).map(([k, v]) => [k, float(v)]))]),
+        );
+      }
+      if (part.method !== undefined) out["method"] = part.method;
+      break;
   }
   const continuation = continuationToJson(part.continuation);
   if (continuation) out["continuation"] = continuation;
@@ -591,6 +631,9 @@ function partFromJSON(d: JsonObject): Part {
         continuation,
       });
     }
+    case "data":
+      if (!("value" in d)) throw new ValueError("data part requires 'value' (null is a value; absence is not)");
+      return normalizePart({ type: t, value: d["value"], probabilities: d["probabilities"], method: d["method"], continuation });
     default:
       throw new ValueError(`unsupported part type: ${t}`);
   }
@@ -615,6 +658,38 @@ export interface Message {
 export type PromptContent = PartInput<PromptPart>;
 export type AssistantContent = PartInput<AssistantPart>;
 
+/** INV-052: `{field: {key: probability}}`, inner maps non-empty, probabilities in [0, 1]. */
+function normalizeProbabilities(raw: unknown): Readonly<Record<string, Readonly<Record<string, number>>>> | undefined {
+  if (absent(raw)) return undefined;
+  if (!isJsonObject(raw) || Object.keys(raw).length === 0) {
+    throw new TypeError("DataPart.probabilities must be a non-empty mapping of field -> {key: probability}");
+  }
+  const out: Record<string, Readonly<Record<string, number>>> = {};
+  for (const [name, dist] of Object.entries(raw)) {
+    if (!name) throw new TypeError("DataPart.probabilities keys must be non-empty strings");
+    if (!isJsonObject(dist) || Object.keys(dist).length === 0) {
+      throw new TypeError(`DataPart.probabilities[${JSON.stringify(name)}] must be a non-empty mapping of key -> probability`);
+    }
+    const inner: Record<string, number> = {};
+    for (const [key, prob] of Object.entries(dist)) {
+      if (!key) throw new TypeError(`DataPart.probabilities[${JSON.stringify(name)}] keys must be non-empty strings`);
+      const n = requireFloat(prob, `DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}]`);
+      if (n < 0 || n > 1) throw new ValueError(`DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}] must be in [0, 1]`);
+      inner[key] = n;
+    }
+    out[name] = Object.freeze(inner);
+  }
+  return Object.freeze(out);
+}
+
+function validateInputDataParts(where: string, parts: readonly Part[]): void {
+  for (const p of parts) {
+    if (p.type === "data" && p.probabilities !== undefined) {
+      throw new TypeError(`${where} data parts carry value only; probabilities belong to assistant messages (INV-052)`);
+    }
+  }
+}
+
 function validateMessageParts(role: Role, parts: readonly Part[]): void {
   if (role === "tool") {
     if (!parts.every((p) => p.type === "tool_result")) throw new TypeError("tool messages may only contain ToolResultPart objects");
@@ -627,6 +702,7 @@ function validateMessageParts(role: Role, parts: readonly Part[]): void {
   if (parts.some((p) => PROMPT_FORBIDDEN.has(p.type))) {
     throw new TypeError(`${role} messages cannot contain model/tool protocol parts`);
   }
+  validateInputDataParts(role, parts);
 }
 
 /** The validating constructor for Message (INV-020, INV-022..024). */
@@ -756,6 +832,7 @@ export function normalizeSystem(system: unknown): string | readonly PromptPart[]
   }
   const parts = normalizeParts(system as PartInput);
   if (parts.some((p) => PROMPT_FORBIDDEN.has(p.type))) throw new TypeError("system parts cannot contain model/tool protocol parts");
+  validateInputDataParts("system", parts);
   return Object.freeze(parts) as readonly PromptPart[];
 }
 

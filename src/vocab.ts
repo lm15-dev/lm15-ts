@@ -19,12 +19,19 @@ export const PART_TYPES = [
   "thinking",
   "refusal",
   "citation",
+  "data",
 ] as const;
 export type PartType = (typeof PART_TYPES)[number];
 
 /** INV-035: streamable ∪ non-streamable = Part, no overlap. */
 export const STREAMABLE_PART_TYPES = ["text", "thinking", "image", "audio", "tool_call", "citation"] as const;
-export const NON_STREAMABLE_PART_TYPES = ["video", "document", "binary", "tool_result", "refusal"] as const;
+export const NON_STREAMABLE_PART_TYPES = ["video", "document", "binary", "tool_result", "refusal", "data"] as const;
+
+/** Judgments (changes/2026-09-17-judgments.md): `Config.probabilities` and `DataPart.method`. */
+export const PROBABILITY_POLICIES = ["off", "if_available", "required"] as const;
+export type ProbabilityPolicy = (typeof PROBABILITY_POLICIES)[number];
+export const JUDGMENT_METHODS = ["provider_classification", "candidate_sequence_likelihood"] as const;
+export type JudgmentMethod = (typeof JUDGMENT_METHODS)[number];
 
 export const DELTA_TYPES = ["text", "thinking", "audio", "image", "tool_call", "citation", "continuation"] as const;
 export type DeltaType = (typeof DELTA_TYPES)[number];
