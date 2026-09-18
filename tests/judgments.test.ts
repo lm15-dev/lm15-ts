@@ -74,14 +74,14 @@ test("a cloud wire answers a judgment request with a DataPart; probabilities pol
   const fmt = judgments({ style: choice("Style?", ["fruit", "oak"]), ok: yesNo("Fine?") });
   const body = JSON.stringify({ id: "msg_1", model: "claude-sonnet-4-5", content: [{ type: "text", text: '{"style": "oak", "ok": true}' }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } });
   const lm = new AnthropicLM({ apiKey: "k", transport: new FakeTransport([new FakeResponse({ body })]) });
-  const response = await lm.complete({ model: "claude-sonnet-4-5", messages: user("note"), config: { maxTokens: 50, responseFormat: fmt as never, probabilities: "if_available" } });
+  const response = await lm.complete({ model: "claude-sonnet-4-5", messages: user("note"), config: { maxTokens: 50, responseFormat: fmt, probabilities: "if_available" } });
   assert.deepEqual(response.data, { style: "oak", ok: true });
   assert.equal(response.dataPart?.type, "data");
   assert.equal(response.probabilities, undefined);
   assert.equal(response.text, undefined);
   assert.deepEqual(response.adaptations.map((a) => [a.field, a.action, a.asked]), [["config.probabilities", "dropped", "if_available"]]);
   await assert.rejects(
-    lm.plan({ model: "claude-sonnet-4-5", messages: user("note"), config: { maxTokens: 50, responseFormat: fmt as never, probabilities: "required" } }),
+    lm.plan({ model: "claude-sonnet-4-5", messages: user("note"), config: { maxTokens: 50, responseFormat: fmt, probabilities: "required" } }),
     (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.probabilities",
   );
   // A schema with no judgment is ordinary structured output: TextPart as before, no record.
@@ -104,16 +104,16 @@ test("Response.expected(): Σ p·i over an ordered judgment, computed, never sto
 test("typesafe: refusals name the feature; a judgment without a description is defaulted to its name; the answer folds into one DataPart", async () => {
   const lm = new TypeSafeLM({ apiKey: "k", transport: new FakeTransport([]) });
   const fmt = judgments({ refund: { type: "boolean" } });
-  const built = await lm.build({ model: "jev-latest", messages: user("I want my money back"), config: { responseFormat: fmt as never } }, false);
+  const built = await lm.build({ model: "jev-latest", messages: user("I want my money back"), config: { responseFormat: fmt } }, false);
   assert.deepEqual(decode(built.request)["questions"], { refund: { type: "noul", instructions: "refund" } });
   assert.deepEqual(built.adaptations.map((a) => [a.field, a.action, a.applied]), [["config.response_format.schema.properties.refund.description", "defaulted", "refund"]]);
   await assert.rejects(lm.build({ model: "jev-latest", messages: user("x") }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.response_format");
-  await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), tools: [{ type: "function", name: "t" }], config: { responseFormat: fmt as never } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "tools");
-  await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), config: { responseFormat: fmt as never } }, true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "stream");
+  await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), tools: [{ type: "function", name: "t" }], config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "tools");
+  await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), config: { responseFormat: fmt } }, true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "stream");
   // A data part is the state verbatim; a conversation becomes the messages object (D6).
-  const data = await lm.build({ model: "jev-latest", messages: [Message.user([{ type: "data", value: { ticket: 12 } }])], config: { responseFormat: fmt as never } }, false);
+  const data = await lm.build({ model: "jev-latest", messages: [Message.user([{ type: "data", value: { ticket: 12 } }])], config: { responseFormat: fmt } }, false);
   assert.deepEqual(decode(data.request)["state"], { ticket: 12 });
-  const convo = await lm.build({ model: "jev-latest", system: "Be fair.", messages: [Message.user("a"), Message.assistant("b")], config: { responseFormat: fmt as never } }, false);
+  const convo = await lm.build({ model: "jev-latest", system: "Be fair.", messages: [Message.user("a"), Message.assistant("b")], config: { responseFormat: fmt } }, false);
   assert.deepEqual(decode(convo.request)["state"], { system: "Be fair.", messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }] });
 });
 
@@ -181,7 +181,7 @@ test("token-trie driver: one scoring call over every node, a distribution with c
   const yes = "true".charCodeAt(0), no = "false".charCodeAt(0), end = 999;
   const server = new TrieServer(true, { [yes]: Math.log(0.7), [no]: Math.log(0.2), [end]: Math.log(0.9) });
   const lm = new OpenAIChatLM({ apiKey: "k", compat: "vllm", transport: server });
-  const request = { model: "lfm", messages: user("Looks fine to me"), config: { responseFormat: fmt as never, probabilities: "if_available" as const } };
+  const request = { model: "lfm", messages: user("Looks fine to me"), config: { responseFormat: fmt, probabilities: "if_available" as const } };
   const response = await lm.complete(request);
   assert.equal(response.dataPart?.method, "candidate_sequence_likelihood");
   assert.deepEqual(response.data, { ok: true });
@@ -207,7 +207,7 @@ test("token-trie driver: one scoring call over every node, a distribution with c
   );
   // Without a probabilities policy the trie is never engaged: plain structured output, one call.
   const off = new TrieServer(true, {});
-  const plain = await new OpenAIChatLM({ apiKey: "k", compat: "vllm", transport: off }).complete({ ...request, config: { responseFormat: fmt as never } });
+  const plain = await new OpenAIChatLM({ apiKey: "k", compat: "vllm", transport: off }).complete({ ...request, config: { responseFormat: fmt } });
   assert.deepEqual(plain.data, { ok: true });
   assert.equal(off.requests.length, 1);
 });

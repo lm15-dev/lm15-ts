@@ -34,7 +34,7 @@ export type { AdaptationAction, AdaptationPolicy } from "./adaptation.ts";
 
 // MAP-14: judgments
 export { choice, yesNo, score, judgments, judgmentsInSchema, requestJudgments, expectedLevel, MAX_ORDERED_LEVELS, MAX_CHOICE_KEYS } from "./judgments.ts";
-export type { Judgment, JudgmentKind } from "./judgments.ts";
+export type { Judgment, JudgmentKind, JudgmentsFormat } from "./judgments.ts";
 
 // Canonical types
 export {

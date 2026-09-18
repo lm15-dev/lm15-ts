@@ -14,7 +14,7 @@
 import { adapt } from "./adaptation.ts";
 import { UnsupportedFeatureError } from "./errors.ts";
 import { isJsonObject, parseJson, type JsonObject, type JsonValue } from "./json.ts";
-import type { Request } from "./types/config.ts";
+import type { Request, ResponseFormat } from "./types/config.ts";
 import { normalizePart, type DataPart, type Part, type TextPart } from "./types/parts.ts";
 import { ValueError } from "./types/validate.ts";
 
@@ -282,8 +282,11 @@ export function score(instruction: string, levels: Readonly<Record<string, strin
   return { type: "integer", description: instruction, anyOf: branches };
 }
 
+/** The `response_format` `judgments()` emits: a `json_schema` whose properties are judgments, typed so it drops straight into `Config.responseFormat`. */
+export type JudgmentsFormat = Extract<ResponseFormat, { type: "json_schema" }> & { readonly name: string; readonly strict: boolean };
+
 /** A `response_format` declaring the given judgment properties. */
-export function judgments(properties: Readonly<Record<string, JsonObject>>, opts: { name?: string; strict?: boolean } = {}): JsonObject {
+export function judgments(properties: Readonly<Record<string, JsonObject>>, opts: { name?: string; strict?: boolean } = {}): JudgmentsFormat {
   const names = Object.keys(properties);
   if (names.length === 0) throw new ValueError("judgments needs at least one property");
   const schema: JsonObject = { type: "object", properties: { ...properties }, required: names, additionalProperties: false };
