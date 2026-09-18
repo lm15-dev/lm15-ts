@@ -159,7 +159,7 @@ function compare(expected: JsonValue, actual: JsonValue, path: string[], volatil
     assert.equal(actual.valueOf(), expected, `${id}: ${rendered}`);
     return;
   }
-  assert.ok(jsonEquals(expected, actual), `${id}: ${rendered}: expected ${JSON.stringify(expected)} got ${JSON.stringify(actual)}`);
+  assert.ok(jsonEquals(expected, actual), `${id}: ${rendered}: expected ${stringifyJson(expected)} got ${stringifyJson(actual)}`);
 }
 
 function ingestCases(): JsonObject[] {
@@ -209,7 +209,7 @@ test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinne
     }
     compare(want, got, ["canonical_request"], new Set(), id);
   }
-  assert.deepEqual([roundTrips, lossy, foreign, refusals], [118, 21, 31, 11], "case counts moved; move CONTRACT_PIN and these constants together");
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [125, 27, 33, 9], "case counts moved; move CONTRACT_PIN and these constants together");
 });
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {

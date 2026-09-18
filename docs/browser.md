@@ -28,7 +28,11 @@ Everything the Node entry has that is about communication:
 
 - The canonical types with their validation, the serde, the closed vocabularies.
 - Every dialect (OpenAI Responses, OpenAI Chat Completions, Anthropic, Gemini,
-  xAI) and every compat preset, byte for byte the contract's.
+  xAI, TypeSafe) and every compat preset, byte for byte the contract's.
+- MAP-13 adaptations (`response.adaptations`, `lm.plan(request)`, the
+  `adaptations` switch) and MAP-14 judgments (`judgments`, `choice`, `yesNo`,
+  `score`; `response.data` / `probabilities` / `expected`), including the
+  token-trie driver against a vLLM server the page can reach.
 - Request building without sending (`lm.buildRequest`), so a page can show
   what would go on the wire.
 - `complete`, `stream` with cancellation, the MAP-3 coalescer, the MAP-9

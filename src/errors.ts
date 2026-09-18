@@ -11,6 +11,7 @@
  * ├── TransportError
  * ├── LockTimeoutError
  * ├── StreamAssemblyError
+ * ├── CollectionLimitError
  * ├── ConfigurationError
  * │   ├── NotConfiguredError
  * │   ├── UnknownModelError
@@ -180,8 +181,71 @@ export class AmbiguousModelError extends ConfigurationError {
   }
 }
 
+export interface CollectionLimitMetadata extends ErrorMetadata {
+  readonly limit?: string;
+  readonly maximum?: number;
+  readonly retainedBytes?: number;
+  readonly retainedEvents?: number;
+  readonly partialEvents?: readonly unknown[];
+  readonly rejectedEvent?: unknown;
+}
+
+/**
+ * A local collector's byte or event budget was reached
+ * (changes/2026-09-15-live-collection-limits.md). Not a provider failure,
+ * not retryable. Accepted events and the received-but-rejected event stay
+ * available here; the underlying session is left open.
+ */
+export class CollectionLimitError extends LM15Error {
+  static override readonly defaultCode: ErrorCode = "collection_limit";
+  /** `max_bytes` or `max_events`. */
+  readonly limit: string;
+  readonly maximum: number;
+  readonly retainedBytes: number;
+  readonly retainedEvents: number;
+  /** Every accepted event, in order. */
+  readonly partialEvents: readonly unknown[];
+  /** A byte overflow: the event that could not fit (neither yielded nor retained). */
+  readonly rejectedEvent: unknown;
+
+  /**
+   * Installed by the live module (the only producer of this error) so
+   * `partial` can materialize without this module importing it. Lazy: the
+   * combined text/audio is built only when asked for.
+   */
+  static materializePartial: ((events: readonly unknown[]) => unknown) | undefined;
+
+  constructor(message = "", meta: CollectionLimitMetadata = {}) {
+    super(message, meta);
+    this.limit = meta.limit ?? "";
+    this.maximum = meta.maximum ?? 0;
+    this.retainedBytes = meta.retainedBytes ?? 0;
+    this.retainedEvents = meta.retainedEvents ?? 0;
+    this.partialEvents = Object.freeze([...(meta.partialEvents ?? [])]);
+    this.rejectedEvent = meta.rejectedEvent;
+  }
+
+  /** The accepted events as an incomplete `Turn` (`endedBy: "incomplete"`, `ok: false`), materialized on demand. */
+  get partial(): unknown {
+    const materialize = CollectionLimitError.materializePartial;
+    if (!materialize) throw new TypeError("CollectionLimitError.partial needs the live module loaded");
+    return materialize(this.partialEvents);
+  }
+}
+
+export interface CapabilityMetadata extends ErrorMetadata {
+  /** MAP-13: the config path the refusal is about (`config.top_k`, `messages[0].parts[1]`); absent when not one addressable field. */
+  readonly feature?: string | null | undefined;
+}
+
 export class CapabilityError extends LM15Error {
   static override readonly defaultCode: ErrorCode = "unsupported_feature";
+  readonly feature: string | null;
+
+  constructor(message = "", meta: CapabilityMetadata = {}) {
+    super(message, meta);
+    this.feature = meta.feature ?? null;
+  }
 }
 
 export class UnsupportedFeatureError extends CapabilityError {
@@ -357,6 +421,7 @@ const CLASS_TO_CODE: ReadonlyArray<readonly [typeof LM15Error, ErrorCode]> = [
   [TransportError, "transport"],
   [LockTimeoutError, "lock_timeout"],
   [StreamAssemblyError, "stream_assembly"],
+  [CollectionLimitError, "collection_limit"],
   [ProviderError, "provider"],
 ];
 

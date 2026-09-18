@@ -18,13 +18,14 @@ import {
 import type { CredentialPolicy } from "./vocab.ts";
 
 /** The wire formats lm15 speaks. */
-export type Dialect = "openai-responses" | "openai-chat" | "anthropic" | "gemini";
+export type Dialect = "openai-responses" | "openai-chat" | "anthropic" | "gemini" | "typesafe";
 
 export const DIALECT_API_FAMILY: Readonly<Record<Dialect, string>> = Object.freeze({
   "openai-responses": "openai_responses",
   "openai-chat": "openai_chat",
   anthropic: "anthropic_messages",
   gemini: "gemini_generate_content",
+  typesafe: "typesafe_systemone",
 });
 
 /** Provider strings are hyphenated; the underscore spelling is a permanent input alias. */
@@ -117,6 +118,7 @@ const DEFINITIONS: readonly ProviderDefinition[] = [
     consoleUrl: "https://console.x.ai",
     note: "xAI Grok (Chat Completions dialect; XAI_API_KEY or subscription OAuth)",
   }),
+  owned("typesafe", "typesafe", access.TYPESAFE_API, "TypeSafe System One (Jev): judgments over declared keys with probabilities; no text generation", "https://console.typesafe.ai/keys"),
   owned("claude-code", "anthropic", access.CLAUDE_CODE, "Claude subscription through the local `claude` CLI login"),
   owned("openai-codex", "openai-responses", access.OPENAI_CODEX, "ChatGPT subscription through the local `codex` CLI login"),
   chatBound(access.GROQ, "Groq Cloud (Chat Completions dialect)", { consoleUrl: "https://console.groq.com/keys" }),

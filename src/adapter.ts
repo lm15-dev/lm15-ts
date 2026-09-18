@@ -8,6 +8,7 @@
  * caches, generation, video).
  */
 
+import { AdaptationScope, checkPolicy, collecting, hasClientSideStop, type Adaptation, type AdaptationPolicy } from "./adaptation.ts";
 import { abortable, checkAborted } from "./async.ts";
 import type { LiveSession, LiveSessionOptions } from "./live.ts";
 import { BatchJob, VideoJob } from "./jobs.ts";
@@ -17,7 +18,8 @@ import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError
 import { isJsonObject, type JsonObject } from "./json.ts";
 import { getDefaultPlatform, noStoredCredentials, type LoadedCredential } from "./platform.ts";
 import { lookup } from "./registry.ts";
-import { coalesceStreamAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
+import { applyClientSideStop, truncateStreamAtStopAsync } from "./stop.ts";
+import { coalesceStreamAsync, materializeResponseAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
 import { AwsCredentials, coerceCredential, type CredentialLike, type CredentialValue } from "./types/credential.ts";
 import { isDefaultConfig, normalizeRequest, type Request } from "./types/config.ts";
@@ -63,6 +65,8 @@ export interface LMOptions {
   readonly credentialsPath?: string;
   /** ChatGPT account id (Codex backend). */
   readonly accountId?: string;
+  /** MAP-13: `"note"` (default: adapt and record), `"silent"` (adapt, record nothing), `"refuse"` (every deviation refuses before the wire). */
+  readonly adaptations?: AdaptationPolicy;
 }
 
 const SURFACE_WORD: Readonly<Record<string, string>> = Object.freeze({
@@ -86,6 +90,12 @@ export interface EmitOptions {
   readonly endpoint?: string | undefined;
   readonly stream?: boolean | undefined;
   readonly model?: string | undefined;
+}
+
+/** A built wire request with the MAP-13 record of what differs from what was asked. */
+export interface BuiltRequest {
+  readonly request: TransportRequest;
+  readonly adaptations: readonly Adaptation[];
 }
 
 /**
@@ -119,6 +129,8 @@ export abstract class ProviderLM {
   readonly clock: Clock | undefined;
   transport: Transport;
   accountId: string | undefined;
+  /** MAP-13 policy for every request this LM builds. */
+  readonly adaptations: AdaptationPolicy;
   protected credential: CredentialLike | undefined;
   protected credentialSource: "explicit" | "stored" = "explicit";
 
@@ -126,6 +138,7 @@ export abstract class ProviderLM {
     const policy = opts.access ?? manifest;
     this.access = policy;
     this.provider = policy.provider;
+    this.adaptations = checkPolicy(opts.adaptations ?? "note");
     this.transport = opts.transport ?? getDefaultTransport();
     this.clock = opts.clock;
     this.accountId = opts.accountId;
@@ -172,8 +185,10 @@ export abstract class ProviderLM {
   }
 
   /** Finish a dialect-built request through the bound host (AUTH-10) and sign it. */
-  protected async emit(opts: EmitOptions): Promise<TransportRequest> {
-    const credential = await this.resolveCredential();
+  protected async emit(opts: EmitOptions, { planning = false }: { planning?: boolean } = {}): Promise<TransportRequest> {
+    // plan() builds and discards: no credential provider is invoked, no
+    // header is signed — the record of adaptations does not depend on it.
+    const credential = planning ? undefined : await this.resolveCredential();
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (credential !== undefined && !(credential instanceof AwsCredentials)) {
       const pair = authHeader(this.access, credential, this.apiKeyHeader);
@@ -222,7 +237,13 @@ export abstract class ProviderLM {
 
   // ─── The codec every dialect implements ────────────────────────────
 
-  abstract buildRequest(request: Request, stream: boolean): Promise<TransportRequest>;
+  /**
+   * The wire request before the host finishes it: method, URL, headers,
+   * payload. SYNCHRONOUS by design — it runs inside the MAP-13 adaptation
+   * scope, and `adapt()` inside it records to that scope (see
+   * `adaptation.ts`).
+   */
+  abstract wireRequest(request: Request, stream: boolean): EmitOptions;
   abstract parseResponse(request: Request, response: HttpResponse): Response;
   abstract parseStreamEvents(request: Request, event: SSEEvent): StreamEvent[];
 
@@ -255,28 +276,86 @@ export abstract class ProviderLM {
     return error;
   }
 
+  // ─── MAP-13: build with adaptations, plan, client-side steps ───────
+
+  /**
+   * `wireRequest` inside an adaptation scope, finished by `emit`: the wire
+   * request and the record of what differs from what was asked. The one
+   * place a scope is opened; builders record through `adapt()`.
+   */
+  async build(request: Request, stream: boolean, opts: { policy?: AdaptationPolicy; planning?: boolean } = {}): Promise<BuiltRequest> {
+    request = normalizeRequest(request);
+    const scope = new AdaptationScope(checkPolicy(opts.policy ?? this.adaptations), this.provider, opts.planning ?? false);
+    const wire = collecting(scope, () => this.wireRequest(request, stream));
+    return { request: await this.emit(wire, { planning: scope.planning }), adaptations: Object.freeze([...scope.records]) };
+  }
+
+  /** The finished wire request (params decoded by the host, headers signed). */
+  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+    return (await this.build(request, stream)).request;
+  }
+
+  /**
+   * What a call with this request WOULD adapt, with no network and no
+   * credential invoked (offline, like `resolveModel`). Throws what the call
+   * would throw (a refusal under any policy, or every deviation under
+   * `"refuse"`). Returns the full record under every policy, `"silent"`
+   * included: a preview that hid what it saw would be no preview.
+   */
+  async plan(request: Request, opts: { policy?: AdaptationPolicy } = {}): Promise<readonly Adaptation[]> {
+    return (await this.build(request, false, { ...(opts.policy !== undefined ? { policy: opts.policy } : {}), planning: true })).adaptations;
+  }
+
+  /** What the response carries: everything under "note" (and "refuse"), nothing under "silent". Behaviour is decided from the full record, never from this. */
+  protected visible(adaptations: readonly Adaptation[]): readonly Adaptation[] {
+    return this.adaptations === "silent" ? [] : adaptations;
+  }
+
+  /** Stamp the visible record on the response and apply client-side steps. */
+  protected finishResponse(request: Request, response: Response, adaptations: readonly Adaptation[]): Response {
+    if (hasClientSideStop(adaptations)) response = applyClientSideStop(response, request.config?.stop);
+    const visible = this.visible(adaptations);
+    if (visible.length > 0 && response.adaptations.length === 0) response = response.with({ adaptations: visible });
+    return response;
+  }
+
   // ─── Drivers: complete / stream ────────────────────────────────────
 
   async complete(request: Request, opts: { signal?: AbortSignal } = {}): Promise<Response> {
     checkAborted(opts.signal);
     request = normalizeRequest(request);
-    const building = this.buildRequest(request, false);
-    const req = await (opts.signal ? abortable(building, opts.signal) : building);
-    const resp = await this.send(req, opts.signal);
+    const building = this.build(request, false);
+    const built = await (opts.signal ? abortable(building, opts.signal) : building);
+    if (hasClientSideStop(built.adaptations)) {
+      // A stop sequence the wire cannot take is honoured by streaming under
+      // the hood and closing the connection at the cut (stop.ts). A stream
+      // that never hits the sequence completes normally, usage included.
+      return materializeResponseAsync(this.stream(request, opts), request);
+    }
+    const resp = await this.send(built.request, opts.signal);
     if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
-    return this.parseResponse(request, resp);
+    return this.finishResponse(request, this.parseResponse(request, resp), built.adaptations);
   }
 
   /** The canonical event stream: exactly one `start`, deltas, exactly one final `end` (MAP-3/4). */
   stream(request: Request, opts: { signal?: AbortSignal } = {}): AsyncIterable<StreamEvent> {
-    return coalesceStreamAsync(this.streamRaw(request, opts.signal), { model: request.model });
+    return this.streamWithRecord(request, opts.signal);
   }
 
-  protected async *streamRaw(request: Request, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
+  private async *streamWithRecord(request: Request, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
     checkAborted(signal);
     request = normalizeRequest(request);
-    const building = this.buildRequest(request, true);
-    const req = await (signal ? abortable(building, signal) : building);
+    const building = this.build(request, true);
+    const built = await (signal ? abortable(building, signal) : building);
+    let events: AsyncIterable<StreamEvent> = coalesceStreamAsync(this.streamRaw(request, built.request, signal), {
+      model: request.model,
+      adaptations: this.visible(built.adaptations),
+    });
+    if (hasClientSideStop(built.adaptations)) events = truncateStreamAtStopAsync(events, request.config?.stop);
+    yield* events;
+  }
+
+  protected async *streamRaw(request: Request, req: TransportRequest, signal?: AbortSignal): AsyncGenerator<StreamEvent> {
     let res;
     try {
       res = await this.transport.send(req, { signal });

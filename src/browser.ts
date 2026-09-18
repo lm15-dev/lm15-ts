@@ -24,7 +24,17 @@
 export { LMRouter, DEFAULT_RULES, LITELLM_PROVIDER_PREFIXES, MissingCredentialError, apiKeysSource, describeResolution, openaiChatModelString, resolveModel } from "./router.ts";
 export type { Resolution, ResolutionSource, RouteRule, RouterConfig } from "./router.ts";
 export { ResponseStream, STREAM_CLEANUP_WARNING, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, responseToEvents, parseSse, parseSseAsync, splitLines, splitLinesAsync } from "./stream.ts";
-export type { SSEEvent } from "./stream.ts";
+export type { SSEEvent, CoalesceOptions } from "./stream.ts";
+export { applyClientSideStop, truncateStreamAtStop, truncateStreamAtStopAsync, scoresBeforeCut } from "./stop.ts";
+
+// MAP-13: adapt freely, never invisibly
+export { Adaptation } from "./types/adaptation.ts";
+export { DEVIATIONS, EFFORT_LADDER, checkPolicy, nearestEffort } from "./adaptation.ts";
+export type { AdaptationAction, AdaptationPolicy } from "./adaptation.ts";
+
+// MAP-14: judgments
+export { choice, yesNo, score, judgments, judgmentsInSchema, requestJudgments, expectedLevel, MAX_ORDERED_LEVELS, MAX_CHOICE_KEYS } from "./judgments.ts";
+export type { Judgment, JudgmentKind } from "./judgments.ts";
 
 // Canonical types
 export {
@@ -151,6 +161,7 @@ export {
   TransportError,
   LockTimeoutError,
   StreamAssemblyError,
+  CollectionLimitError,
   ConfigurationError,
   NotConfiguredError,
   UnknownModelError,
@@ -172,7 +183,7 @@ export {
   errorClassForCode,
   mapHttpError,
 } from "./errors.ts";
-export type { ErrorMetadata } from "./errors.ts";
+export type { ErrorMetadata, CapabilityMetadata, CollectionLimitMetadata } from "./errors.ts";
 
 // Providers, direct
 export { OpenAILM, OpenAICodexLM } from "./dialects/openai_responses.ts";
@@ -184,13 +195,14 @@ export type { AnthropicLMOptions, ClaudeCodeLMOptions } from "./dialects/anthrop
 export { GeminiLM } from "./dialects/gemini.ts";
 export type { GeminiLMOptions } from "./dialects/gemini.ts";
 export { XaiLM } from "./dialects/xai.ts";
+export { TypeSafeLM } from "./dialects/typesafe.ts";
 export { ProviderLM } from "./adapter.ts";
-export type { LMOptions } from "./adapter.ts";
+export type { LMOptions, BuiltRequest, EmitOptions } from "./adapter.ts";
 export { adapterFor } from "./providers.ts";
 export { PROVIDERS, lookup, canonicalProvider, DIALECT_API_FAMILY } from "./registry.ts";
 export type { ProviderDefinition, Dialect } from "./registry.ts";
-export { LiveSession, TurnView, materializeTurn, sumUsage } from "./live.ts";
-export type { Turn, ToolCallInfo } from "./live.ts";
+export { LiveSession, TurnView, materializeTurn, incompleteTurn, liveEventSize, sumUsage, DEFAULT_TURN_MAX_BYTES, DEFAULT_TURN_MAX_EVENTS } from "./live.ts";
+export type { Turn, ToolCallInfo, TurnViewOptions } from "./live.ts";
 export type { LiveSessionOptions } from "./live.ts";
 
 // Compat presets

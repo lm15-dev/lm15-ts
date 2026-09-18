@@ -118,7 +118,9 @@ test("LIVE-1: result() returns at a tool_call (the caller must answer); an inter
   const errored = materializeTurn([{ type: "error", error: { code: "server", message: "boom" } }]);
   assert.equal(errored.endedBy, "error");
   assert.equal(errored.error?.message, "boom");
-  assert.equal(materializeTurn([{ type: "text", text: "cut" }]).endedBy, "error"); // no terminal at all: not ok
+  const cut = materializeTurn([{ type: "text", text: "cut" }]);
+  assert.equal(cut.endedBy, "incomplete"); // no terminal at all: not ok, and not an error the peer sent
+  assert.equal(cut.ok, false);
 });
 
 function geminiSocket(frames: unknown[]) {
@@ -162,8 +164,72 @@ test("session.turn(): iteration ends itself at turn_end; a tool_call is yielded 
   assert.equal(rest.text, "there");
   assert.equal(rest.usage?.totalTokens, 5);
   await session.close();
-  // A closed socket ends a turn with no terminal: nothing to yield.
-  const after: LiveServerEvent[] = [];
-  for await (const e of session.turn()) after.push(e);
-  assert.deepEqual(after, []);
+  // A closed socket before a boundary is a transport fault, never a silent empty turn (the reference's rule).
+  const { TransportError } = await import("../src/errors.ts");
+  await assert.rejects(async () => { for await (const _e of session.turn()) { /* nothing arrives */ } }, TransportError);
+});
+
+test("bounded turn collection (2026-09-15): max_events fails before consuming; max_bytes rejects the event that cannot fit; the view seals, the session stays open", async () => {
+  const { CollectionLimitError } = await import("../src/errors.ts");
+  const { liveEventSize, incompleteTurn } = await import("../src/live.ts");
+  const fake = geminiSocket([
+    { serverContent: { modelTurn: { parts: [{ text: "one " }] } } },
+    { serverContent: { modelTurn: { parts: [{ text: "two " }] } } },
+    { serverContent: { modelTurn: { parts: [{ text: "three" }] }, turnComplete: true } },
+  ]);
+  const session = await LiveSession.open(new GeminiLM({ apiKey: "fake" }), { model: "m" }, { WebSocket: fake.WebSocket });
+  await session.sendText("go");
+  const view = session.turn({ maxEvents: 2 });
+  const seen: string[] = [];
+  const failure = await (async () => {
+    try {
+      for await (const e of view) seen.push(e.type);
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  })();
+  assert.ok(failure instanceof CollectionLimitError);
+  assert.equal(failure.code, "collection_limit");
+  assert.equal(failure.retryable, false);
+  assert.equal(failure.limit, "max_events");
+  assert.equal(failure.maximum, 2);
+  assert.equal(failure.retainedEvents, 2);
+  assert.equal(failure.rejectedEvent, undefined); // a count overflow performed no receive
+  assert.deepEqual(seen, ["text", "text"]); // already-yielded events stay in the collection
+  assert.equal((failure.partial as { endedBy: string; ok: boolean; text: string }).endedBy, "incomplete");
+  assert.equal((failure.partial as { text: string }).text, "one two ");
+  assert.equal(view.snapshot().ok, false);
+  await assert.rejects(view.result(), CollectionLimitError); // sealed: the same failure, no further read
+  // The session is open: the unread event is still there for a raw read.
+  const rest = await session.recv();
+  assert.equal(rest?.type, "text");
+  assert.equal((await session.recv())?.type, "turn_end");
+
+  await session.sendText("again");
+  const tiny = session.turn({ maxBytes: liveEventSize({ type: "text", text: "one " }) + 4 });
+  const byteFailure = await (async () => {
+    try {
+      for await (const _e of tiny) { /* consume */ }
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  })();
+  assert.ok(byteFailure instanceof CollectionLimitError, String(byteFailure));
+  assert.equal(byteFailure.limit, "max_bytes");
+  assert.equal(byteFailure.retainedEvents, 1);
+  assert.deepEqual(byteFailure.rejectedEvent, { type: "text", text: "two " }); // received, neither yielded nor retained
+  assert.equal(incompleteTurn(byteFailure.partialEvents as never).text, "one ");
+  assert.throws(() => session.turn({ maxEvents: 0 }), /positive integer/);
+  assert.throws(() => session.turn({ maxBytes: 1.5 }), /positive integer/);
+  await session.close();
+});
+
+test("liveEventSize: compact ASCII JSON — non-ASCII code units cost six bytes, a slash one", async () => {
+  const { liveEventSize } = await import("../src/live.ts");
+  assert.equal(liveEventSize({ type: "text", text: "a/b" }), '{"type":"text","text":"a/b"}'.length);
+  assert.equal(liveEventSize({ type: "text", text: "é" }), '{"type":"text","text":"\\u00e9"}'.length);
+  assert.equal(liveEventSize({ type: "text", text: "😀" }), '{"type":"text","text":"\\ud83d\\ude00"}'.length);
+  assert.ok(liveEventSize({ type: "text", text: "abcdef" }, 5) > 5); // counting stops once the budget is exceeded
 });

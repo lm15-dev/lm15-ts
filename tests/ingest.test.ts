@@ -20,11 +20,17 @@ import { ValueError } from "../src/types/validate.ts";
 const USER = [{ role: "user", content: "Hi" }];
 const body = (extra: Record<string, unknown> = {}) => ({ model: "gpt-5-mini", messages: USER, ...extra });
 
-test("ingest: refused keys name the key; an unknown key is refused, never dropped", () => {
-  for (const extra of [{ n: 2 }, { functions: [] }, { audio: { voice: "alloy" } }, { top_k: 3 }, { never_heard_of_it: 1 }]) {
+test("ingest: refused keys name the key; an unknown key is refused, never dropped; spellings translate (MAP-13)", () => {
+  for (const extra of [{ n: 2 }, { audio: { voice: "alloy" } }, { never_heard_of_it: 1 }]) {
     const key = Object.keys(extra)[0]!;
     assert.throws(() => requestFromOpenAIChat(body(extra)), (e: unknown) => e instanceof UnsupportedFeatureError && e.message.includes(key));
   }
+  // top_k is canonical (the builder drops it with a record); functions / function_call are a spelling of tools / tool_choice.
+  assert.equal(requestFromOpenAIChat(body({ top_k: 3 })).config?.topK, 3);
+  const legacy = requestFromOpenAIChat(body({ functions: [{ name: "lookup", parameters: { type: "object", properties: {} } }], function_call: { name: "lookup" } }));
+  assert.deepEqual(legacy.tools?.map((t) => t.name), ["lookup"]);
+  assert.deepEqual(legacy.config?.toolChoice, { mode: "required", allowed: ["lookup"] });
+  assert.throws(() => requestFromOpenAIChat(body({ functions: [], tools: [] })), ValueError);
 });
 
 test("ingest: preset-conditioned spellings", () => {
@@ -78,7 +84,7 @@ test("ingest: build then ingest is the identity on a rich request", async () => 
     config: { max_tokens: 100, temperature: 0.5, top_p: 0.9, stop: ["END"], logprobs: 2,
       response_format: { type: "json_schema", schema: { type: "object" }, name: "Out", strict: true },
       tool_choice: { mode: "auto", parallel: false }, reasoning: { effort: "low" },
-      service_tier: "flex", user_id: "u", store: false, extensions: { seed: 7 } },
+      service_tier: "flex", user_id: "u", store: false, seed: 7 },
   })) as Parameters<typeof Request.fromJSON>[0]);
   const lm = new OpenAIChatLM({ apiKey: "k" });
   const wire = await lm.buildRequest(request, false);

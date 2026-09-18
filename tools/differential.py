@@ -444,6 +444,119 @@ PROBES: list[tuple[str, list[str], dict]] = [
             ]}],
         },
     ),
+    # ─── MAP-13 (adapt visibly, 2026-09-14): the record and the adapted wire body must agree ───
+    (
+        "map13_promoted_sampling_knobs_everywhere",
+        ALL,
+        {
+            "model": "m",
+            "messages": [USER("hi")],
+            "config": {"seed": 7, "frequency_penalty": 0.5, "presence_penalty": -0.25, "top_k": 3, "temperature": 1.5},
+        },
+    ),
+    (
+        "map13_stop_on_the_responses_wire_is_client_side",
+        ["openai"],
+        {"model": "m", "messages": [USER("count")], "config": {"stop": ["END", "STOP"], "max_tokens": 10}},
+    ),
+    (
+        "map13_anthropic_defaults_max_tokens_and_records_store_and_logprobs",
+        ["anthropic"],
+        {"model": "m", "messages": [USER("hi")], "config": {"store": False, "logprobs": 2, "cache": {"key": "affinity-1"}}},
+    ),
+    (
+        "map13_anthropic_store_true_and_summary_levels",
+        ["anthropic"],
+        {"model": "claude-sonnet-4-5", "messages": [USER("hi")], "config": {"store": True, "max_tokens": 5, "reasoning": {"effort": "minimal", "summary": "detailed"}}},
+    ),
+    (
+        "map13_gemini_drops_user_id_parallel_false_and_cache_hints",
+        ["gemini"],
+        {
+            "model": "m",
+            "messages": [USER("hi")],
+            "tools": [WEATHER],
+            "config": {"user_id": "u-1", "tool_choice": {"mode": "auto", "parallel": False}, "cache": {"key": "k", "retention": "long"}},
+        },
+    ),
+    (
+        "map13_gemini3_reasoning_off_substituted_and_xhigh_clamped",
+        ["gemini"],
+        {"model": "gemini-3-pro", "messages": [USER("hi")], "config": {"reasoning": {"effort": "off"}}},
+    ),
+    (
+        "map13_gemini3_xhigh_clamped_to_high",
+        ["gemini"],
+        {"model": "gemini-3-pro", "messages": [USER("hi")], "config": {"reasoning": {"effort": "xhigh", "summary": "concise"}}},
+    ),
+    (
+        "map13_anthropic_allowlist_subset_narrows_tools",
+        ["anthropic"],
+        {"model": "m", "messages": [USER("hi")], "tools": [WEATHER, ADD], "config": {"max_tokens": 5, "tool_choice": {"mode": "auto", "allowed": ["add"]}}},
+    ),
+    (
+        "map13_chat_wire_thinking_budget_dropped_summary_substituted",
+        ["openai_chat", "openai"],
+        {"model": "m", "messages": [USER("hi")], "config": {"reasoning": {"effort": "low", "thinking_budget": 2048, "summary": "concise"}}},
+    ),
+    (
+        "map13_responses_prefix_mark_walks_back_to_eligible_message",
+        ["openai"],
+        {
+            "model": "gpt-5.6",
+            "messages": [
+                USER("first"),
+                {"role": "assistant", "parts": [{"type": "text", "text": "reply"}]},
+                USER("second"),
+            ],
+            "config": {"cache": {"prefix_until_index": 1}},
+        },
+    ),
+    (
+        "map13_cache_resource_still_refuses_rule_4b",
+        ALL,
+        {"model": "m", "messages": [USER("hi")], "config": {"cache": {"resource": "cache_123"}}},
+    ),
+    (
+        "map14_judgments_on_the_cloud_wires_probabilities_if_available",
+        ALL,
+        {
+            "model": "m",
+            "messages": [USER("Tasting note: ripe and long.")],
+            "config": {
+                "probabilities": "if_available",
+                "max_tokens": 50,
+                "response_format": {
+                    "type": "json_schema",
+                    "name": "judgments",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                            "quality": {"type": "integer", "description": "How good?", "anyOf": [{"const": 0, "title": "poor", "description": "Bad"}, {"const": 1, "title": "great", "description": "Great"}]},
+                            "style": {"type": "string", "description": "Style?", "anyOf": [{"const": "fruit", "description": "Fruity"}, {"const": "oak"}]},
+                            "ageing": {"type": "boolean", "description": "Will it age?"},
+                        },
+                        "required": ["quality", "style", "ageing"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        },
+    ),
+    (
+        "map14_judgments_probabilities_required_refuses_on_the_cloud_wires",
+        ALL,
+        {
+            "model": "m",
+            "messages": [USER("note")],
+            "config": {
+                "probabilities": "required",
+                "max_tokens": 50,
+                "response_format": {"type": "json_schema", "schema": {"type": "object", "properties": {"ok": {"type": "boolean"}}}},
+            },
+        },
+    ),
 ]
 
 

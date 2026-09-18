@@ -18,8 +18,9 @@ import {
   type Part,
   type ToolCallPart,
 } from "./types/parts.ts";
+import type { Adaptation } from "./types/adaptation.ts";
 import { Response, Usage, type TokenLogprob } from "./types/response.ts";
-import { StreamEvent as StreamEventNs, continuationDeltaToState, type StreamEndEvent, type StreamEvent } from "./types/stream.ts";
+import { StreamEvent as StreamEventNs, continuationDeltaToState, type StreamEndEvent, type StreamEvent, type StreamStartEvent } from "./types/stream.ts";
 import { decodeBase64, encodeBase64 } from "./types/validate.ts";
 import type { FinishReason } from "./vocab.ts";
 
@@ -142,6 +143,12 @@ class EndProviderData {
   }
 }
 
+export interface CoalesceOptions {
+  readonly model?: string | undefined;
+  /** MAP-13: the build's visible record, stamped on the start event (an adapter's own start keeps its list if it set one). */
+  readonly adaptations?: readonly Adaptation[] | undefined;
+}
+
 class Coalescer {
   started = false;
   sawEnd = false;
@@ -149,9 +156,11 @@ class Coalescer {
   usage: Usage | undefined;
   readonly endData = new EndProviderData();
   private readonly model: string | undefined;
+  private readonly adaptations: readonly Adaptation[];
 
-  constructor(model: string | undefined) {
-    this.model = model;
+  constructor(opts: CoalesceOptions) {
+    this.model = opts.model;
+    this.adaptations = opts.adaptations ?? [];
   }
 
   /** Events to emit for one adapter event. */
@@ -160,7 +169,7 @@ class Coalescer {
     if (event.type === "start") {
       if (this.started) return [];
       this.started = true;
-      return [event];
+      return [this.stampStart(event)];
     }
     if (event.type === "end") {
       this.sawEnd = true;
@@ -192,7 +201,12 @@ class Coalescer {
   }
 
   private syntheticStart(): StreamEvent {
-    return StreamEventNs.create({ type: "start", model: this.model });
+    return this.stampStart(StreamEventNs.create({ type: "start", model: this.model }) as StreamStartEvent);
+  }
+
+  private stampStart(event: StreamStartEvent): StreamEvent {
+    if (this.adaptations.length === 0 || (event.adaptations && event.adaptations.length > 0)) return event;
+    return StreamEventNs.create({ ...event, adaptations: this.adaptations });
   }
 }
 
@@ -201,14 +215,14 @@ class Coalescer {
  * `start` (synthesized with the request's model for dialects without a
  * start frame). No end is fabricated when none was seen.
  */
-export function* coalesceStream(events: Iterable<StreamEvent>, opts: { model?: string } = {}): Generator<StreamEvent> {
-  const c = new Coalescer(opts.model);
+export function* coalesceStream(events: Iterable<StreamEvent>, opts: CoalesceOptions = {}): Generator<StreamEvent> {
+  const c = new Coalescer(opts);
   for (const event of events) yield* c.push(event);
   yield* c.finish();
 }
 
-export async function* coalesceStreamAsync(events: AsyncIterable<StreamEvent>, opts: { model?: string } = {}): AsyncGenerator<StreamEvent> {
-  const c = new Coalescer(opts.model);
+export async function* coalesceStreamAsync(events: AsyncIterable<StreamEvent>, opts: CoalesceOptions = {}): AsyncGenerator<StreamEvent> {
+  const c = new Coalescer(opts);
   for await (const event of events) yield* c.push(event);
   yield* c.finish();
 }
@@ -242,6 +256,9 @@ export class StreamAccumulator {
   readonly messageContinuation: ContinuationState[] = [];
   readonly partContinuation = new Map<number, ContinuationState[]>();
   readonly logprobSeq: TokenLogprob[] = [];
+  /** ANDed across text deltas; a later true never erases false. */
+  logprobsComplete = true;
+  adaptations: readonly Adaptation[] = [];
   readonly request: Request;
 
   constructor(request: Request) {
@@ -252,6 +269,7 @@ export class StreamAccumulator {
     if (event.type === "start") {
       this.startedId = event.id ?? this.startedId;
       this.startedModel = event.model ?? this.startedModel;
+      if (event.adaptations && event.adaptations.length > 0) this.adaptations = event.adaptations;
       return;
     }
     if (event.type === "end") {
@@ -267,6 +285,7 @@ export class StreamAccumulator {
       case "text":
         push(this.textParts, idx!, delta.text);
         if (delta.logprobs) this.logprobSeq.push(...delta.logprobs);
+        if (delta.logprobsComplete === false) this.logprobsComplete = false;
         break;
       case "thinking":
         push(this.thinkingParts, idx!, delta.text);
@@ -389,7 +408,9 @@ export class StreamAccumulator {
       finishReason: finish,
       usage: this.usage ?? Usage.empty,
       logprobs: this.logprobSeq.length > 0 ? this.logprobSeq : undefined,
+      logprobsComplete: this.logprobsComplete,
       providerData: this.providerData,
+      adaptations: this.adaptations,
     });
   }
 }
@@ -665,14 +686,22 @@ export async function materializeResponseAsync(events: AsyncIterable<StreamEvent
  * refused before any events are returned, never silently discarded.
  */
 export function responseToEvents(response: Response): StreamEvent[] {
-  const out: StreamEvent[] = [StreamEventNs.create({ type: "start", id: response.id, model: response.model })];
+  const out: StreamEvent[] = [StreamEventNs.create({ type: "start", id: response.id, model: response.model, adaptations: response.adaptations })];
+  // Response.logprobs is message-level; the delta vocabulary carries them on
+  // text deltas. The whole sequence (and the coverage flag) rides the first
+  // text delta so Response -> events -> Response is lossless.
   let logprobs = response.logprobs;
+  let logprobsComplete: boolean | undefined = response.logprobsComplete ? undefined : false;
+  if (logprobsComplete === false && !response.message.parts.some((p) => p.type === "text")) {
+    throw new TypeError("Cannot stream incomplete logprobs without a TextPart to carry their coverage");
+  }
   for (const [partIndex, part] of response.message.parts.entries()) {
     let delta: Record<string, unknown>;
     switch (part.type) {
       case "text":
-        delta = { type: "text", text: part.text, partIndex, logprobs };
+        delta = { type: "text", text: part.text, partIndex, logprobs, logprobsComplete };
         logprobs = undefined;
+        logprobsComplete = undefined;
         break;
       case "thinking":
         delta = { type: "thinking", text: part.text, partIndex };

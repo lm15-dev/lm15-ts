@@ -293,6 +293,19 @@ export const XAI = policy({
   baseUrl: DEFAULT_XAI_BASE_URL,
 });
 
+/**
+ * TypeSafe System One (Jev): `POST /v1/systemone` and the models list
+ * (changes/2026-09-17-judgments.md D1/D10/D11; receipts 2026-09-17). Bearer
+ * key from the console (console.typesafe.ai/keys).
+ */
+export const TYPESAFE_API = policy({
+  provider: "typesafe",
+  supports: supports({ stream: false, models: true }),
+  authModes: ["bearer"],
+  envKeys: ["TYPESAFE_API_KEY"],
+  authScheme: ["bearer"],
+});
+
 export const GEMINI_API = policy({
   provider: "gemini",
   supports: supports({

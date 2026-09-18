@@ -289,6 +289,12 @@ export interface Config {
   readonly topP?: number;
   readonly topK?: number;
   readonly stop?: readonly string[];
+  /** Best-effort sampling determinism; `0` is a seed and is emitted. Promoted 2026-09-14 (MAP-13 §3f). */
+  readonly seed?: number;
+  /** In `[-2, 2]`; `0` is "explicitly none" and is emitted. */
+  readonly frequencyPenalty?: number;
+  /** In `[-2, 2]`; `0` is emitted. */
+  readonly presencePenalty?: number;
   /** Exactly two shapes (INV-050); `schema` is opaque and verbatim. */
   readonly responseFormat?: ResponseFormat;
   readonly toolChoice?: ToolChoice;
@@ -337,16 +343,21 @@ function normalizeConfigValue(input: unknown): Config {
   if (absent(input)) return EMPTY_CONFIG;
   if (typeof input !== "object") throw new TypeError("Request.config must be a Config");
   const d = input as Record<string, unknown>;
-  for (const field of ["temperature", "topP"] as const) {
+  for (const [field, snake] of [["temperature", "temperature"], ["topP", "top_p"], ["frequencyPenalty", "frequency_penalty"], ["presencePenalty", "presence_penalty"]] as const) {
     const v = d[field];
     if (!absent(v) && (typeof v === "boolean" || (typeof v !== "number" && !(typeof v === "object")))) {
-      throw new TypeError(`${field === "topP" ? "top_p" : field} must be numeric`);
+      throw new TypeError(`${snake} must be numeric`);
     }
   }
   const temperature = optionalFloat(d["temperature"], "temperature");
-  if (temperature !== undefined && temperature < 0) throw new ValueError("temperature must be >= 0");
+  // The canonical range is OpenAI's and Gemini's (2026-09-14); a wire whose ceiling is 1 clamps and records (MAP-13).
+  if (temperature !== undefined && !(temperature >= 0 && temperature <= 2)) throw new ValueError("temperature must be in [0, 2]");
   const topP = optionalFloat(d["topP"], "top_p");
   if (topP !== undefined && !(topP >= 0 && topP <= 1)) throw new ValueError("top_p must be in [0, 1]");
+  const frequencyPenalty = optionalFloat(d["frequencyPenalty"], "frequency_penalty");
+  if (frequencyPenalty !== undefined && !(frequencyPenalty >= -2 && frequencyPenalty <= 2)) throw new ValueError("frequency_penalty must be in [-2, 2]");
+  const presencePenalty = optionalFloat(d["presencePenalty"], "presence_penalty");
+  if (presencePenalty !== undefined && !(presencePenalty >= -2 && presencePenalty <= 2)) throw new ValueError("presence_penalty must be in [-2, 2]");
   const stop = stringArray(d["stop"], "stop");
   const config: Config = compact({
     maxTokens: optionalInt(d["maxTokens"], "max_tokens", { min: 1 }),
@@ -354,6 +365,9 @@ function normalizeConfigValue(input: unknown): Config {
     topP,
     topK: optionalInt(d["topK"], "top_k", { min: 1 }),
     stop: stop.length > 0 ? Object.freeze(stop) : undefined,
+    seed: optionalInt(d["seed"], "seed"),
+    frequencyPenalty,
+    presencePenalty,
     responseFormat: validateResponseFormat(optionalJsonObject(d["responseFormat"], "response_format")),
     toolChoice: absent(d["toolChoice"]) ? undefined : normalizeToolChoice(d["toolChoice"]),
     reasoning: absent(d["reasoning"]) ? undefined : normalizeReasoning(d["reasoning"]),
@@ -394,6 +408,9 @@ export const Config = {
       topP: d["top_p"],
       topK: d["top_k"],
       stop: d["stop"] ?? [],
+      seed: d["seed"],
+      frequencyPenalty: d["frequency_penalty"],
+      presencePenalty: d["presence_penalty"],
       responseFormat: d["response_format"],
       toolChoice: toolChoice ? ToolChoice.fromJSON(toolChoice) : undefined,
       reasoning: reasoning ? Reasoning.fromJSON(reasoning) : undefined,
@@ -422,6 +439,9 @@ export const Config = {
       extensions: c.extensions,
     });
     // false / 0 are data, not emptiness — emitted.
+    if (c.seed !== undefined) out["seed"] = c.seed;
+    if (c.frequencyPenalty !== undefined) out["frequency_penalty"] = float(c.frequencyPenalty);
+    if (c.presencePenalty !== undefined) out["presence_penalty"] = float(c.presencePenalty);
     if (c.store !== undefined) out["store"] = c.store;
     if (c.logprobs !== undefined) out["logprobs"] = c.logprobs;
     if (c.probabilities !== undefined) out["probabilities"] = c.probabilities;

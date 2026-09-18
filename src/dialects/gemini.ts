@@ -4,7 +4,9 @@
  * Mode, Veo video jobs, and image/speech generation through the same call.
  */
 
-import { ProviderLM, batchEntryHttp, type LMOptions } from "../adapter.ts";
+import { AdaptationScope, adapt, collecting } from "../adaptation.ts";
+import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { geminiSchema, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
 import { GEMINI_API, type AccessPolicy } from "../auth/policy.ts";
 import { EFFORT_THINKING_BUDGETS } from "../compat.ts";
 import {
@@ -322,7 +324,7 @@ export class GeminiLM extends ProviderLM {
       if (p.type !== "image" && p.type !== "document") {
         throw new UnsupportedFeatureError(
           `${this.provider}: a ${p.type} part in tool_result ${JSON.stringify(part.id)} cannot reach a functionResponse — multimodal function responses take images (png/jpeg/webp) and documents (pdf, text/plain) only (MAP-10)`,
-          { provider: this.provider },
+          { provider: this.provider, feature: `messages[*].tool_result[${part.id}].content[${p.type}]` },
         );
       }
     }
@@ -330,7 +332,7 @@ export class GeminiLM extends ProviderLM {
     if (!name) {
       throw new UnsupportedFeatureError(
         `${this.provider}: tool_result ${JSON.stringify(part.id)} needs a function name on the Gemini wire and no preceding assistant tool_call with that id is in the transcript; set ToolResultPart.name (MAP-10 rule 6)`,
-        { provider: this.provider },
+        { provider: this.provider, feature: `messages[*].tool_result[${part.id}].name` },
       );
     }
     const text = partsToText(textParts, { provider: this.provider, where: "functionResponse.response" });
@@ -399,10 +401,12 @@ export class GeminiLM extends ProviderLM {
     const tc = request.config?.toolChoice;
     if (!tc) return undefined;
     if (tc.parallel === false) {
-      throw new UnsupportedFeatureError(
-        "gemini: tool_choice.parallel=False is not supported — GenerateContent has no parallel-tool-calls knob and returns several calls regardless (OpenAI and Anthropic carry it)",
-        { provider: this.provider },
-      );
+      // MAP-13: a preference with no knob on this wire; agent loops iterate
+      // tool-call parts as a list anyway. Dropped and recorded.
+      adapt("config.tool_choice.parallel", "dropped", "GenerateContent has no parallel-tool-calls knob and may return several calls (OpenAI and Anthropic carry it)", {
+        asked: false,
+        provider: this.provider,
+      });
     }
     const mode = tc.mode ?? "auto";
     const cfg: JsonObject = { mode: { none: "NONE", required: "ANY", auto: "AUTO" }[mode] };
@@ -410,9 +414,10 @@ export class GeminiLM extends ProviderLM {
       const byName = new Map((request.tools ?? []).map((t) => [t.name, t]));
       const builtins = tc.allowed.filter((n) => byName.get(n)?.type === "builtin");
       if (builtins.length > 0) {
+        // MAP-13 rule 4(b): the program depends on the forced tool running.
         throw new UnsupportedFeatureError(
           `gemini: cannot force builtin tools ${JSON.stringify(builtins)} — functionCallingConfig addresses function declarations only; googleSearch/codeExecution have no tool_choice form (OpenAI Responses and Anthropic carry builtin forcing)`,
-          { provider: this.provider },
+          { provider: this.provider, feature: "config.tool_choice.allowed" },
         );
       }
       cfg["allowedFunctionNames"] = [...tc.allowed];
@@ -433,15 +438,16 @@ export class GeminiLM extends ProviderLM {
     let suffixFrom = 0;
     if (cache && cache.mode !== "off") {
       if (cache.key !== undefined) {
-        throw new UnsupportedFeatureError("gemini: cache.key is not supported — GenerateContent has no cache affinity key; use cache.resource with a stored cache (lm.cache(prefix))", {
+        adapt("config.cache.key", "dropped", "GenerateContent has no cache affinity key; implicit caching applies, and a stored cache (lm.cache(prefix), cache.resource) is the explicit tier", {
+          asked: cache.key,
           provider: this.provider,
         });
       }
       if (cache.retention !== undefined && cache.retention !== "short") {
-        throw new UnsupportedFeatureError(
-          "gemini: cache.retention is not supported in-request — lifetime belongs to the stored cache (cache_create(..., ttl_seconds=...) / cache_update)",
-          { provider: this.provider },
-        );
+        adapt("config.cache.retention", "dropped", "GenerateContent takes no lifetime in-request; it belongs to the stored cache (cacheCreate(..., ttlSeconds) / cacheUpdate)", {
+          asked: cache.retention,
+          provider: this.provider,
+        });
       }
       if (cache.resource !== undefined) {
         resource = cache.resource;
@@ -463,40 +469,60 @@ export class GeminiLM extends ProviderLM {
     if (config.maxTokens !== undefined) gen["maxOutputTokens"] = config.maxTokens;
     if (config.topP !== undefined) gen["topP"] = config.topP;
     if (config.topK !== undefined) gen["topK"] = config.topK;
+    if (config.seed !== undefined) gen["seed"] = config.seed;
+    if (config.frequencyPenalty !== undefined) gen["frequencyPenalty"] = config.frequencyPenalty;
+    if (config.presencePenalty !== undefined) gen["presencePenalty"] = config.presencePenalty;
     if (config.stop && config.stop.length > 0) gen["stopSequences"] = [...config.stop];
     if (config.logprobs !== undefined) {
       gen["responseLogprobs"] = true;
       if (config.logprobs > 0) gen["logprobs"] = config.logprobs;
     }
-    if (config.responseFormat) Object.assign(gen, responseFormatToGeminiConfig(config.responseFormat));
+    if (config.responseFormat) {
+      // MAP-14 §2: judgment properties go as enum with descriptions folded
+      // into the property description — responseJsonSchema ignores
+      // anyOf/const (receipted 2026-09-17: "Bordeaux-blend"); probabilities
+      // cannot be measured here.
+      noteUnmeasurableProbabilities(request, this.provider);
+      const found = requestJudgments(request);
+      let fmt = config.responseFormat;
+      if (found.size > 0 && fmt.type === "json_schema") fmt = { ...fmt, schema: geminiSchema(fmt.schema, found) };
+      Object.assign(gen, responseFormatToGeminiConfig(fmt));
+    }
     if (config.reasoning) {
-      const reasoning = config.reasoning;
+      let reasoning = config.reasoning;
       const levelClass = geminiLevelClass(request.model);
+      if (reasoning.effort === "off" && levelClass) {
+        // MAP-13 (decision 2026-09-14 §4.2): the Gemini 3 class has no
+        // honoured off switch (thinkingBudget 0 is accepted, not applied);
+        // "minimal" is the lowest level, and the spend shows in usage.reasoning_tokens.
+        adapt("config.reasoning.effort", "substituted", `${request.model} cannot disable thinking (the Gemini 3 class honours no off switch); the lowest level was sent and the thinking spend is visible in usage`, {
+          asked: "off",
+          applied: "minimal",
+          provider: this.provider,
+        });
+        reasoning = { effort: "minimal" };
+      }
       if (reasoning.effort === "off") {
-        if (levelClass) {
-          throw new UnsupportedFeatureError(
-            `gemini: reasoning cannot be disabled on ${request.model} — the Gemini 3 class has no full off switch (thinkingBudget 0 is accepted but not honoured); use effort='low' or a 2.5 model`,
-            { provider: this.provider },
-          );
-        }
         gen["thinkingConfig"] = { thinkingBudget: 0 };
       } else {
         if (reasoning.summary === "concise" || reasoning.summary === "detailed") {
-          throw new UnsupportedFeatureError(`gemini: reasoning.summary=${JSON.stringify(reasoning.summary)} is an OpenAI detail level; GenerateContent has includeThoughts only (use 'auto')`, {
+          adapt("config.reasoning.summary", "substituted", "GenerateContent has includeThoughts only, no detail levels; 'auto' shows the thoughts", {
+            asked: reasoning.summary,
+            applied: "auto",
             provider: this.provider,
           });
+          reasoning = { ...reasoning, summary: "auto" };
         }
         const thinking: JsonObject = {};
-        if (reasoning.summary !== undefined) thinking["includeThoughts"] = true;
+        if (reasoning.summary !== undefined) thinking["includeThoughts"] = true; // MAP-7 rule 7: only when asked
         if (reasoning.thinkingBudget !== undefined) thinking["thinkingBudget"] = reasoning.thinkingBudget;
         else if (levelClass) {
-          if (reasoning.effort === "xhigh" || reasoning.effort === "max") {
-            throw new UnsupportedFeatureError(
-              `gemini: reasoning.effort=${JSON.stringify(reasoning.effort)} has no thinkingLevel on the Gemini 3 class (minimal|low|medium|high); 'high' is the ceiling`,
-              { provider: this.provider },
-            );
+          let effort: string = reasoning.effort;
+          if (effort === "xhigh" || effort === "max") {
+            adapt("config.reasoning.effort", "clamped", "the Gemini 3 class has thinkingLevel minimal|low|medium|high; 'high' is the ceiling", { asked: effort, applied: "high", provider: this.provider });
+            effort = "high";
           }
-          thinking["thinkingLevel"] = reasoning.effort;
+          thinking["thinkingLevel"] = effort;
         } else thinking["thinkingBudget"] = EFFORT_THINKING_BUDGETS[reasoning.effort]!;
         gen["thinkingConfig"] = thinking;
       }
@@ -524,18 +550,19 @@ export class GeminiLM extends ProviderLM {
     if (config.store !== undefined) payload["store"] = config.store;
     if (config.serviceTier !== undefined) payload["serviceTier"] = config.serviceTier;
     if (config.userId !== undefined) {
-      throw new UnsupportedFeatureError("gemini: config.user_id is not supported — GenerateContent has no end-user attribution field (OpenAI and Anthropic carry it)", {
-        provider: this.provider,
-      });
+      // MAP-13 (decision 2026-09-14 §4.5): abuse attribution has no field
+      // here and nothing in the program depends on it at run time; a
+      // compliance policy sets adaptations="refuse".
+      adapt("config.user_id", "dropped", "GenerateContent has no end-user attribution field (OpenAI and Anthropic carry it)", { asked: config.userId, provider: this.provider });
     }
     for (const [k, v] of Object.entries(extensions)) if (k !== "prompt_caching" && k !== "output") payload[k] = v;
     return payload;
   }
 
-  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  wireRequest(request: Request, stream: boolean): EmitOptions {
     request = Request.create(request);
     const endpoint = stream ? "streamGenerateContent" : "generateContent";
-    return this.emit({
+    return {
       method: "POST",
       url: `${this.base()}/${this.modelPath(request.model)}:${endpoint}`,
       endpoint: "generateContent",
@@ -544,7 +571,7 @@ export class GeminiLM extends ProviderLM {
       headers: this.headers({ "Content-Type": "application/json" }),
       params: stream ? { alt: "sse" } : undefined,
       payload: this.payload(request),
-    });
+    };
   }
 
   // ─── Response ────────────────────────────────────────────────────
@@ -603,7 +630,7 @@ export class GeminiLM extends ProviderLM {
     return new Response({
       id: data["responseId"] ? str(data["responseId"]) : undefined,
       model: request.model,
-      message: { role: "assistant", parts },
+      message: { role: "assistant", parts: replaceTextWithData(parts, requestJudgments(request)) },
       finishReason: finishReason(candidate["finishReason"], hasTool),
       usage: geminiUsage(data["usageMetadata"], ["candidatesTokenCount", "responseTokenCount"]),
       logprobs: logprobs.length > 0 ? logprobs : undefined,
@@ -966,9 +993,11 @@ export class GeminiLM extends ProviderLM {
 
   override batchSubmitRequest(request: BatchRequest): Promise<TransportRequest> {
     const model = request.model ?? request.requests[0]!.model;
-    const batch: JsonObject = {
-      inputConfig: { requests: { requests: request.requests.map((nested, i) => ({ request: this.payload(nested), metadata: { key: String(i) } })) } },
-    };
+    // MAP-13: under the adapter's policy so "refuse" refuses here too (a batch ticket has no adaptations field).
+    const requests = collecting(new AdaptationScope(this.adaptations, this.provider), () =>
+      request.requests.map((nested, i) => ({ request: this.payload(nested), metadata: { key: String(i) } })),
+    );
+    const batch: JsonObject = { inputConfig: { requests: { requests } } };
     if (request.label !== undefined) batch["displayName"] = request.label;
     const payload: JsonObject = { batch, ...(request.extensions ?? {}) };
     return this.emit({ method: "POST", url: `${this.base()}/${this.modelPath(model)}:batchGenerateContent`, headers: this.headers({ "Content-Type": "application/json" }), payload });

@@ -16,25 +16,28 @@ The contract commit this port is built against is in `CONTRACT_PIN`;
 
 **Passing the pinned corpus, not a claim of SDK or release completeness.**
 Every harness direction is green at the pin, with zero failures and no skips
-added; the two skips are corpus gaps (`openai.computer_use` has no canonical
-request and no golden). Runtime correctness is tested separately; see
+added; the skips are corpus gaps (`openai.computer_use` has no canonical
+request and no golden; fourteen adapted-request cases pin no reply body — the reference skips the same fifteen). The
+port is at parity with the Python reference on every direction, and
+`tools/differential.py` cross-checks 246 request builds outside the corpus
+(zero differences), including every MAP-13 adaptation cell. Runtime correctness is tested separately; see
 [the correctness review and remaining work](docs/runtime-correctness.md).
 
 | Direction | Contract surface | Result |
 |---|---|---|
-| `serde` | spec/types.md, spec/vocabularies.md, spec/invariants.md, docs/serde-rules.md; all 36 kinds | 115 / 0 |
-| `error` | ErrorCode + class hierarchy; `normalizeError` per provider | 84 / 0 |
+| `serde` | spec/types.md, spec/vocabularies.md, spec/invariants.md, docs/serde-rules.md; all 36 kinds | 126 / 0 |
+| `error` | ErrorCode + class hierarchy; `normalizeError` per provider | 87 / 0 |
 | `auth` | spec/auth.md AUTH-1/2/5/7/8/10 and the three cloud chains (AUTH-11) | 37 / 0 |
 | `token` | SigV4 (34 vectors), RS256 JWTs, token exchanges | 43 / 0 |
-| `request` | the four dialects, request side; MAP-5..8, MAP-10; hosts, presets | 365 / 0 (1 skip) |
-| `response` | the four dialects, response side; MAP-1..4 | 302 / 0 (1 skip) |
+| `request` | the five dialects, request side; MAP-5..8, MAP-10, MAP-13 (pinned adaptations and `feature` on refusals), MAP-14; hosts, presets | 378 / 0 (1 skip) |
+| `response` | the five dialects, response side; MAP-1..4, MAP-14 (`DataPart` answers) | 309 / 0 (15 skips) |
 | `stream` | SSE decoding, MAP-3/4 coalescing, MAP-9 assembly and its refusal | 40 / 0 |
 | `router` | the three rungs, precedence, `unknown_model` / `ambiguous_model` | 22 / 0 |
-| `models` | `listModels` on every provider | 34 / 0 |
+| `models` | `listModels` on every provider | 36 / 0 |
 | `files`, `batch`, `cache` | the three surfaces, multipart byte for byte, MAP-11 id escaping | 48 / 0, 41 / 0, 11 / 0 |
 | `generation`, `video` | image and speech generation, video jobs (MAP-11) | 20 / 0, 27 / 0 |
 | `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
-| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 118 recorded chat bodies round-trip (21 pinned lossy), 42 foreign shapes (11 refusals; the SDK's and litellm's dumped message objects, `annotations` → CitationPart). Provisional; module 4b | 160 / 0 |
+| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 125 recorded chat bodies round-trip (27 pinned lossy), 42 foreign shapes (9 refusals; `functions`/`function_call` translate, `top_k` and the promoted sampling knobs read into `Config`). Provisional; module 4b | 167 / 0 |
 
 Beyond the harness: `npm test` (node:test) covers the JSON
 fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
@@ -49,10 +52,11 @@ failure paths, Python/Node lock exclusion, and lock release after process death.
 The Python interoperability check skips if Python is unavailable; kernel-lock
 tests skip off Linux.
 
-Outside the corpus: `tools/differential.py` (194 request comparisons against
-the reference, zero differences — the Rust port's 30 probes plus ten
+Outside the corpus: `tools/differential.py` (246 request comparisons against
+the reference, zero differences — the Rust port's 30 probes, ten
 JavaScript-specific ones: integral floats, opaque-payload numbers, unicode,
-empty strings) and `tools/differential_surfaces.py` (177 files / batch /
+empty strings, and thirteen MAP-13/MAP-14 probes: every adaptation action,
+the record's JSON types, the refusals that survive rule 4b) and `tools/differential_surfaces.py` (177 files / batch /
 cache / generation / video / live comparisons, zero differences).
 
 Live proof, keys from the environment (`receipts/2026-09-08-live-smoke/`):
@@ -143,6 +147,25 @@ await lm.listModels();
 // Why is my key (not) being used? No secrets are printed.
 import { explainAuth, describeReport } from "lm15";
 console.log(describeReport(explainAuth("groq")));
+
+// MAP-13: change the model and the program keeps working; what the wire
+// could not take as asked is on the response, never printed, never hidden.
+const r = await router.complete({ model: "claude-haiku-4-5", messages: [Message.user("hi")], config: { seed: 7, temperature: 1.5 } });
+for (const a of r.adaptations) console.log(a.field, a.action, a.asked, "→", a.applied, "—", a.reason);
+// → config.seed dropped 7 → undefined — the Messages API has no seed field
+// → config.temperature clamped 1.5 → 1.0 — the Messages API accepts temperature in [0, 1] ...
+await router.plan(request); // the same record with no network and no credential
+new LMRouter({ adaptations: "refuse" }); // the old strictness: every deviation throws before the wire, with `error.feature`
+
+// MAP-14: judgments — declared keys in, a distribution out.
+import { judgments, choice, yesNo, score } from "lm15";
+const verdict = await router.complete({
+  model: "typesafe:jev-latest", // or any chat model: the pick without the numbers
+  messages: [Message.user("Ripe blackberry, firm tannins, long finish.")],
+  config: { responseFormat: judgments({ style: choice("Dominant style?", ["fruit", "oak", "mineral"]), ages: yesNo("Will it improve with age?") }), probabilities: "if_available" },
+});
+verdict.data; // { style: "fruit", ages: true }
+verdict.probabilities; // { style: { fruit: 0.9, oak: 0.08, mineral: 0.02 }, ages: { true: 0.97, false: 0.03 } } — typesafe, or a vLLM server that scores tokens
 ```
 
 Plain JavaScript users import the same package; the types are optional.
@@ -237,6 +260,20 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 - **`aws-event-stream` framing** (phase 2, `bedrock` Converse) is not
   implemented, exactly as in the reference; the request refuses with
   `UnsupportedFeatureError` and `replay_stream` refuses the framing.
+- **The MAP-13 record reaches the response through a synchronous build
+  scope, not a context variable** (Python: `contextvars`). Every dialect's
+  `wireRequest` is synchronous by design and runs inside `collecting(scope,
+  fn)`; `fn` returning a promise is a `TypeError`. `AsyncLocalStorage` was
+  rejected because the browser entry has no `node:async_hooks`. Same
+  behaviour, same records, same policies; `plan()` invokes no credential.
+- **`Adaptation.asked` / `applied` keep the field's JSON type**: a clamped
+  temperature is the float `1.0` (a `RawNumber`), never the integer `1`, so
+  the record round-trips byte-exact and matches the reference.
+- **`endedBy: "incomplete"`** on a `Turn` whose collection stopped before a
+  boundary (a closed view, a `CollectionLimitError`), as in the reference
+  since 2026-09-15; before, the port said `"error"`. A session that closes
+  before a boundary is a `TransportError` when iterated as a turn, never a
+  silent empty turn.
 
 ## Layout
 
@@ -250,8 +287,10 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
 | `src/auth/` | access policies (AUTH-10), stored credentials and the lock (AUTH-3/4/8/9), the doctor (AUTH-7), JWT claims (`jwt.ts`) |
 | `src/cloud/` | the three cloud chains (AUTH-1/11), SigV4, RS256, host rewrites |
 | `src/compat.ts`, `src/registry.ts` | compat presets and the provider table, copied as data |
-| `src/adapter.ts`, `src/dialects/` | the shared adapter base; OpenAI Responses, OpenAI Chat, Anthropic, Gemini, xAI |
-| `src/stream.ts` | SSE, the MAP-3/4 coalescer, the MAP-9 accumulator, `ResponseStream` |
+| `src/adapter.ts`, `src/dialects/` | the shared adapter base; OpenAI Responses, OpenAI Chat (with the MAP-14 token-trie driver, `token_trie.ts`), Anthropic, Gemini, xAI, TypeSafe |
+| `src/adaptation.ts`, `src/types/adaptation.ts` | MAP-13: the `Adaptation` record, the three policies, the synchronous build scope, `plan()` |
+| `src/judgments.ts` | MAP-14: the judgment convention read off a schema and emitted by `choice` / `yesNo` / `score` / `judgments`; the two wire rewrites; the `DataPart` fold |
+| `src/stream.ts`, `src/stop.ts` | SSE, the MAP-3/4 coalescer, the MAP-9 accumulator, `ResponseStream`; the client-side stop with score preservation |
 | `src/router.ts`, `src/live.ts` | `LMRouter`; `LiveSession` over the platform WebSocket |
 | `src/testing.ts` | `lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
 | `src/canonical.ts` | Out-of-band type identity for generic serialization |

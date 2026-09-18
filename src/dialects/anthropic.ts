@@ -4,7 +4,9 @@
  * AWS, Vertex, and the DeepSeek / Meta / Moonshot Anthropic-format wires.
  */
 
-import { ProviderLM, batchEntryHttp, type LMOptions } from "../adapter.ts";
+import { AdaptationScope, adapt, collecting, nearestEffort } from "../adaptation.ts";
+import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { anthropicSchema, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
 import { ANTHROPIC_API, CLAUDE_CODE, DEFAULT_CLAUDE_CODE_VERSION, withHeaders, type AccessPolicy } from "../auth/policy.ts";
 import {
   ANTHROPIC_PRESET_BASE_URLS,
@@ -37,7 +39,7 @@ import type { ModelInfo } from "../types/model_info.ts";
 import { continuationData, normalizePart, type CitationPart, type MediaPart, type Message, type Part } from "../types/parts.ts";
 import { ErrorDetail, Response, Usage } from "../types/response.ts";
 import type { StreamEvent } from "../types/stream.ts";
-import type { FinishReason } from "../vocab.ts";
+import type { FinishReason, ReasoningEffort } from "../vocab.ts";
 import {
   HttpResponse,
   MEDIA_KINDS,
@@ -52,14 +54,35 @@ import {
   unnamedToolCallError,
   type TransportRequest,
 } from "../wire.ts";
-import { batchEntryRequest, wireFloat } from "./openai_responses.ts";
+import { batchEntryRequest, optionalWireFloat, wireFloat } from "./openai_responses.ts";
 import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, type Unmapped } from "./openai_shared.ts";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 
 const ANTHROPIC_BUILTIN_MAP: Readonly<Record<string, string>> = Object.freeze({ web_search: "web_search_20250305", code_execution: "code_execution_20250522" });
 const PROVIDER_EXECUTED_BLOCKS = new Set(["server_tool_use", "web_search_tool_result", "code_execution_tool_result"]);
-const DEFAULT_VISIBLE_TOKENS = 1024;
+// Output ceilings by model class, for the `max_tokens` the Messages API
+// requires and the caller did not set (MAP-13 `defaulted`, decision
+// 2026-09-14 §4.8). Until then the default was 1024, which cut ordinary
+// answers off with nothing said. The 3.x classes have documented lower
+// ceilings and a value above them is a 400; everything else (4.x and later,
+// and any name this table does not know) gets 16384 — loud and actionable
+// if a model's ceiling is lower ("max_tokens: 16384 > N"), never a silent
+// truncation. A table that rots; `Config.maxTokens` overrides.
+const DEFAULT_MAX_TOKENS_BY_CLASS: ReadonlyArray<readonly [string, number]> = [
+  ["claude-3-haiku", 4096],
+  ["claude-3-opus", 4096],
+  ["claude-3-sonnet", 4096],
+  ["claude-3-5-", 8192],
+  ["claude-3.5-", 8192],
+];
+const DEFAULT_MAX_TOKENS = 16384;
+
+function defaultMaxTokens(model: string): number {
+  const lowered = model.toLowerCase();
+  for (const [marker, ceiling] of DEFAULT_MAX_TOKENS_BY_CLASS) if (lowered.includes(marker)) return ceiling;
+  return DEFAULT_MAX_TOKENS;
+}
 
 const ERROR_TYPE_MAP: Readonly<Record<string, typeof ProviderError>> = Object.freeze({
   authentication_error: AuthError,
@@ -168,7 +191,7 @@ function responseFormatToOutputConfig(format: ResponseFormat): JsonObject {
   if (format.type === "json_object") {
     throw new UnsupportedFeatureError(
       "anthropic: response_format json_object is not supported — the Messages API has no any-JSON mode; give a json_schema (objects need additionalProperties: false)",
-      { provider: "anthropic" },
+      { provider: "anthropic", feature: "config.response_format" },
     );
   }
   return { format: { type: "json_schema", schema: format.schema } };
@@ -286,6 +309,7 @@ export class AnthropicLM extends ProviderLM {
     if (MEDIA_KINDS.has(part.type)) {
       throw new UnsupportedFeatureError(`${this.provider}: a ${part.type} part cannot reach a tool_result block (text, image and document only; MAP-10)`, {
         provider: this.provider,
+        feature: `messages[*].tool_result.content[${part.type}]`,
       });
     }
     return { type: "text", text: partsToText([part], { provider: this.provider }) };
@@ -305,21 +329,32 @@ export class AnthropicLM extends ProviderLM {
     const payload: JsonObject = {};
     if (mode === "none") payload["type"] = "none";
     else if (tc.allowed && tc.allowed.length > 0) {
-      const declared = new Set((request.tools ?? []).map((t) => t.name));
+      // {"type": "tool", "name": ...} forces client tools AND server tools
+      // (verified live 2026-09-01 with web_search). Every declared tool, or
+      // (MAP-13) a proper subset that payload() has already narrowed the
+      // tools list to: either way the wire form is any/auto over the tools sent.
       if (tc.allowed.length === 1 && mode === "required") {
         payload["type"] = "tool";
         payload["name"] = tc.allowed[0]!;
-      } else if (new Set(tc.allowed).size === declared.size && tc.allowed.every((n) => declared.has(n))) {
-        payload["type"] = mode === "required" ? "any" : "auto";
-      } else {
-        throw new UnsupportedFeatureError(
-          "anthropic: tool_choice.allowed subsets are not supported — the Messages API can force one named tool or allow all declared tools, but cannot restrict to a subset. Send only the allowed tools in Request.tools instead",
-          { provider: this.provider },
-        );
-      }
+      } else payload["type"] = mode === "required" ? "any" : "auto";
     } else payload["type"] = mode === "required" ? "any" : "auto";
     if (tc.parallel === false && payload["type"] !== "none") payload["disable_parallel_tool_use"] = true;
     return payload;
+  }
+
+  /**
+   * The names of a proper-subset allowlist, else undefined. MAP-13: the
+   * Messages API cannot restrict to a subset, so the adapter sends ONLY
+   * those tools — that is what "may only call these" means — and records
+   * it as client_side.
+   */
+  protected allowedSubset(request: Request): readonly string[] | undefined {
+    const tc = request.config?.toolChoice;
+    if (!tc || tc.mode === "none" || !tc.allowed || tc.allowed.length === 0) return undefined;
+    if (tc.allowed.length === 1 && tc.mode === "required") return undefined;
+    const declared = new Set((request.tools ?? []).map((t) => t.name));
+    if (new Set(tc.allowed).size === declared.size && tc.allowed.every((n) => declared.has(n))) return undefined;
+    return tc.allowed;
   }
 
   payload(request: Request, stream: boolean): JsonObject {
@@ -338,14 +373,17 @@ export class AnthropicLM extends ProviderLM {
 
     if (useCache && cache) {
       if (cache.key !== undefined) {
-        throw new UnsupportedFeatureError(
-          "anthropic: cache.key is not supported — the Messages API has no cache affinity key (OpenAI's prompt_cache_key); marks on blocks are the mechanism (prefix / prefix_until_index)",
-          { provider: this.provider },
-        );
+        // MAP-13: a best-effort routing hint by definition; no home here.
+        adapt("config.cache.key", "dropped", "the Messages API has no cache affinity key (OpenAI's prompt_cache_key); marks on blocks are its mechanism and were placed", {
+          asked: cache.key,
+          provider: this.provider,
+        });
       }
       if (cache.resource !== undefined) {
+        // MAP-13 rule 4(b): the program references a stored object that does not exist on this provider.
         throw new UnsupportedFeatureError("anthropic: cache.resource is not supported — the Messages API has no stored-cache tier; it caches by marks on blocks", {
           provider: this.provider,
+          feature: "config.cache.resource",
         });
       }
       let idx: number | undefined;
@@ -364,44 +402,70 @@ export class AnthropicLM extends ProviderLM {
       }
     }
 
-    const reasoning = config.reasoning;
+    let reasoning = config.reasoning;
     const deepseekThinking = compat.thinkingFormat === "deepseek";
+    // "adaptive": every model on this server is the adaptive class (Meta Model API) — no model-name table.
     const alwaysAdaptive = compat.thinkingFormat === "adaptive";
+    // "effort": no `thinking` object exists on this server; the dial is output_config.effort alone (Moonshot).
     const effortOnly = compat.thinkingFormat === "effort";
     const on = reasoning !== undefined && reasoning.effort !== "off";
     const adaptive = on && (deepseekThinking || alwaysAdaptive || effortOnly || anthropicAdaptiveClass(request.model));
-    if (on) {
+    if (reasoning !== undefined && on) {
       if (compat.reasoningEfforts !== undefined && !compat.reasoningEfforts.includes(reasoning.effort)) {
-        throw new UnsupportedFeatureError(
-          `${this.provider}: reasoning.effort=${JSON.stringify(reasoning.effort)} has no level on this server (it accepts ${compat.reasoningEfforts.join(", ")}) and would be accepted silently`,
-          { provider: this.provider },
+        // MAP-13: an effort word with no level here is clamped to the nearest
+        // declared level (the dial is ordinal); the server would have accepted
+        // the word silently (Moonshot answered 200 to `medium` and `bogus`, live 2026-09-03).
+        const nearest = nearestEffort(reasoning.effort, compat.reasoningEfforts) as ReasoningEffort;
+        adapt(
+          "config.reasoning.effort",
+          "clamped",
+          `this server has no ${JSON.stringify(reasoning.effort)} level (it accepts ${compat.reasoningEfforts.join(", ")}) and would have accepted the word silently`,
+          { asked: reasoning.effort, applied: nearest, provider: this.provider },
         );
+        reasoning = { ...reasoning, effort: nearest };
       }
       if (reasoning.summary === "concise" || reasoning.summary === "detailed") {
-        throw new UnsupportedFeatureError(
-          `anthropic: reasoning.summary=${JSON.stringify(reasoning.summary)} is an OpenAI detail level; the Messages API returns thinking blocks whenever thinking runs (use 'auto' or None)`,
-          { provider: this.provider },
-        );
+        // MAP-13: a visibility level the wire lacks; thinking blocks are returned whenever thinking runs, which is "auto".
+        adapt("config.reasoning.summary", "substituted", "the Messages API has no summary detail levels; it returns thinking blocks whenever thinking runs, which is 'auto'", {
+          asked: reasoning.summary,
+          applied: "auto",
+          provider: this.provider,
+        });
+        reasoning = { ...reasoning, summary: "auto" };
       }
       if (adaptive) {
         if (reasoning.thinkingBudget !== undefined) {
+          // MAP-13: effort carries the intent (MAP-7 rule 5); the budget has no honoured field on this class.
           const why = deepseekThinking
-            ? "this server ignores budget_tokens (a silent no-op); effort is the dial"
+            ? "this server ignores budget_tokens; effort is the dial"
             : alwaysAdaptive
-              ? "this server accepts budget_tokens without translating it (a silent no-op); effort is the dial (protocols--messages.md)"
-              : "this model class takes thinking.type 'adaptive' with output_config.effort; budget_tokens is rejected by the API (live 2026-09-02)";
-          throw new UnsupportedFeatureError(`${this.provider}: reasoning.thinking_budget is not supported on ${request.model} — ${why}`, { provider: this.provider });
+              ? "this server accepts budget_tokens without translating it; effort is the dial (protocols--messages.md)"
+              : `${request.model} takes thinking.type 'adaptive' with output_config.effort; budget_tokens is rejected by the API (live 2026-09-02)`;
+          adapt("config.reasoning.thinking_budget", "dropped", why, { asked: reasoning.thinkingBudget, provider: this.provider });
+          const { thinkingBudget: _drop, ...rest } = reasoning;
+          reasoning = rest;
         }
         if (reasoning.effort === "minimal" && !(deepseekThinking || alwaysAdaptive || effortOnly)) {
-          throw new UnsupportedFeatureError(
-            "anthropic: reasoning.effort='minimal' has no level on this model class (output_config.effort is low|medium|high|xhigh|max); 'low' is the floor",
-            { provider: this.provider },
-          );
+          // MAP-13: the floor of an ordinal dial. Only the api.anthropic.com class: a compat server answers an unsupported level with a 400 of its own.
+          adapt("config.reasoning.effort", "clamped", "this model class has no 'minimal' level (output_config.effort is low|medium|high|xhigh|max); 'low' is the floor", {
+            asked: "minimal",
+            applied: "low",
+            provider: this.provider,
+          });
+          reasoning = { ...reasoning, effort: "low" };
         }
       }
     }
-    const thinkingBudget = adaptive || !on ? undefined : (reasoning.thinkingBudget ?? EFFORT_THINKING_BUDGETS[reasoning.effort]);
-    const visible = config.maxTokens ?? DEFAULT_VISIBLE_TOKENS;
+    const thinkingBudget = adaptive || !on || reasoning === undefined ? undefined : (reasoning.thinkingBudget ?? EFFORT_THINKING_BUDGETS[reasoning.effort]);
+    // Manual class: max_tokens includes thinking, so the wire ceiling is the
+    // budget plus the visible cap. Adaptive class: Config.maxTokens is the
+    // total ceiling. The Messages API requires the field: when the caller
+    // set none, the class default is used and recorded (MAP-13).
+    let visible = config.maxTokens;
+    if (visible === undefined) {
+      visible = defaultMaxTokens(request.model);
+      adapt("config.max_tokens", "defaulted", "the Messages API requires max_tokens and none was set; the class default was used", { applied: visible, provider: this.provider });
+    }
     const payload: JsonObject = {
       model: request.model,
       messages,
@@ -417,32 +481,60 @@ export class AnthropicLM extends ProviderLM {
         payload["system"] = [{ type: "text", text: systemText, cache_control: marker }];
       } else payload["system"] = systemText;
     }
-    if (compat.samplingParams === "reject") {
-      for (const [name, value] of [["temperature", config.temperature], ["top_p", config.topP], ["top_k", config.topK]] as const) {
-        if (value !== undefined) {
-          throw new UnsupportedFeatureError(`${this.provider}: config.${name} is silently ignored by this server (the model's sampling is fixed); omit it`, {
-            provider: this.provider,
-          });
-        }
+    const samplingFixed = compat.samplingParams === "reject";
+    if (samplingFixed) {
+      // A record's asked/applied keep the field's JSON type: float fields are floats (1.0, never 1).
+      for (const [name, value] of [["temperature", optionalWireFloat(config.temperature)], ["top_p", optionalWireFloat(config.topP)], ["top_k", config.topK]] as const) {
+        // The server documents none of these and swallows them silently
+        // (Moonshot, live 2026-09-03). MAP-13: omit and record — the note supplies the visibility.
+        if (value !== undefined) adapt(`config.${name}`, "dropped", "this server ignores sampling parameters (the model's sampling is fixed)", { asked: value, provider: this.provider });
       }
     }
-    if (config.temperature !== undefined) payload["temperature"] = wireFloat(config.temperature);
-    if (config.topP !== undefined) payload["top_p"] = wireFloat(config.topP);
-    if (config.topK !== undefined) payload["top_k"] = config.topK;
+    for (const [name, value] of [["seed", config.seed], ["frequency_penalty", optionalWireFloat(config.frequencyPenalty)], ["presence_penalty", optionalWireFloat(config.presencePenalty)]] as const) {
+      // MAP-13: a sampling hint with no field on the Messages API.
+      if (value !== undefined) adapt(`config.${name}`, "dropped", `the Messages API has no ${name} field`, { asked: value, provider: this.provider });
+    }
+    if (config.temperature !== undefined && !samplingFixed) {
+      let temperature = config.temperature;
+      if (temperature > 1.0) {
+        // MAP-13: the canonical range is 0–2; this wire's ceiling is 1.0 and
+        // both scales default to 1.0, so "hotter than allowed" becomes the hottest. Never rescaled.
+        adapt("config.temperature", "clamped", "the Messages API accepts temperature in [0, 1]; the canonical range is [0, 2]", { asked: wireFloat(temperature), applied: wireFloat(1.0), provider: this.provider });
+        temperature = 1.0;
+      }
+      payload["temperature"] = wireFloat(temperature);
+    }
+    if (config.topP !== undefined && !samplingFixed) payload["top_p"] = wireFloat(config.topP);
+    if (config.topK !== undefined && !samplingFixed) payload["top_k"] = config.topK;
     if (config.stop && config.stop.length > 0) payload["stop_sequences"] = [...config.stop];
     if (request.tools && request.tools.length > 0) {
-      payload["tools"] = request.tools.map((tool) =>
-        tool.type === "function"
-          ? { name: tool.name, description: tool.description ?? null, input_schema: tool.parameters ?? { type: "object", properties: {} } }
-          : builtinToAnthropic(tool),
-      );
+      const allowedSubset = this.allowedSubset(request);
+      const wire = request.tools
+        .filter((tool) => allowedSubset === undefined || allowedSubset.includes(tool.name))
+        .map((tool) =>
+          tool.type === "function"
+            ? { name: tool.name, description: tool.description ?? null, input_schema: tool.parameters ?? { type: "object", properties: {} } }
+            : builtinToAnthropic(tool),
+        );
+      if (allowedSubset !== undefined) {
+        adapt("config.tool_choice.allowed", "client_side", "the Messages API cannot restrict to a subset of the declared tools; only the allowed tools were sent, which is what the allowlist means", {
+          asked: [...allowedSubset],
+          applied: wire.map((t) => str(t["name"])),
+          provider: this.provider,
+        });
+      }
+      payload["tools"] = wire;
     }
     const toolChoice = this.toolChoicePayload(request);
     if (toolChoice !== undefined) {
-      if (compat.parallelToolCalls === "reject" && config.toolChoice?.parallel !== undefined) {
-        throw new UnsupportedFeatureError(`${this.provider}: tool_choice.parallel is silently ignored by this server (disable_parallel_tool_use is not applied); omit it`, {
+      const tc = config.toolChoice;
+      if (compat.parallelToolCalls === "reject" && tc?.parallel !== undefined) {
+        // disable_parallel_tool_use is documented as ignored (guide--anthropic-api.md). MAP-13: omit it and say so.
+        adapt("config.tool_choice.parallel", "dropped", "this server accepts disable_parallel_tool_use and does not apply it (guide--anthropic-api.md); the model may return several calls", {
+          asked: tc.parallel,
           provider: this.provider,
         });
+        delete toolChoice["disable_parallel_tool_use"];
       }
       payload["tool_choice"] = toolChoice;
     }
@@ -457,7 +549,7 @@ export class AnthropicLM extends ProviderLM {
       else if (reasoning) payload["output_config"] = { effort: reasoning.effort };
     } else if (alwaysAdaptive && reasoning?.effort === "off") {
       payload["thinking"] = { type: "disabled" };
-    } else if (adaptive) {
+    } else if (adaptive && reasoning) {
       payload["thinking"] = { type: "adaptive" };
       payload["output_config"] = { effort: reasoning.effort };
     } else if (thinkingBudget !== undefined) {
@@ -465,22 +557,36 @@ export class AnthropicLM extends ProviderLM {
     }
     if (config.responseFormat) {
       if (compat.structuredOutput === "reject") {
-        throw new UnsupportedFeatureError(
-          `${this.provider}: response_format is silently ignored by this server (output_config.format is accepted and not applied); describe the shape in the prompt`,
-          { provider: this.provider },
-        );
+        // The server accepts output_config.format and ignores the schema
+        // (DeepSeek, live 2026-09-03: 200 with keys the schema never named).
+        // MAP-13: omit and record; the caller can describe the shape in the prompt.
+        adapt("config.response_format", "dropped", "this server accepts output_config.format and does not apply it; describe the shape in the prompt", {
+          asked: config.responseFormat as unknown as JsonObject,
+          provider: this.provider,
+        });
+      } else {
+        // MAP-14 §2: a judgment property carrying type+anyOf has its type moved
+        // into every branch (the wire 400s otherwise, receipted 2026-09-17);
+        // probabilities cannot be measured here.
+        noteUnmeasurableProbabilities(request, this.provider);
+        const found = requestJudgments(request);
+        let fmt = config.responseFormat;
+        if (found.size > 0 && fmt.type === "json_schema") fmt = { ...fmt, schema: anthropicSchema(fmt.schema, found) };
+        payload["output_config"] = { ...obj(payload["output_config"]), ...responseFormatToOutputConfig(fmt) };
       }
-      payload["output_config"] = { ...obj(payload["output_config"]), ...responseFormatToOutputConfig(config.responseFormat) };
     }
     if (config.serviceTier !== undefined) payload["service_tier"] = config.serviceTier;
     if (config.userId !== undefined) payload["metadata"] = { user_id: config.userId };
-    if (config.store !== undefined) {
-      throw new UnsupportedFeatureError("anthropic: config.store is not supported — the Messages API has no response-storage opt-out field (OpenAI and Gemini carry it)", {
-        provider: this.provider,
-      });
+    if (config.store === false) {
+      // MAP-13 "satisfied": the Messages API keeps no retrievable stored-response object, so an opt-out holds by construction.
+      adapt("config.store", "satisfied", "the Messages API has no stored-response object to opt out of; nothing retrievable is kept", { asked: false, provider: this.provider });
+    } else if (config.store === true) {
+      adapt("config.store", "dropped", "the Messages API has no stored-response object to opt into (OpenAI and Gemini carry `store`)", { asked: true, provider: this.provider });
     }
     if (config.logprobs !== undefined) {
-      throw new UnsupportedFeatureError("anthropic: config.logprobs is not supported — the Messages API does not expose token log probabilities (OpenAI and Gemini carry them)", {
+      // MAP-13 (decision 2026-09-14 §4.1): Response.logprobs is optional; the program sees absence, not a later crash.
+      adapt("config.logprobs", "dropped", "the Messages API does not expose token log probabilities (OpenAI and Gemini carry them); Response.logprobs will be absent", {
+        asked: config.logprobs,
         provider: this.provider,
       });
     }
@@ -495,9 +601,9 @@ export class AnthropicLM extends ProviderLM {
     return payload;
   }
 
-  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  wireRequest(request: Request, stream: boolean): EmitOptions {
     request = Request.create(request);
-    return this.emit({
+    return {
       method: "POST",
       url: `${this.base()}/messages`,
       headers: this.headers(request),
@@ -505,7 +611,7 @@ export class AnthropicLM extends ProviderLM {
       endpoint: "messages",
       stream,
       model: request.model,
-    });
+    };
   }
 
   // ─── Response ────────────────────────────────────────────────────
@@ -545,7 +651,7 @@ export class AnthropicLM extends ProviderLM {
     return new Response({
       id: data["id"] ? str(data["id"]) : undefined,
       model: str(data["model"]) || request.model,
-      message: { role: "assistant", parts },
+      message: { role: "assistant", parts: replaceTextWithData(parts, requestJudgments(request)) },
       finishReason: finishReason(data["stop_reason"], hasTool),
       usage: usageFromAnthropic(obj(data["usage"])),
       providerData: attachUnmapped(data, unmapped),
@@ -694,16 +800,19 @@ export class AnthropicLM extends ProviderLM {
   // ─── Batches ─────────────────────────────────────────────────────
 
   override batchSubmitRequest(request: BatchRequest): Promise<TransportRequest> {
-    if (request.label !== undefined) {
-      throw new UnsupportedFeatureError(
-        "anthropic: batch labels are not supported — the Message Batches create body has no metadata field (verified live 2026-08-31); submit without a label and correlate by id",
-        { provider: this.provider },
-      );
-    }
-    const payload: JsonObject = {
-      requests: request.requests.map((nested, i) => ({ custom_id: String(i), params: this.payload(nested, false) })),
-      ...(request.extensions ?? {}),
-    };
+    // MAP-13: the batch builder runs under the adapter's policy so "refuse"
+    // refuses here too; a batch ticket has no adaptations field (provisional
+    // surface), so under "note" the record is not kept.
+    const scope = new AdaptationScope(this.adaptations, this.provider);
+    const payload = collecting(scope, (): JsonObject => {
+      if (request.label !== undefined) {
+        adapt("label", "dropped", "the Message Batches create body has no metadata field (verified live 2026-08-31); correlate by id", { asked: request.label, provider: this.provider });
+      }
+      return {
+        requests: request.requests.map((nested, i) => ({ custom_id: String(i), params: this.payload(nested, false) })),
+        ...(request.extensions ?? {}),
+      };
+    });
     return this.emit({ method: "POST", url: `${this.base()}/messages/batches`, headers: this.headers(), payload });
   }
 

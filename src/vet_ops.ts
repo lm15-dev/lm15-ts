@@ -5,7 +5,7 @@
  */
 
 import { isJsonObject, type JsonObject, type JsonValue } from "./json.ts";
-import { AmbiguousModelError, LM15Error, StreamAssemblyError, UnknownModelError, UnsupportedFeatureError } from "./errors.ts";
+import { AmbiguousModelError, CapabilityError, LM15Error, StreamAssemblyError, UnknownModelError, UnsupportedFeatureError } from "./errors.ts";
 import { serdeForKind } from "./serde.ts";
 import { Response } from "./types/response.ts";
 import { VOCABULARIES } from "./vocab.ts";
@@ -76,6 +76,7 @@ function errorReply(id: JsonValue, error: unknown): JsonObject {
   const out: JsonObject = { type: err?.name ?? "Error", message: String(err?.message ?? exc) };
   if (exc instanceof LM15Error) {
     out["code"] = exc.code;
+    if (exc instanceof CapabilityError && exc.feature) out["feature"] = exc.feature;
     if (exc instanceof StreamAssemblyError && exc.partial) out["partial_response"] = Response.toJSON(exc.partial);
     if (exc instanceof UnknownModelError || exc instanceof AmbiguousModelError) {
       out["model"] = exc.model;

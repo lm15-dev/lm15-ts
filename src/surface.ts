@@ -5,6 +5,13 @@
  */
 export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object.freeze(
   {
+    "Adaptation": [
+      "field",
+      "action",
+      "reason",
+      "asked",
+      "applied"
+    ],
     "ApiKey": [
       "kind"
     ],
@@ -117,6 +124,9 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "top_p",
       "top_k",
       "stop",
+      "seed",
+      "frequency_penalty",
+      "presence_penalty",
       "response_format",
       "tool_choice",
       "reasoning",
@@ -362,7 +372,9 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "finish_reason",
       "usage",
       "logprobs",
-      "provider_data"
+      "logprobs_complete",
+      "provider_data",
+      "adaptations"
     ],
     "SpeechGenerationRequest": [
       "model",
@@ -395,12 +407,14 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
     "StreamStartEvent": [
       "type",
       "id",
-      "model"
+      "model",
+      "adaptations"
     ],
     "TextDelta": [
       "type",
       "text",
       "logprobs",
+      "logprobs_complete",
       "part_index"
     ],
     "TextPart": [

@@ -4,7 +4,10 @@
  * xAI, ollama, vLLM, …). Server quirks are `OpenAIChatCompat` presets.
  */
 
-import { ProviderLM, type LMOptions } from "../adapter.ts";
+import { AdaptationScope, adapt, collecting, nearestEffort, type Adaptation } from "../adaptation.ts";
+import { ProviderLM, attachErrorMetadata, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments, type Judgment } from "../judgments.ts";
+import { JUDGMENT_PREFILL, foldJudgment, judgmentAsk, keyPaths, scorePayload, scoresFromBody, tokenizePayload, tokensFromBody, trieNodes } from "./token_trie.ts";
 import { OPENAI_CHAT_API, type AccessPolicy } from "../auth/policy.ts";
 import {
   OPENAI_CHAT_PRESET_BASE_URLS,
@@ -69,7 +72,7 @@ import {
   type ToolResultContentPart,
   type ToolResultPart,
 } from "../types/parts.ts";
-import { Response } from "../types/response.ts";
+import { Response, Usage } from "../types/response.ts";
 import type { CacheRetention, FinishReason, ImageDetail, ReasoningEffort, ReasoningSummary, ToolChoiceMode } from "../vocab.ts";
 import type { StreamEvent } from "../types/stream.ts";
 import {
@@ -143,7 +146,7 @@ function chatContentParts(msg: Message, provider: string, forceArray: boolean): 
     else if (MEDIA_KINDS.has(part.type)) {
       throw new UnsupportedFeatureError(
         `${provider}: a ${part.type} part in a ${msg.role} message has no slot on the Chat Completions wire (text and image_url only); the OpenAI Responses, Anthropic and Gemini dialects carry it (MAP-10)`,
-        { provider },
+        { provider, feature: `messages[*].parts[${part.type}]` },
       );
     } else out.push({ type: "text", text: partsToText([part], { provider }) });
   }
@@ -312,7 +315,7 @@ export class OpenAIChatLM extends ProviderLM {
       if (!wireType) {
         throw new UnsupportedFeatureError(
           `${this.provider}: builtin tool ${JSON.stringify(tool.name)} has no Groq wire mapping — supported: ${JSON.stringify(Object.keys(GROQ_BUILTIN_MAP).sort())}`,
-          { provider: this.provider },
+          { provider: this.provider, feature: `tools[${tool.name}]` },
         );
       }
       const entry: JsonObject = { type: wireType };
@@ -321,7 +324,7 @@ export class OpenAIChatLM extends ProviderLM {
     }
     throw new UnsupportedFeatureError(
       `${this.provider}: builtin tool ${JSON.stringify(tool.name)} is not supported on this server — the Chat Completions wire carries function tools only, and unproven servers may silently ignore unknown tool types. Use compat='groq' for Groq's server-executed tools, or the OpenAI Responses / Anthropic / Gemini providers`,
-      { provider: this.provider },
+      { provider: this.provider, feature: `tools[${tool.name}]` },
     );
   }
 
@@ -337,13 +340,18 @@ export class OpenAIChatLM extends ProviderLM {
       if (builtins.length > 0) {
         throw new UnsupportedFeatureError(
           `${this.provider}: cannot force builtin tools ${JSON.stringify(builtins)} — the Chat Completions wire has no hosted-tool tool_choice form (OpenAI Responses and Anthropic carry it)`,
-          { provider: this.provider },
+          { provider: this.provider, feature: "config.tool_choice.allowed" },
         );
       }
       if (entries.length === 1 && mode === "required") return { type: "function", function: { name: entries[0]!.name } };
       return { type: "allowed_tools", allowed_tools: { mode, tools: entries.map((t) => ({ type: "function", function: { name: t.name } })) } };
     }
     return mode === "required" ? "required" : "auto";
+  }
+
+  /** MAP-14 §4: this server scores named tokens (the token-trie driver delivers probabilities). */
+  protected scoresNamedTokens(compat: ResolvedOpenAIChatCompat): boolean {
+    return compat.tokenScoring === "logprob_token_ids";
   }
 
   payload(request: Request, stream: boolean): JsonObject {
@@ -358,10 +366,15 @@ export class OpenAIChatLM extends ProviderLM {
     if (config.temperature !== undefined) payload["temperature"] = wireFloat(config.temperature);
     if (config.topP !== undefined) payload["top_p"] = wireFloat(config.topP);
     if (config.topK !== undefined) {
-      throw new UnsupportedFeatureError(`${this.provider}: config.top_k has no field on the Chat Completions wire; servers that accept top_k take it through extensions`, {
+      // MAP-13: a sampling hint with no field on this wire; servers that take one do so through extensions.
+      adapt("config.top_k", "dropped", "the Chat Completions wire has no top_k (Anthropic and Gemini carry it; servers that accept it take it through extensions)", {
+        asked: config.topK,
         provider: this.provider,
       });
     }
+    if (config.seed !== undefined) payload["seed"] = config.seed;
+    if (config.frequencyPenalty !== undefined) payload["frequency_penalty"] = wireFloat(config.frequencyPenalty);
+    if (config.presencePenalty !== undefined) payload["presence_penalty"] = wireFloat(config.presencePenalty);
     if (config.stop && config.stop.length > 0) payload["stop"] = [...config.stop];
     if (config.logprobs !== undefined) {
       payload["logprobs"] = true;
@@ -378,58 +391,110 @@ export class OpenAIChatLM extends ProviderLM {
       }
       if (wire.length > 0) payload["tools"] = wire;
     }
-    const toolChoice = this.toolChoicePayload(request);
+    let toolChoice = this.toolChoicePayload(request);
     if (toolChoice !== undefined) {
       const tc = config.toolChoice!;
       const mode = tc.mode ?? "auto";
       if (compat.forcedToolChoice === "reject" && (mode !== "auto" || (tc.allowed && tc.allowed.length > 0))) {
-        throw new UnsupportedFeatureError(
-          `${this.provider}: tool_choice mode=${JSON.stringify(mode)}${tc.allowed && tc.allowed.length > 0 ? ` allowed=${JSON.stringify([...tc.allowed])}` : ""} is silently ignored by this server (only 'auto' is honoured); omit tool_choice, or send only the tools you want callable`,
-          { provider: this.provider },
-        );
+        // The server documents tool_choice=auto only and ignores every other
+        // form without an error (Z.AI, live 2026-09-03: required → text
+        // answer, none → a tool call). MAP-13: "none" and an allowlist have a
+        // client-side form — send no tools / only those tools — and are
+        // recorded; "required" cannot be forced and the program depends on
+        // the call (rule 4b): refused.
+        if (mode === "required") {
+          throw new UnsupportedFeatureError(
+            `${this.provider}: tool_choice mode='required' is silently ignored by this server (only 'auto' is honoured) and a forced call cannot be reproduced client-side`,
+            { provider: this.provider, feature: "config.tool_choice.mode" },
+          );
+        }
+        if (mode === "none") {
+          adapt("config.tool_choice.mode", "client_side", "this server ignores tool_choice='none'; no tools were sent, which is the same outcome", {
+            asked: "none",
+            applied: "no tools sent",
+            provider: this.provider,
+          });
+          delete payload["tools"];
+        } else {
+          const allowed = tc.allowed ?? [];
+          const kept = ((payload["tools"] as JsonObject[] | undefined) ?? []).filter((t) => allowed.includes(str((t["function"] as JsonObject | undefined)?.["name"])));
+          adapt("config.tool_choice.allowed", "client_side", "this server ignores tool_choice allowlists; only the allowed tools were sent, which is what the allowlist means", {
+            asked: [...allowed],
+            applied: kept.map((t) => str((t["function"] as JsonObject)["name"])),
+            provider: this.provider,
+          });
+          payload["tools"] = kept;
+        }
+        toolChoice = "auto";
       }
       payload["tool_choice"] = toolChoice as JsonObject;
     }
     if (config.toolChoice?.parallel !== undefined) payload["parallel_tool_calls"] = config.toolChoice.parallel;
     if (config.responseFormat) {
       if (compat.jsonSchema === "reject" && config.responseFormat.type !== "json_object") {
-        throw new UnsupportedFeatureError(
-          `${this.provider}: response_format type ${JSON.stringify(config.responseFormat.type)} is silently ignored by this server; use {'type': 'json_object'} and describe the shape in the prompt`,
-          { provider: this.provider },
+        // The server accepts response_format.type=json_schema and ignores it
+        // (Z.AI, live 2026-09-03: HTTP 200, fenced JSON with keys the schema
+        // never named). json_object is honoured. MAP-13: omit and record.
+        adapt(
+          "config.response_format",
+          "dropped",
+          `this server accepts response_format type ${JSON.stringify(config.responseFormat.type)} and does not apply it; use {'type': 'json_object'} and describe the shape in the prompt`,
+          { asked: config.responseFormat as unknown as JsonObject, provider: this.provider },
         );
+      } else {
+        // MAP-14: the judgment convention goes verbatim on the chat dialect
+        // (api.openai.com strict honours it, receipted 2026-09-17); a server
+        // that scores named tokens delivers probabilities through the trie
+        // driver, every other one answers with the pick only.
+        if (!this.scoresNamedTokens(compat)) noteUnmeasurableProbabilities(request, this.provider);
+        payload["response_format"] = responseFormatToChat(config.responseFormat);
       }
-      payload["response_format"] = responseFormatToChat(config.responseFormat);
     }
     if (config.reasoning) {
-      const reasoning = config.reasoning;
+      let reasoning: Reasoning | undefined = config.reasoning;
       if (compat.thinkingFormat === "none") {
-        // No reasoning dial on this server (ollama / LM Studio). MAP-5 and
-        // MAP-7 rule 2: a dial the caller set and the wire cannot carry is
-        // a raise, never an omission (cases/ollama/reasoning_effort_refused.json;
-        // until 2026-09-11 this sent the request with the dial dropped).
-        throw new UnsupportedFeatureError(
-          `${this.provider}: reasoning.effort=${JSON.stringify(reasoning.effort)} has no field on this server (compat thinking_format='none'); omit config.reasoning, or pass the server's own knob through extensions`,
-          { provider: this.provider },
+        // No reasoning dial on this server. MAP-13: the dial is dropped and
+        // recorded — the model may reason at its own default and the tokens
+        // show in usage. (The 2026-09-11 refusal rested on an ollama preset
+        // written without a receipt; Ollama maps reasoning_effort to `think`
+        // — THEORY.md §3.17.)
+        adapt(
+          "config.reasoning",
+          "dropped",
+          "this server has no reasoning dial on its wire (compat thinking_format='none'); the model reasons at its own default; pass the server's own knob through extensions",
+          { asked: { effort: reasoning.effort }, provider: this.provider },
         );
+        reasoning = undefined;
       }
-      if (reasoning.effort !== "off") {
+      if (reasoning !== undefined && reasoning.effort !== "off") {
+        // MAP-7: verbatim effort; no budget on this wire; summary is a
+        // visibility knob where one exists (Groq include_reasoning).
         if (reasoning.thinkingBudget !== undefined) {
-          throw new UnsupportedFeatureError(`${this.provider}: reasoning.thinking_budget is not supported — the Chat Completions wire has no thinking token budget; use effort`, {
+          adapt("config.reasoning.thinking_budget", "dropped", "the Chat Completions wire has no thinking token budget; effort carries the intent", {
+            asked: reasoning.thinkingBudget,
             provider: this.provider,
           });
         }
         if (reasoning.summary === "concise" || reasoning.summary === "detailed") {
-          throw new UnsupportedFeatureError(
-            `${this.provider}: reasoning.summary=${JSON.stringify(reasoning.summary)} is an OpenAI Responses detail level; the Chat Completions wire has none (use 'auto')`,
-            { provider: this.provider },
-          );
+          adapt("config.reasoning.summary", "substituted", "the Chat Completions wire has no summary detail levels; 'auto' is what it shows", {
+            asked: reasoning.summary,
+            applied: "auto",
+            provider: this.provider,
+          });
+          reasoning = { ...reasoning, summary: "auto" };
         }
-        const effort = reasoning.effort;
+        let effort: string = reasoning.effort;
         if (compat.reasoningEfforts !== undefined && !compat.reasoningEfforts.includes(effort)) {
-          throw new UnsupportedFeatureError(
-            `${this.provider}: reasoning.effort=${JSON.stringify(effort)} has no level on this server (it accepts ${compat.reasoningEfforts.join(", ")}) and would be accepted silently`,
-            { provider: this.provider },
+          // MAP-13: clamp to the nearest declared level; the server would have
+          // accepted the word silently (Moonshot answered 200 to `medium` and to `bogus`, live 2026-09-03).
+          const nearest = nearestEffort(effort, compat.reasoningEfforts);
+          adapt(
+            "config.reasoning.effort",
+            "clamped",
+            `this server has no ${JSON.stringify(effort)} level (it accepts ${compat.reasoningEfforts.join(", ")}) and would have accepted the word silently`,
+            { asked: effort, applied: nearest, provider: this.provider },
           );
+          effort = nearest;
         }
         if (compat.builtinTools === "groq" && reasoning.summary === "auto") payload["reasoning_format"] = "parsed";
         switch (compat.thinkingFormat) {
@@ -453,7 +518,7 @@ export class OpenAIChatLM extends ProviderLM {
             payload["chat_template_kwargs"] = { enable_thinking: true, preserve_thinking: true };
             break;
         }
-      } else {
+      } else if (reasoning !== undefined) {
         switch (compat.thinkingFormat) {
           case "reasoning_effort":
             payload["reasoning_effort"] = "none";
@@ -486,9 +551,9 @@ export class OpenAIChatLM extends ProviderLM {
     return payload;
   }
 
-  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  wireRequest(request: Request, stream: boolean): EmitOptions {
     request = Request.create(request);
-    return this.emit({
+    return {
       method: "POST",
       url: `${this.base()}/chat/completions`,
       endpoint: "chat/completions",
@@ -496,7 +561,137 @@ export class OpenAIChatLM extends ProviderLM {
       model: request.model,
       headers: this.headers(),
       payload: this.payload(request, stream),
+    };
+  }
+
+  // ─── Judgments by candidate-sequence likelihood (MAP-14 §4) ───────
+  // The pure hooks live in token_trie.ts; this is the driver, sequenced
+  // like files and batch: tokenize calls, ONE scoring call, the fold.
+
+  private judgmentsViaTokenScoring(request: Request): boolean {
+    const policy = request.config?.probabilities;
+    return this.scoresNamedTokens(this.compatFor(request.model)) && (policy === "if_available" || policy === "required") && requestJudgments(request).size > 0;
+  }
+
+  /** The conversation, the judgment's question as a final user turn, and the assistant's answer so far (prefill + key). */
+  protected judgmentMessages(request: Request, j: Judgment, answer: string): JsonObject[] {
+    const messages = this.buildMessages(request, this.compatFor(request.model));
+    messages.push({ role: "user", content: judgmentAsk(j) });
+    messages.push({ role: "assistant", content: answer });
+    return messages;
+  }
+
+  protected judgmentTokenizeRequest(request: Request, j: Judgment, answer: string, continueFinal: boolean): Promise<TransportRequest> {
+    const root = this.base().replace(/\/v1$/, "");
+    return this.emit({
+      method: "POST",
+      url: `${root}/tokenize`,
+      endpoint: "tokenize",
+      model: request.model,
+      headers: this.headers(),
+      payload: tokenizePayload(request.model, this.judgmentMessages(request, j, answer), continueFinal),
     });
+  }
+
+  protected judgmentScoreRequest(model: string, prompts: number[][], tokenIds: number[]): Promise<TransportRequest> {
+    return this.emit({ method: "POST", url: `${this.base()}/completions`, endpoint: "completions", model, headers: this.headers(), payload: scorePayload(model, prompts, tokenIds) });
+  }
+
+  private judgmentAdaptations(): readonly Adaptation[] {
+    const scope = new AdaptationScope(this.adaptations, this.provider);
+    collecting(scope, () =>
+      adapt(
+        "config.response_format",
+        "client_side",
+        "each judgment is asked as a final user turn and every declared key is scored as a token path (candidate-sequence likelihood, MAP-14 §4) instead of a generated JSON object; questions are scored independently",
+        { provider: this.provider },
+      ),
+    );
+    return scope.records;
+  }
+
+  override async complete(request: Request, opts: { signal?: AbortSignal } = {}): Promise<Response> {
+    request = Request.create(request);
+    if (!this.judgmentsViaTokenScoring(request)) return super.complete(request, opts);
+    const adaptations = this.judgmentAdaptations();
+    const found = requestJudgments(request);
+    const tokenized: Array<{ j: Judgment; prefix: number[]; paths: Map<string, number[]> }> = [];
+    let calls = 0;
+    const tokens = async (j: Judgment, answer: string, continueFinal: boolean): Promise<number[]> => {
+      calls++;
+      return tokensFromBody((await this.sendOk(await this.judgmentTokenizeRequest(request, j, answer, continueFinal))).text());
+    };
+    for (const j of found.values()) {
+      const prefix = await tokens(j, JUDGMENT_PREFILL, true);
+      const keys = new Map<string, readonly [number[], number[]]>();
+      for (const k of j.keys) keys.set(k, [await tokens(j, `${JUDGMENT_PREFILL} ${k}`, true), await tokens(j, `${JUDGMENT_PREFILL} ${k}`, false)]);
+      tokenized.push({ j, prefix, paths: keyPaths(prefix, keys) });
+    }
+    // One batched scoring call over every trie node of every judgment.
+    const prompts: number[][] = [];
+    const meta: Array<{ index: number; key: string }> = [];
+    const union = new Set<number>();
+    const nodesPer = tokenized.map(({ paths }) => trieNodes(paths));
+    tokenized.forEach(({ prefix }, index) => {
+      for (const [key, node] of nodesPer[index]!) {
+        prompts.push([...prefix, ...node.prefix]);
+        meta.push({ index, key });
+        for (const t of node.children) union.add(t);
+      }
+    });
+    const { scores, usage, model } = scoresFromBody((await this.sendOk(await this.judgmentScoreRequest(request.model, prompts, [...union]))).text(), prompts.length);
+    const tables: Array<Map<string, Map<number, number>>> = tokenized.map(() => new Map());
+    for (const [i, { index, key }] of meta.entries()) {
+      const got = scores[i]!;
+      const children = nodesPer[index]!.get(key)!.children;
+      for (const t of children) if (!got.has(t)) return this.judgmentUnmeasured(request, opts);
+      tables[index]!.set(key, new Map([...children].map((t) => [t, got.get(t)!])));
+    }
+    const value: JsonObject = {};
+    const probabilities: Record<string, Record<string, number>> = {};
+    const coverage: Record<string, number> = {};
+    tokenized.forEach(({ j, paths }, index) => {
+      const folded = foldJudgment(paths, tables[index]!);
+      probabilities[j.name] = folded.distribution;
+      coverage[j.name] = folded.coverage;
+      let best = j.keys[0]!;
+      for (const k of j.keys) if (folded.distribution[k]! > folded.distribution[best]!) best = k;
+      value[j.name] = j.kind === "boolean" ? best === "true" : j.kind === "ordered" ? Number(best) : best;
+    });
+    const part = normalizePart({ type: "data", value, probabilities, method: "candidate_sequence_likelihood" });
+    const response = new Response({
+      model: model ?? request.model,
+      message: { role: "assistant", parts: [part] },
+      finishReason: "stop",
+      usage: Usage.create({ inputTokens: Number(usage["prompt_tokens"] ?? 0) || 0, outputTokens: Number(usage["completion_tokens"] ?? 0) || 0 }),
+      providerData: { coverage, judgments: { nodes: prompts.length, tokenize_calls: calls, method: "candidate_sequence_likelihood" } },
+    });
+    return this.finishResponse(request, response, adaptations);
+  }
+
+  /**
+   * The server answered 200 without the requested token ids: it dropped
+   * `logprob_token_ids` (receipted on vLLM 0.25.1). `required` refuses;
+   * `if_available` answers by structured output instead and records it.
+   */
+  private async judgmentUnmeasured(request: Request, opts: { signal?: AbortSignal }): Promise<Response> {
+    if (request.config?.probabilities === "required") {
+      throw new UnsupportedFeatureError(`${this.provider}: config.probabilities='required' but this server ignored logprob_token_ids (vLLM < 0.29?); no distribution can be measured here`, {
+        provider: this.provider,
+        feature: "config.probabilities",
+      });
+    }
+    const scope = new AdaptationScope(this.adaptations, this.provider);
+    collecting(scope, () =>
+      adapt("config.probabilities", "dropped", "the server accepted the request and returned no log-probs for the requested token ids (logprob_token_ids ignored); answered by structured output instead", {
+        asked: request.config?.probabilities,
+        provider: this.provider,
+      }),
+    );
+    const built = await this.build(request, false);
+    const resp = await this.send(built.request, opts.signal);
+    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
+    return this.finishResponse(request, this.parseResponse(request, resp), [...scope.records, ...built.adaptations.filter((a) => a.field !== "config.probabilities")]);
   }
 
   // ─── Response ────────────────────────────────────────────────────
@@ -518,7 +713,7 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   parseResponse(request: Request, response: HttpResponse): Response {
-    return responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message));
+    return foldJudgments(responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message)), request);
   }
 
   /**
@@ -595,24 +790,27 @@ export class OpenAIChatLM extends ProviderLM {
 // key with no verdict is refused. Malformed input is ValueError / TypeError,
 // like the type system's own validators (MAP-12 rule 6).
 
-const INGEST_EXTENSIONS_KEYS = new Set(["seed", "logit_bias", "presence_penalty", "frequency_penalty", "metadata", "verbosity", "moderation", "provider"]);
+// Top-level keys forwarded verbatim into config.extensions: generation knobs
+// OpenAI documents that no canonical field expresses and that the builder
+// re-emits verbatim, so they round-trip. prediction: a latency hint
+// (predicted outputs); harmless verbatim on OpenAI (decision 2026-09-14 §4.9).
+const INGEST_EXTENSIONS_KEYS = new Set(["logit_bias", "metadata", "verbosity", "moderation", "provider", "prediction"]);
 
 const INGEST_REFUSED_KEYS: Readonly<Record<string, string>> = Object.freeze({
   n: "lm15 reads one choice per response; n>1 would silently lose choices — fan out in the caller",
-  functions: "the deprecated function-calling shape; declare tools with {type: function, function: {...}}",
-  function_call: "the deprecated function-calling shape; use tool_choice",
   audio: "audio output parameters have no canonical slot on the chat surface",
   modalities: "output modality selection has no canonical slot on the chat surface",
-  prediction: "predicted-output content has no canonical slot",
   web_search_options: "a server-executed search the chat dialect cannot map to parts (MAP-1); the Responses dialect carries web_search as a BuiltinTool",
-  top_k: "the Chat Completions wire has no top_k (the builder raises on Config.top_k for the same reason); servers that take it do so through extensions",
 });
 
 const INGEST_CALL_MODE_KEYS = new Set(["stream", "stream_options"]);
 
 const INGEST_CONFIG_KEYS = new Set([
   "model", "messages", "tools", "tool_choice", "parallel_tool_calls",
-  "max_completion_tokens", "max_tokens", "temperature", "top_p", "stop",
+  // functions / function_call: the deprecated function-calling shape, translated to tools / tool_choice (MAP-13: a pure spelling change).
+  "functions", "function_call",
+  "max_completion_tokens", "max_tokens", "temperature", "top_p", "top_k", "stop",
+  "seed", "frequency_penalty", "presence_penalty",
   "logprobs", "top_logprobs", "response_format", "service_tier", "store",
   "user", "safety_identifier", "user_id",
   "reasoning_effort", "reasoning", "thinking", "enable_thinking", "chat_template_kwargs", "reasoning_format",
@@ -627,6 +825,13 @@ const INGEST_AUDIO_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze
 
 function ingestRefuse(provider: string, what: string, why: string): UnsupportedFeatureError {
   return new UnsupportedFeatureError(`${provider}: ${what} cannot be carried by a canonical Request — ${why}`, { provider });
+}
+
+/** The deprecated `function_call` spelling → the `tool_choice` shape. */
+function toolChoiceFromFunctionCall(raw: unknown): unknown {
+  if (raw === "none" || raw === "auto") return raw;
+  if (isJsonObject(raw) && "name" in raw) return { type: "function", function: { name: raw["name"] } };
+  throw new ValueError(`function_call must be 'none', 'auto', or {name}; got ${JSON.stringify(raw)}`);
 }
 
 function ingestObject(value: unknown, where: string): JsonObject {
@@ -1121,6 +1326,10 @@ function ingestConfig(provider: string, body: JsonObject, compat: ResolvedOpenAI
   }
   if (present(body, "temperature") !== undefined) cfg["temperature"] = body["temperature"];
   if (present(body, "top_p") !== undefined) cfg["topP"] = body["top_p"];
+  if (present(body, "top_k") !== undefined) cfg["topK"] = body["top_k"];
+  if (present(body, "seed") !== undefined) cfg["seed"] = body["seed"];
+  if (present(body, "frequency_penalty") !== undefined) cfg["frequencyPenalty"] = body["frequency_penalty"];
+  if (present(body, "presence_penalty") !== undefined) cfg["presencePenalty"] = body["presence_penalty"];
   if (present(body, "service_tier") !== undefined) cfg["serviceTier"] = body["service_tier"];
   if (present(body, "store") !== undefined) cfg["store"] = body["store"];
   if (present(body, "stop") !== undefined) cfg["stop"] = body["stop"];
@@ -1129,7 +1338,12 @@ function ingestConfig(provider: string, body: JsonObject, compat: ResolvedOpenAI
   else if (logprobs !== undefined && logprobs !== false) throw new TypeError("logprobs must be a boolean");
   else if (present(body, "top_logprobs") !== undefined) throw new ValueError("top_logprobs requires logprobs: true");
   if (present(body, "response_format") !== undefined) cfg["responseFormat"] = ingestResponseFormat(provider, body["response_format"]);
-  cfg["toolChoice"] = ingestToolChoice(provider, present(body, "tool_choice"), present(body, "parallel_tool_calls"));
+  if ("function_call" in body && "tool_choice" in body) throw new ValueError("function_call and tool_choice cannot both be given");
+  cfg["toolChoice"] = ingestToolChoice(
+    provider,
+    "function_call" in body ? toolChoiceFromFunctionCall(body["function_call"]) : present(body, "tool_choice"),
+    present(body, "parallel_tool_calls"),
+  );
   const userKeys = ["user", "safety_identifier", "user_id"].filter((k) => k in body);
   if (userKeys.includes("user_id") && compat.userField !== "user_id") {
     throw ingestRefuse(provider, "'user_id'", `this server spells the end-user field ${JSON.stringify(compat.userField)}`);
@@ -1156,7 +1370,13 @@ function ingestOpenAIChat(provider: string, body: unknown, compat: ResolvedOpenA
   if (typeof model !== "string" || model === "") throw new ValueError("model must be a non-empty string");
   if (!("messages" in body)) throw new ValueError("messages is required");
   const rows = ingestRows(provider, body["messages"]);
-  const tools = ingestTools(provider, present(body, "tools"), compat);
+  if ("functions" in body && "tools" in body) throw new ValueError("functions and tools cannot both be given");
+  let rawTools = present(body, "tools");
+  if ("functions" in body) {
+    if (!Array.isArray(body["functions"])) throw new TypeError("functions must be an array");
+    rawTools = body["functions"].map((fn) => ({ type: "function", function: fn }));
+  }
+  const tools = ingestTools(provider, rawTools, compat);
   const config = ingestConfig(provider, body, compat, rows);
   return Request.create({
     model,
@@ -1196,7 +1416,7 @@ function responseFromChatBody(
       throw new UnsupportedFeatureError(
         `${provider}: the body carries ${choices.length} choices; a canonical Response is one message — ` +
         "name the choice to read (choice: i) and read each one, or send no n",
-        { provider },
+        { provider, feature: "n" },
       );
     }
     index = 0;
@@ -1269,11 +1489,21 @@ function responseFromChatBody(
  * not know are neither refused nor lost: the whole body is `providerData`.
  * No compat is taken: the response shape does not vary by server.
  */
-export function responseFromOpenAIChat(body: unknown, opts: { model?: string; choice?: number } = {}): Response {
-  return responseFromChatBody("openai-chat", body, opts, (code, message) => {
+export function responseFromOpenAIChat(body: unknown, opts: { model?: string; choice?: number; responseFormat?: ResponseFormat } = {}): Response {
+  const resp = responseFromChatBody("openai-chat", body, opts, (code, message) => {
     const cls = RESPONSE_ERROR_CODE_MAP[code] ?? ServerError;
     return new cls(message || code || "provider error", { provider: "openai-chat", providerCode: code || null });
   });
+  return opts.responseFormat ? foldJudgments(resp, { model: resp.model, messages: [], config: { responseFormat: opts.responseFormat } }) : resp;
+}
+
+/** MAP-14 §3: the single text part of a judgment answer becomes a DataPart. */
+function foldJudgments(resp: Response, request: Request): Response {
+  const found = requestJudgments(request);
+  if (found.size === 0) return resp;
+  const parts = replaceTextWithData(resp.message.parts, found);
+  if (parts === resp.message.parts) return resp;
+  return resp.with({ message: { ...resp.message, parts } });
 }
 
 /**

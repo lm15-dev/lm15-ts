@@ -151,7 +151,14 @@ export interface OpenAIChatCompat {
   readonly userField?: Auto<"user" | "user_id" | "safety_identifier">;
   readonly forcedToolChoice?: Auto<"send" | "reject">;
   readonly jsonSchema?: Auto<"send" | "reject">;
-  /** The server's native effort words when it does NOT refuse the others (MAP-7 rule 2). */
+  /**
+   * MAP-14 §4: can the server score named tokens (`logprob_token_ids` on the
+   * completions endpoint) so lm15 can deliver a distribution over declared
+   * keys? Receipted on vLLM 0.29.0 (honoured) and 0.25.1 (200, silently
+   * absent) 2026-09-17; the response-side check catches the latter.
+   */
+  readonly tokenScoring?: Auto<"none" | "logprob_token_ids">;
+  /** The server's native effort words when it does NOT refuse the others (MAP-13: a word with no level is clamped to the nearest and recorded). */
   readonly reasoningEfforts?: readonly string[];
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
@@ -175,6 +182,7 @@ export interface ResolvedOpenAIChatCompat {
   readonly userField: "user" | "user_id" | "safety_identifier";
   readonly forcedToolChoice: "send" | "reject";
   readonly jsonSchema: "send" | "reject";
+  readonly tokenScoring: "none" | "logprob_token_ids";
   readonly reasoningEfforts?: readonly string[];
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
@@ -189,16 +197,33 @@ const CHAT_BASE = {
 
 export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = Object.freeze({
   openai: { ...CHAT_BASE, maxTokensField: "max_completion_tokens", thinkingFormat: "reasoning_effort", cacheControl: "openai", toolResultMedia: "reject" },
-  ollama: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "none", cacheControl: "none", toolResultMedia: "reject" },
-  // LM Studio: ollama's wire policy (lmstudio.ai docs list the same Chat
-  // Completions fields: max_tokens, no reasoning dial) at its own documented
-  // address, http://localhost:1234/v1. Until 2026-09-11 the name was an alias
-  // of "ollama" and took ollama's port. No live receipt for the policy yet.
-  get lmstudio() { return this.ollama; },
+  // ollama: max_tokens; reasoning_effort (and `reasoning: {effort}`) on the
+  // wire, mapped to Ollama's `think` by openai/openai.go
+  // `thinkFromReasoningEffort` (lm15-contract/research/tool-result-content/
+  // sources/ollama.txt:536-560): none → think:false, minimal → low,
+  // low|medium|high|max verbatim, xhigh → max; an unknown word is a 400.
+  // Until 2026-09-14 this said thinkingFormat "none" with "no receipt";
+  // THEORY.md §3.17. Source receipt; live receipt still owed.
+  ollama: {
+    ...CHAT_BASE,
+    maxTokensField: "max_tokens",
+    thinkingFormat: "reasoning_effort",
+    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    cacheControl: "none",
+    toolResultMedia: "reject",
+  },
+  // LM Studio: its own policy at http://localhost:1234/v1. HYPOTHESIS, no
+  // receipt (THEORY.md §3.17): lmstudio.ai lists max_tokens and no reasoning
+  // dial, so thinkingFormat "none" — under MAP-13 a set dial is dropped and
+  // recorded, never refused on this unverified line. Until 2026-09-11 the
+  // name was an alias of "ollama".
+  lmstudio: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "none", cacheControl: "none", toolResultMedia: "reject" },
   groq: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", builtinTools: "groq", cacheControl: "none", toolResultMedia: "reject" },
   openrouter: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "openrouter", cacheControl: "openai", toolResultMedia: "reject" },
   xai: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "deepseek", cacheControl: "none", toolResultMedia: "images" },
-  vllm: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", cacheControl: "none", toolResultMedia: "reject" },
+  // MAP-14 §4, receipts/2026-09-17-judgments/vllm-0.29-lfm-trie.json (honoured)
+  // and vllm-0.25.1-qwen-trie-negative.json (silently absent; caught on parse).
+  vllm: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", cacheControl: "none", toolResultMedia: "reject", tokenScoring: "logprob_token_ids" },
   sglang: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", cacheControl: "none", toolResultMedia: "reject" },
   deepseek: {
     ...CHAT_BASE,
@@ -284,6 +309,7 @@ export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): Resolve
     userField: pick(partial.userField, "user"),
     forcedToolChoice: pick(partial.forcedToolChoice, "send"),
     jsonSchema: pick(partial.jsonSchema, "send"),
+    tokenScoring: pick(partial.tokenScoring, "none"),
     ...(partial.reasoningEfforts ? { reasoningEfforts: partial.reasoningEfforts } : {}),
     ...(partial.routing ? { routing: partial.routing } : {}),
     ...(partial.extensions ? { extensions: partial.extensions } : {}),

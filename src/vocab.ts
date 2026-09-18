@@ -61,12 +61,21 @@ export const ERROR_CODES = [
   "transport",
   "lock_timeout",
   "stream_assembly",
+  "collection_limit",
   "provider",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export const STREAM_EVENT_TYPES = ["start", "delta", "end", "error"] as const;
 export type StreamEventType = (typeof STREAM_EVENT_TYPES)[number];
+
+/** MAP-13: what an adapter did when the wire could not take a setting as asked. */
+export const ADAPTATION_ACTIONS = ["dropped", "clamped", "substituted", "client_side", "satisfied", "defaulted"] as const;
+export type AdaptationAction = (typeof ADAPTATION_ACTIONS)[number];
+
+/** MAP-13: the `adaptations=` switch on every LM and on `RouterConfig`. */
+export const ADAPTATION_POLICIES = ["note", "silent", "refuse"] as const;
+export type AdaptationPolicy = (typeof ADAPTATION_POLICIES)[number];
 
 export const BATCH_STATUSES = ["queued", "running", "cancelling", "completed", "failed", "cancelled", "expired"] as const;
 export type BatchStatus = (typeof BATCH_STATUSES)[number];
@@ -157,6 +166,10 @@ export const VOCABULARIES: Readonly<Record<string, readonly string[]>> = Object.
   ReasoningSummary: REASONING_SUMMARIES,
   ErrorCode: ERROR_CODES,
   StreamEventType: STREAM_EVENT_TYPES,
+  AdaptationAction: ADAPTATION_ACTIONS,
+  AdaptationPolicy: ADAPTATION_POLICIES,
+  ProbabilityPolicy: PROBABILITY_POLICIES,
+  JudgmentMethod: JUDGMENT_METHODS,
   BatchStatus: BATCH_STATUSES,
   BATCH_TERMINAL_STATUSES,
   BatchOutcome: BATCH_OUTCOMES,

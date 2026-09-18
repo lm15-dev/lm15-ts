@@ -4,6 +4,7 @@
  * Responses input blocks, and the usage/logprob mappings.
  */
 
+import { adapt } from "../adaptation.ts";
 import { isJsonObject, type JsonObject, type JsonValue } from "../json.ts";
 import {
   AuthError,
@@ -156,7 +157,33 @@ export function cacheBreakpointIndex(request: Request, cacheControl: string): nu
   const cache = request.config?.cache;
   if (!cache || cache.mode === "off" || cache.prefixUntilIndex === undefined) return undefined;
   if (cacheControl !== "openai") return undefined;
-  return Math.min(cache.prefixUntilIndex, request.messages.length - 1);
+  const asked = Math.min(cache.prefixUntilIndex, request.messages.length - 1);
+  // MAP-13: the wire carries the mark on a text block of a user/developer
+  // message only. A mark asked for elsewhere walks back to the nearest
+  // eligible message ("cache up to here" — the nearest boundary before
+  // "here" is the obvious answer); with none, the mark is dropped and
+  // implicit caching still applies. Called ONCE per build: it may record.
+  for (let index = asked; index >= 0; index--) {
+    const msg = request.messages[index]!;
+    const last = msg.parts[msg.parts.length - 1];
+    if (msg.role === "assistant" || msg.role === "tool" || !last || last.type !== "text") continue;
+    if (index !== asked) {
+      adapt(
+        "config.cache.prefix_until_index",
+        "substituted",
+        `message ${asked} is a ${request.messages[asked]!.role} message or does not end with text; the Responses wire marks text blocks of user/developer messages only, so the mark moved to the nearest eligible message before it`,
+        { asked, applied: index },
+      );
+    }
+    return index;
+  }
+  adapt(
+    "config.cache.prefix_until_index",
+    "dropped",
+    `no user/developer message ending with text at or before message ${asked}; the Responses wire marks text blocks only (implicit caching still applies)`,
+    { asked },
+  );
+  return undefined;
 }
 
 export function cacheStablePrefix(request: Request, cacheControl: string): boolean {
@@ -180,7 +207,7 @@ export function cacheCommonPayload(request: Request, payload: JsonObject, cacheC
     if (cache.resource !== undefined) {
       throw new UnsupportedFeatureError(
         `${provider}: cache.resource is not supported — this provider has no stored-cache tier; it caches every prompt prefix automatically`,
-        { provider },
+        { provider, feature: "config.cache.resource" },
       );
     }
     return;
@@ -197,7 +224,7 @@ export function cacheCommonPayload(request: Request, payload: JsonObject, cacheC
   if (cache.resource !== undefined) {
     throw new UnsupportedFeatureError(
       `${provider}: cache.resource is not supported — this provider has no stored-cache tier; it caches by marks on blocks (prefix / prefix_until_index) and automatically`,
-      { provider },
+      { provider, feature: "config.cache.resource" },
     );
   }
 }
@@ -205,7 +232,7 @@ export function cacheCommonPayload(request: Request, payload: JsonObject, cacheC
 export function breakpointUnsupported(provider: string, index: number, role: string): UnsupportedFeatureError {
   return new UnsupportedFeatureError(
     `${provider}: cache.prefix_until_index=${index} points at a ${role} message whose last block is not text — the wire carries prompt_cache_breakpoint on text input blocks only. Point the prefix at a user/developer message that ends with text, or omit prefix_until_index (implicit caching still applies).`,
-    { provider },
+    { provider, feature: "config.cache.prefix_until_index" },
   );
 }
 

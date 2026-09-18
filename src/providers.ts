@@ -10,6 +10,7 @@ import { AnthropicLM, ClaudeCodeLM } from "./dialects/anthropic.ts";
 import { GeminiLM } from "./dialects/gemini.ts";
 import { OpenAIChatLM } from "./dialects/openai_chat.ts";
 import { OpenAICodexLM, OpenAILM } from "./dialects/openai_responses.ts";
+import { TypeSafeLM } from "./dialects/typesafe.ts";
 import { XaiLM } from "./dialects/xai.ts";
 
 export interface AdapterOptions extends LMOptions {
@@ -49,5 +50,7 @@ export function adapterForDefinition(definition: ProviderDefinition, opts: Adapt
       return new AnthropicLM({ ...base, ...bound, ...compat });
     case "gemini":
       return new GeminiLM({ ...base, ...bound });
+    case "typesafe":
+      return new TypeSafeLM(base);
   }
 }

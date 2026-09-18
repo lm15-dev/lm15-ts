@@ -9,7 +9,8 @@
 import { canonicalFactory, canonicalValue } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, parseJson, type JsonObject, type JsonValue } from "../json.ts";
 import { ERROR_CODES, FINISH_REASONS, type ErrorCode, type FinishReason } from "../vocab.ts";
-import { Message, normalizeMessage, type CitationPart, type Part, type TextPart, type ToolCallPart } from "./parts.ts";
+import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
+import { Message, normalizeMessage, type CitationPart, type DataPart, type Part, type TextPart, type ToolCallPart } from "./parts.ts";
 import {
   ValueError,
   absent,
@@ -68,6 +69,7 @@ function normalizeUsageValue(input: unknown): Usage {
 }
 
 const EMPTY_USAGE: Usage = canonicalValue("usage", Object.freeze({}));
+const EMPTY_ADAPTATIONS: readonly Adaptation[] = Object.freeze([]);
 
 export function isEmptyUsage(usage: Usage | undefined): boolean {
   return usage === undefined || USAGE_FIELDS.every(([camel]) => usage[camel] === undefined);
@@ -227,7 +229,11 @@ export interface ResponseFields {
   readonly finishReason: FinishReason;
   readonly usage?: Usage | undefined;
   readonly logprobs?: readonly TokenLogprob[] | null | undefined;
+  /** `false`: local editing (a client-side stop) left retained text without its original scores. */
+  readonly logprobsComplete?: boolean | undefined;
   readonly providerData?: JsonObject | null | undefined;
+  /** MAP-13: what the wire got that differs from what was asked; empty when the request went out as written. */
+  readonly adaptations?: readonly Adaptation[] | null | undefined;
 }
 
 export class Response {
@@ -237,10 +243,14 @@ export class Response {
   readonly message: Message;
   readonly finishReason: FinishReason;
   readonly usage: Usage;
-  /** Decoding telemetry; `undefined` = the provider did not report. */
+  /** Decoding telemetry; `undefined` = the provider did not report (or local editing removed every usable score). */
   readonly logprobs: readonly TokenLogprob[] | undefined;
+  /** `false` means a client-side cut left retained text without its scores; `true` does not promise the provider supplied any. */
+  readonly logprobsComplete: boolean;
   /** The raw provider body, verbatim. Not part of canonical JSON. */
   readonly providerData: JsonObject | undefined;
+  /** MAP-13: the record of what differs from what was asked. Data, never printed. */
+  readonly adaptations: readonly Adaptation[];
 
   constructor(fields: ResponseFields) {
     this.id = optionalString(fields.id, "Response.id", false);
@@ -251,8 +261,45 @@ export class Response {
     this.finishReason = requireOneOf(FINISH_REASONS, fields.finishReason, "finish reason");
     this.usage = normalizeUsage(fields.usage);
     this.logprobs = normalizeLogprobs(fields.logprobs, "Response.logprobs");
+    if (fields.logprobsComplete !== undefined && typeof fields.logprobsComplete !== "boolean") throw new TypeError("Response.logprobs_complete must be a bool");
+    this.logprobsComplete = fields.logprobsComplete ?? true;
     this.providerData = optionalJsonObject(fields.providerData, "provider_data");
+    this.adaptations = normalizeAdaptations(fields.adaptations, "Response.adaptations") ?? EMPTY_ADAPTATIONS;
     Object.freeze(this);
+  }
+
+  /** The structured answer of a judgment request (MAP-14): the first DataPart's value, else the parsed JSON text. */
+  get data(): JsonValue | undefined {
+    const part = this.dataPart;
+    if (part) return part.value;
+    return this.json;
+  }
+
+  /** The DataPart of a judgment answer, when the wire delivered one. */
+  get dataPart(): DataPart | undefined {
+    return this.message.parts.find((p): p is DataPart => p.type === "data");
+  }
+
+  /** `{field: {key: probability}}` when the provider measured a distribution; `undefined` otherwise. */
+  get probabilities(): Readonly<Record<string, Readonly<Record<string, number>>>> | undefined {
+    return this.dataPart?.probabilities;
+  }
+
+  /**
+   * The expected level of an ordered judgment: Σ p·i over its keys `"0"…"n-1"`
+   * (Jev's `score`, computed, never stored). `undefined` when the field has
+   * no distribution.
+   */
+  expected(field: string): number | undefined {
+    const dist = this.probabilities?.[field];
+    if (!dist) return undefined;
+    let total = 0;
+    for (const [key, p] of Object.entries(dist)) {
+      const level = Number(key);
+      if (!Number.isInteger(level)) throw new ValueError(`expected(${JSON.stringify(field)}): keys are not ordered levels (got ${JSON.stringify(key)})`);
+      total += p * level;
+    }
+    return total;
   }
 
   /** The visible answer: text parts joined with `\n`; citations and thinking are metadata around it. */
@@ -305,7 +352,9 @@ export class Response {
       finishReason: this.finishReason,
       usage: this.usage,
       logprobs: this.logprobs,
+      logprobsComplete: this.logprobsComplete,
       providerData: this.providerData,
+      adaptations: this.adaptations,
       ...changes,
     });
   }
@@ -319,7 +368,9 @@ export class Response {
       finishReason: d["finish_reason"] as FinishReason,
       usage: isJsonObject(d["usage"]) ? Usage.fromJSON(d["usage"]) : undefined,
       logprobs: logprobsFromJSON(d["logprobs"]),
+      logprobsComplete: absent(d["logprobs_complete"]) ? undefined : (d["logprobs_complete"] as boolean),
       providerData: isJsonObject(d["provider_data"]) ? d["provider_data"] : undefined,
+      adaptations: adaptationsFromJSON(d["adaptations"]),
     });
   }
 
@@ -333,7 +384,11 @@ export class Response {
       usage: Usage.toJSON(r.usage),
       logprobs: logprobsToJSON(r.logprobs),
     });
+    // false is data (the coverage claim), emitted; true is the default and omitted.
+    if (!r.logprobsComplete) out["logprobs_complete"] = false;
     if (opts.includeProviderData && r.providerData !== undefined) out["provider_data"] = r.providerData;
+    const adaptations = adaptationsToJSON(r.adaptations);
+    if (adaptations) out["adaptations"] = adaptations;
     return out;
   }
 

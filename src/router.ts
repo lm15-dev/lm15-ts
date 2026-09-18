@@ -8,6 +8,7 @@
  * pass `provider:model` or a catalog instead.
  */
 
+import { checkPolicy, type Adaptation, type AdaptationPolicy } from "./adaptation.ts";
 import type { ProviderLM } from "./adapter.ts";
 import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
 import { resolveSettings } from "./cloud/hosts.ts";
@@ -103,6 +104,8 @@ export interface RouterConfig {
   /** Cloud-host settings per provider (AUTH-10). */
   readonly settings?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly transport?: Transport;
+  /** MAP-13: `"note"` (default: adapt and record on the response), `"silent"` (adapt, record nothing), `"refuse"` (every deviation refuses before the wire). */
+  readonly adaptations?: AdaptationPolicy;
 }
 
 function routable(provider: string): ProviderDefinition | undefined {
@@ -342,7 +345,10 @@ export class MissingCredentialError extends NotConfiguredError {}
 function buildLm(res: Resolution, config: RouterConfig): ProviderLM {
   const definition = lookup(res.provider)!;
   const policy = definition.access.credentialPolicy;
-  const transport: { transport?: Transport; baseUrl?: string } = config.transport ? { transport: config.transport } : {};
+  const transport: { transport?: Transport; baseUrl?: string; adaptations?: AdaptationPolicy } = {
+    ...(config.transport ? { transport: config.transport } : {}),
+    ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
+  };
   const baseUrl = baseUrlEntry(config, res.provider);
   if (baseUrl !== undefined) {
     if (definition.hosted) {
@@ -447,7 +453,7 @@ const CLIENT_KEYWORDS: Readonly<Record<string, string>> = Object.freeze({
   cache: "your own cache keyed on the Request (lm15 has no response cache)",
   caching: "your own cache keyed on the Request (lm15 has no response cache)",
   mock_response: "lm15/testing FakeLM",
-  drop_params: "nothing: lm15 refuses what it cannot carry instead of dropping it",
+  drop_params: "RouterConfig { adaptations: 'silent' }: lm15 adapts what a wire cannot carry and records it on the response (MAP-13); 'silent' keeps no record, 'refuse' throws instead",
   custom_llm_provider: "the model string's prefix",
 });
 
@@ -523,6 +529,18 @@ export class LMRouter {
     const req = normalizeRequest(request);
     const res = this.resolve(req.model);
     return this.lm(req.model).stream(routedRequest(req, res), opts);
+  }
+
+  /**
+   * MAP-13 pre-flight: what a call with this request WOULD adapt on the
+   * route it resolves to, with no network and no credential invoked. Throws
+   * what the call would throw. The answer to "can this route carry this
+   * request?" for an engine that picks between routes.
+   */
+  plan(request: Request, opts: { policy?: AdaptationPolicy } = {}): Promise<readonly Adaptation[]> {
+    const req = normalizeRequest(request);
+    const res = this.resolve(req.model);
+    return this.lm(req.model).plan(routedRequest(req, res), opts);
   }
 
   /** The MAP-6 door, routed by the prefix's model. */

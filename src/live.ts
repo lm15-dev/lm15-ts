@@ -1,11 +1,11 @@
 /** Realtime session lifecycle over the provider-owned websocket codecs. */
 import { abortable, checkAborted, positiveTimeout } from "./async.ts";
-import { TransportError, UnsupportedFeatureError } from "./errors.ts";
+import { CollectionLimitError, TransportError, UnsupportedFeatureError } from "./errors.ts";
 import { stringifyJson, type JsonObject } from "./json.ts";
 import { getDefaultPlatform } from "./platform.ts";
 import { LiveConfig, LiveClientEvent as LiveClientEventNs, LiveServerEvent as LiveServerEventNs, type LiveClientEvent, type LiveServerEvent } from "./types/live.ts";
 import { normalizeParts, type PartInput, type PromptPart, type ToolResultContentPart } from "./types/parts.ts";
-import { decodeBase64, encodeBase64 } from "./types/validate.ts";
+import { ValueError, decodeBase64, encodeBase64 } from "./types/validate.ts";
 import { Usage, type ErrorDetail } from "./types/response.ts";
 import { GeminiLM } from "./dialects/gemini.ts";
 import { OpenAILM } from "./dialects/openai_responses.ts";
@@ -230,7 +230,7 @@ export class LiveSession implements AsyncIterable<LiveServerEvent> {
    * mid-turn and does not end iteration; `result()` returns at it (you
    * must answer with `sendToolResult`). The session itself stays open.
    */
-  turn(): TurnView { return new TurnView(this); }
+  turn(opts: TurnViewOptions = {}): TurnView { return new TurnView(this, opts); }
 
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
@@ -270,7 +270,8 @@ export interface ToolCallInfo {
  * the turn ends; for latency-sensitive playback iterate events instead.
  */
 export interface Turn {
-  readonly endedBy: "turn_end" | "interrupted" | "error" | "tool_call";
+  /** `incomplete`: the collection stopped before a boundary (a closed view, a collection limit); never a successful turn. */
+  readonly endedBy: "turn_end" | "interrupted" | "error" | "tool_call" | "incomplete";
   readonly ok: boolean;
   readonly text: string;
   readonly audio: Uint8Array;
@@ -319,7 +320,7 @@ export function materializeTurn(events: readonly LiveServerEvent[]): Turn {
     }
   }
   const last = events[events.length - 1];
-  const endedBy = last !== undefined && (TURN_TERMINAL.has(last.type) || last.type === "tool_call") ? (last.type as Turn["endedBy"]) : "error";
+  const endedBy = last !== undefined && (TURN_TERMINAL.has(last.type) || last.type === "tool_call") ? (last.type as Turn["endedBy"]) : "incomplete";
   const total = audio.reduce((n, a) => n + a.length, 0);
   const bytes = new Uint8Array(total);
   let offset = 0;
@@ -337,40 +338,156 @@ export function materializeTurn(events: readonly LiveServerEvent[]): Turn {
   });
 }
 
+/** Bounded live-turn collection (changes/2026-09-15-live-collection-limits.md). */
+export const DEFAULT_TURN_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_TURN_MAX_EVENTS = 10_000;
+
+export interface TurnViewOptions {
+  /** Byte budget of the accepted events' compact ASCII JSON; default 16 MiB. Positive integer. */
+  readonly maxBytes?: number;
+  /** Event budget; default 10,000. Positive integer. */
+  readonly maxEvents?: number;
+}
+
 /**
- * Iterator over one turn's server events. Ends itself after yielding the
- * terminal event (`turn_end` / `interrupted` / `error`) — the same
- * self-ending idiom as `stream()`. A `tool_call` is yielded mid-iteration
- * (you hold the session, so you can answer and keep iterating);
- * `result()` cannot answer for you, so it returns at a `tool_call` instead
- * of deadlocking against a model that is waiting for your result.
+ * Compact ASCII JSON byte charge of one event, not a claim about resident
+ * memory: no whitespace, `,` and `:` separators, non-ASCII code units as
+ * `\uXXXX` (six bytes each; surrogate pairs for supplementary characters),
+ * `/` unescaped. Counting stops once `remaining` is exceeded.
+ */
+export function liveEventSize(event: LiveServerEvent, remaining = Number.POSITIVE_INFINITY): number {
+  const compact = stringifyJson(LiveServerEventNs.toJSON(event));
+  let size = 0;
+  for (let i = 0; i < compact.length; i++) {
+    size += compact.charCodeAt(i) < 0x80 ? 1 : 6;
+    if (size > remaining) break;
+  }
+  return size;
+}
+
+function positiveInt(value: unknown, name: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new ValueError(`${name} must be a positive integer; use raw session events for unbuffered reading`);
+  }
+  return value;
+}
+
+/**
+ * One buffered half-duplex view over one turn's server events. Iteration
+ * ends itself after the terminal event (`turn_end` / `interrupted` /
+ * `error`) — the same self-ending idiom as `stream()`. A `tool_call` is
+ * yielded mid-iteration (you hold the session, so you can answer and keep
+ * iterating); `result()` cannot answer for you, so it returns at a
+ * `tool_call` instead of deadlocking against a model that is waiting.
+ *
+ * Every consumed event is retained (already-yielded events stay in the
+ * result), so the collection is bounded: 16 MiB of compact ASCII JSON and
+ * 10,000 events by default, per view. On overflow a local, non-retryable
+ * `CollectionLimitError` carries the accepted events (`partialEvents`) and,
+ * for a byte overflow, the received event that could not fit
+ * (`rejectedEvent`, neither yielded nor retained). The view is sealed; the
+ * session stays open under the application's control. Raw session
+ * iteration is the deliberate no-collection alternative.
  */
 export class TurnView implements AsyncIterable<LiveServerEvent> {
   private readonly session: LiveSession;
+  private readonly maxBytes: number;
+  private readonly maxEvents: number;
+  private readonly events: LiveServerEvent[] = [];
+  private bytes = 0;
   private done = false;
+  private reading = false;
+  private failure: Error | undefined;
+  private sealed: Turn | undefined;
 
-  constructor(session: LiveSession) {
+  constructor(session: LiveSession, opts: TurnViewOptions = {}) {
     this.session = session;
+    this.maxBytes = positiveInt(opts.maxBytes, "maxBytes", DEFAULT_TURN_MAX_BYTES);
+    this.maxEvents = positiveInt(opts.maxEvents, "maxEvents", DEFAULT_TURN_MAX_EVENTS);
+  }
+
+  /** Accepted events' compact-JSON byte charge, not process memory. */
+  get retainedBytes(): number { return this.bytes; }
+  get retainedEvents(): number { return this.events.length; }
+
+  /** Collected data so far; `incomplete` is not a successful turn. */
+  snapshot(): Turn {
+    if (this.failure instanceof CollectionLimitError) return incompleteTurn(this.failure.partialEvents as readonly LiveServerEvent[]);
+    return materializeTurn(this.events);
+  }
+
+  /** Stop this view, not the underlying live session. */
+  close(): void {
+    if (this.reading) throw new Error("stop the active turn reader before closing its view");
+    this.done = true;
+  }
+
+  private limitError(limit: "max_bytes" | "max_events", maximum: number, rejected?: LiveServerEvent): CollectionLimitError {
+    this.done = true;
+    return new CollectionLimitError(
+      `Live turn collection exceeded ${limit}=${maximum}; the turn is incomplete. Raise this limit on session.turn({...}), or process raw session events without collecting. Inspect partialEvents and rejectedEvent before continuing; the session remains open.`,
+      { limit, maximum, retainedBytes: this.bytes, retainedEvents: this.events.length, partialEvents: [...this.events], rejectedEvent: rejected },
+    );
+  }
+
+  /** One accepted event, or the failure that seals the view. */
+  private async next(): Promise<LiveServerEvent | undefined> {
+    if (this.reading) throw new Error("turn view already has an active reader");
+    if (this.failure !== undefined) throw this.failure;
+    if (this.done) return undefined;
+    this.reading = true;
+    try {
+      // Do not consume the next event when the count alone proves it cannot
+      // fit — this includes a terminal event, which also counts.
+      if (this.events.length >= this.maxEvents) throw this.limitError("max_events", this.maxEvents);
+      const event = await this.session.recv();
+      if (event === undefined) throw new TransportError("live session closed before the turn reached a boundary");
+      const remaining = this.maxBytes - this.bytes;
+      const size = liveEventSize(event, remaining);
+      if (size > remaining) throw this.limitError("max_bytes", this.maxBytes, event);
+      this.events.push(event);
+      this.bytes += size;
+      if (TURN_TERMINAL.has(event.type)) this.done = true;
+      return event;
+    } catch (e) {
+      this.failure = e as Error;
+      throw e;
+    } finally {
+      this.reading = false;
+    }
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<LiveServerEvent> {
-    while (!this.done) {
-      const event = await this.session.recv();
-      if (event === undefined) { this.done = true; return; } // the socket closed: nothing more to yield
-      if (TURN_TERMINAL.has(event.type)) this.done = true;
+    for (;;) {
+      const event = await this.next();
+      if (event === undefined) return;
       yield event;
     }
   }
 
   async result(): Promise<Turn> {
-    const events: LiveServerEvent[] = [];
-    for await (const event of this) {
-      events.push(event);
-      if (event.type === "tool_call") break;
+    if (this.sealed !== undefined) return this.sealed;
+    // A tool call just yielded by manual iteration must not be read past by
+    // result(): the application may still owe the model an answer.
+    const last = this.events[this.events.length - 1];
+    if (last === undefined || last.type !== "tool_call") {
+      for await (const event of this) if (event.type === "tool_call") break;
     }
-    return materializeTurn(events);
+    if (this.failure !== undefined) throw this.failure;
+    const turn = this.snapshot();
+    if (turn.endedBy === "incomplete") throw new TransportError("turn view closed before the turn reached a boundary; inspect snapshot()");
+    this.done = true;
+    this.sealed = turn;
+    return turn;
   }
 }
+
+/** The accepted events as an incomplete Turn (`ok: false`), materialized on demand. */
+export function incompleteTurn(events: readonly LiveServerEvent[]): Turn {
+  return Object.freeze({ ...materializeTurn(events), endedBy: "incomplete" as const, ok: false });
+}
+CollectionLimitError.materializePartial = (events) => incompleteTurn(events as readonly LiveServerEvent[]);
 
 function frameBytes(data: unknown): Uint8Array | string {
   if (typeof data === "string") return data;

@@ -4,7 +4,9 @@
  * Azure OpenAI v1, Meta, Moonshot's Responses wire.
  */
 
-import { ProviderLM, batchEntryHttp, type LMOptions } from "../adapter.ts";
+import { AdaptationScope, adapt, collecting } from "../adaptation.ts";
+import { noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
+import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
 import { OPENAI_API, OPENAI_CODEX, authHeader, type AccessPolicy } from "../auth/policy.ts";
 import { extractChatgptAccountId } from "../auth/jwt.ts";
 import {
@@ -355,13 +357,22 @@ export class OpenAILM extends ProviderLM {
     if (config.temperature !== undefined) payload["temperature"] = wireFloat(config.temperature);
     if (config.topP !== undefined) payload["top_p"] = wireFloat(config.topP);
     if (config.stop && config.stop.length > 0) {
-      throw new UnsupportedFeatureError(
-        `${this.provider}: config.stop has no field on the Responses wire (the Chat Completions dialect carries \`stop\`); a silent omission would run the model past the sequence`,
-        { provider: this.provider },
+      // MAP-13 (decision 2026-09-14): no stop field on this wire; the text is
+      // cut at the first sequence after the wire (complete) or as it streams
+      // (the source is closed at the cut). See stop.ts.
+      adapt(
+        "config.stop",
+        "client_side",
+        "the Responses wire has no stop field; the reply is streamed and the connection closed at the first stop sequence (whether the provider then stops generating, and billing, is its own behaviour); the usage report rides only the final frame, so it is not reported when the cut happens (never estimated)",
+        { asked: [...config.stop], applied: [...config.stop], provider: this.provider },
       );
     }
     if (config.topK !== undefined) {
-      throw new UnsupportedFeatureError(`${this.provider}: config.top_k has no field on the Responses wire (Anthropic and Gemini carry it)`, { provider: this.provider });
+      adapt("config.top_k", "dropped", "the Responses wire has no top_k (Anthropic and Gemini carry it)", { asked: config.topK, provider: this.provider });
+    }
+    for (const [name, value] of [["seed", config.seed], ["frequency_penalty", optionalWireFloat(config.frequencyPenalty)], ["presence_penalty", optionalWireFloat(config.presencePenalty)]] as const) {
+      // The Responses API dropped these from the Chat Completions wire (no field in the reference); the chat dialect carries them.
+      if (value !== undefined) adapt(`config.${name}`, "dropped", `the Responses wire has no ${name} field (the Chat Completions dialect carries it)`, { asked: value, provider: this.provider });
     }
     if (config.logprobs !== undefined) {
       payload["top_logprobs"] = config.logprobs;
@@ -382,27 +393,33 @@ export class OpenAILM extends ProviderLM {
     const toolChoice = this.toolChoicePayload(request, compat);
     if (toolChoice !== undefined) payload["tool_choice"] = toolChoice as JsonObject;
     if (config.toolChoice?.parallel !== undefined) payload["parallel_tool_calls"] = config.toolChoice.parallel;
-    if (config.responseFormat) payload["text"] = responseFormatToOpenAIText(config.responseFormat);
+    if (config.responseFormat) {
+      // MAP-14: the schema goes verbatim (strict honours anyOf/const/title, receipted 2026-09-17); no distribution is measured here.
+      noteUnmeasurableProbabilities(request, this.provider);
+      payload["text"] = responseFormatToOpenAIText(config.responseFormat);
+    }
     if (config.reasoning) {
       const reasoning = config.reasoning;
       if (reasoning.effort !== "off") {
         if (reasoning.thinkingBudget !== undefined) {
-          throw new UnsupportedFeatureError(
-            `${this.provider}: reasoning.thinking_budget is not supported — this wire has no thinking token budget; use effort (Anthropic's manual class and Gemini take a budget)`,
-            { provider: this.provider },
+          // MAP-13: effort carries the intent (MAP-7 rule 5); no budget field exists on this wire.
+          adapt(
+            "config.reasoning.thinking_budget",
+            "dropped",
+            "this wire has no thinking token budget; effort carries the intent (Anthropic's manual class and Gemini take a budget)",
+            { asked: reasoning.thinkingBudget, provider: this.provider },
           );
         }
-        if ((reasoning.summary === "concise" || reasoning.summary === "detailed") && compat.reasoningFormat !== "responses_reasoning") {
-          throw new UnsupportedFeatureError(
-            `${this.provider}: reasoning.summary=${JSON.stringify(reasoning.summary)} is an OpenAI Responses detail level; this wire has no summary levels (use 'auto')`,
-            { provider: this.provider },
-          );
+        let summary = reasoning.summary;
+        if ((summary === "concise" || summary === "detailed") && compat.reasoningFormat !== "responses_reasoning") {
+          adapt("config.reasoning.summary", "substituted", "this wire has no summary detail levels; 'auto' is what it shows", { asked: summary, applied: "auto", provider: this.provider });
+          summary = "auto";
         }
         const effort = reasoning.effort;
         switch (compat.reasoningFormat) {
           case "responses_reasoning": {
             const r: JsonObject = { effort };
-            if (reasoning.summary !== undefined) r["summary"] = reasoning.summary;
+            if (summary !== undefined) r["summary"] = summary;
             payload["reasoning"] = r;
             break;
           }
@@ -472,9 +489,9 @@ export class OpenAILM extends ProviderLM {
     return payload;
   }
 
-  async buildRequest(request: Request, stream: boolean): Promise<TransportRequest> {
+  wireRequest(request: Request, stream: boolean): EmitOptions {
     request = RequestNs.create(request);
-    return this.emit({
+    return {
       method: "POST",
       url: `${this.base()}/responses`,
       endpoint: "responses",
@@ -482,7 +499,7 @@ export class OpenAILM extends ProviderLM {
       model: request.model,
       headers: this.headers(),
       payload: this.payload(request, stream),
-    });
+    };
   }
 
   // ─── Response ────────────────────────────────────────────────────
@@ -557,7 +574,7 @@ export class OpenAILM extends ProviderLM {
     return new Response({
       id: data["id"] ? str(data["id"]) : undefined,
       model: str(data["model"]) || request.model,
-      message: { role: "assistant", parts },
+      message: { role: "assistant", parts: replaceTextWithData(parts, requestJudgments(request)) },
       finishReason: finishFromStatus(data, hasTool),
       usage: usageFromResponses(data["usage"]),
       logprobs: logprobSeq.length > 0 ? logprobSeq : undefined,
@@ -840,8 +857,9 @@ export class OpenAILM extends ProviderLM {
   // ─── Batches ─────────────────────────────────────────────────────
 
   override async batchUploadRequest(request: BatchRequest): Promise<TransportRequest | undefined> {
-    const lines = request.requests.map((nested, i) =>
-      stringifyJson({ custom_id: String(i), method: "POST", url: "/v1/responses", body: this.payload(nested, false) }),
+    // MAP-13: under the adapter's policy so "refuse" refuses here too (a batch ticket has no adaptations field).
+    const lines = collecting(new AdaptationScope(this.adaptations, this.provider), () =>
+      request.requests.map((nested, i) => stringifyJson({ custom_id: String(i), method: "POST", url: "/v1/responses", body: this.payload(nested, false) })),
     );
     const data = new TextEncoder().encode(lines.join("\n") + "\n");
     const [contentType, body] = multipartFormBody([["purpose", "batch"]], [{ field: "file", filename: "lm15-batch.jsonl", contentType: "application/jsonl", data }]);
@@ -1083,6 +1101,11 @@ function fileBytes(request: FileUploadRequest): Uint8Array {
 /** A typed float field on the wire (Number rule: `1.0`, never `1`). */
 export function wireFloat(value: number): number | RawNumber {
   return float(value);
+}
+
+/** `wireFloat` for an optional field: absent stays absent (an adaptation record keeps the field's JSON type). */
+export function optionalWireFloat(value: number | undefined): number | RawNumber | undefined {
+  return value === undefined ? undefined : float(value);
 }
 
 /** Request-level compat override read from `Config.extensions` (an escape hatch). */

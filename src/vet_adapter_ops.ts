@@ -128,10 +128,21 @@ function raiseIfError(lm: ProviderLM, status: number, body: string): void {
 }
 
 const ops: Record<string, OpHandler> = {
+  /** The wire request, plus `adaptations` (MAP-13) when the build recorded any — field/action/asked/applied, never the reason (a port's own wording). */
   async build_request(msg) {
     const lm = adapter(msg);
     const request = requestOf(msg);
-    return normalizeTransportRequest(await lm.buildRequest(request, Boolean(msg["stream"])));
+    const built = await lm.build(request, Boolean(msg["stream"]));
+    const out = normalizeTransportRequest(built.request);
+    if (built.adaptations.length > 0) {
+      out["adaptations"] = built.adaptations.map((a) => {
+        const record: JsonObject = { field: a.field, action: a.action };
+        if (a.asked !== undefined) record["asked"] = a.asked;
+        if (a.applied !== undefined) record["applied"] = a.applied;
+        return record;
+      });
+    }
+    return out;
   },
 
   /** PROTOCOL.md § ingest_openai_chat (MAP-12): the case's provider binds the compat; no credential is read. */

@@ -136,9 +136,11 @@ test("HTTP diagnostics: request id from headers when the body has none; invalid 
 });
 
 // api-family 2026-09-11: a compat preset name supplies its server's address; never the cloud's.
-test("lmstudio is ollama's policy at LM Studio's own address; the Responses door knows the local roots", async () => {
+test("lmstudio is its own chat policy (no dial, a hypothesis) at LM Studio's own address; ollama carries reasoning_effort; the Responses door knows the local roots", async () => {
   const { OpenAILM, OpenAIChatLM, OPENAI_CHAT_PRESETS, OPENAI_RESPONSES_PRESETS } = await import("../src/index.ts");
-  assert.equal(OPENAI_CHAT_PRESETS["lmstudio"], OPENAI_CHAT_PRESETS["ollama"]);
+  // 2026-09-14 (MAP-13 audit §3b): Ollama's source maps reasoning_effort to `think`; LM Studio stays unreceipted and dial-less.
+  assert.equal(OPENAI_CHAT_PRESETS["ollama"]!.thinkingFormat, "reasoning_effort");
+  assert.equal(OPENAI_CHAT_PRESETS["lmstudio"]!.thinkingFormat, "none");
   assert.equal(OPENAI_RESPONSES_PRESETS["lmstudio"], OPENAI_RESPONSES_PRESETS["ollama"]);
   for (const name of ["lmstudio", "lm-studio", "LM Studio"]) {
     assert.equal(new OpenAIChatLM({ apiKey: "k", compat: name }).baseUrl, "http://localhost:1234/v1", name);
@@ -222,17 +224,24 @@ test("router.completeFromOpenAIChat answers the OpenAI SDK's call; stream: true 
   assert.throws(() => responseFromOpenAIChat({ choices: chat.choices }), /pass model/);
 });
 
-test("a reasoning dial on a server whose compat has no reasoning field raises before the wire (MAP-5 / MAP-7 rule 2)", async () => {
-  const { adapterFor } = await import("../src/providers.ts");
+test("a reasoning dial on a server whose compat has no reasoning field is dropped and recorded (MAP-13); 'refuse' restores the raise; plan() previews it", async () => {
+  const { OpenAIChatLM } = await import("../src/dialects/openai_chat.ts");
   const { Message } = await import("../src/types/parts.ts");
   const { UnsupportedFeatureError } = await import("../src/errors.ts");
-  const lm = adapterFor("ollama", { apiKey: "unused" });
-  for (const effort of ["low", "off"] as const) {
-    await assert.rejects(
-      lm.buildRequest({ model: "qwen3.5:0.8b", messages: [Message.user("Say ok.")], config: { maxTokens: 64, reasoning: { effort } } }, true),
-      (e: unknown) => e instanceof UnsupportedFeatureError && /thinking_format='none'/.test(e.message),
-    );
-  }
-  const plain = await lm.buildRequest({ model: "qwen3.5:0.8b", messages: [Message.user("Say ok.")], config: { maxTokens: 64 } }, true);
-  assert.ok(!new TextDecoder().decode(plain.body).includes("reasoning"));
+  const request = { model: "qwen3.5:0.8b", messages: [Message.user("Say ok.")], config: { maxTokens: 64, reasoning: { effort: "low" as const } } };
+  const lm = new OpenAIChatLM({ apiKey: "unused", compat: "lmstudio" });
+  const built = await lm.build(request, true);
+  assert.ok(!new TextDecoder().decode(built.request.body).includes("reasoning"));
+  assert.deepEqual(built.adaptations.map((a) => [a.field, a.action, a.asked]), [["config.reasoning", "dropped", { effort: "low" }]]);
+  assert.deepEqual(await lm.plan(request), built.adaptations);
+  const strict = new OpenAIChatLM({ apiKey: "unused", compat: "lmstudio", adaptations: "refuse" });
+  await assert.rejects(strict.buildRequest(request, true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.reasoning" && /thinking_format='none'/.test(e.message));
+  // "silent" adapts identically and hides the record on the response; plan() still shows it.
+  const silent = new OpenAIChatLM({ apiKey: "unused", compat: "lmstudio", adaptations: "silent" });
+  assert.deepEqual((await silent.plan(request)).map((a) => a.field), ["config.reasoning"]);
+  // ollama has the dial (source receipt, MAP-13 audit §3b): nothing to record.
+  const ollama = new OpenAIChatLM({ apiKey: "unused", compat: "ollama" });
+  const onWire = await ollama.build(request, true);
+  assert.deepEqual(onWire.adaptations, []);
+  assert.ok(new TextDecoder().decode(onWire.request.body).includes('"reasoning_effort":"low"'));
 });

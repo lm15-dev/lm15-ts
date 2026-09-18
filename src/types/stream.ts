@@ -6,6 +6,7 @@
 import { canonicalFactory } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import { FINISH_REASONS, type FinishReason } from "../vocab.ts";
+import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
 import { continuationState, type ContinuationState } from "./parts.ts";
 import {
   ErrorDetail,
@@ -42,6 +43,8 @@ export interface TextDelta extends Indexed {
   readonly type: "text";
   readonly text: string;
   readonly logprobs?: readonly TokenLogprob[];
+  /** `false`: a client-side cut left this fragment's retained text without its original scores. Materialization ANDs it. */
+  readonly logprobsComplete?: boolean;
 }
 export interface ThinkingDelta extends Indexed {
   readonly type: "thinking";
@@ -112,12 +115,16 @@ function normalizeDeltaValue(input: unknown): Delta {
   switch (input.type) {
     case "text": {
       const logprobs = normalizeLogprobs(d["logprobs"], "TextDelta.logprobs");
+      const complete = d["logprobsComplete"];
+      if (!absent(complete) && typeof complete !== "boolean") throw new TypeError("TextDelta.logprobs_complete must be a bool");
       return frozen(
         compact({
           type: "text" as const,
           text: requireString(d["text"], "TextDelta.text"),
           partIndex: partIndexOf(d),
           logprobs: logprobs && logprobs.length > 0 ? logprobs : undefined,
+          // Only the non-default survives on the value, so an untouched delta stays structurally equal to before.
+          logprobsComplete: complete === false ? false : undefined,
         }),
       );
     }
@@ -198,6 +205,7 @@ export const Delta = {
           text: d["text"] ?? "",
           partIndex,
           logprobs: Array.isArray(lp) ? lp.map((x) => TokenLogprob.fromJSON(x as JsonObject)) : undefined,
+          logprobsComplete: d["logprobs_complete"],
         });
       }
       case "thinking":
@@ -223,6 +231,7 @@ export const Delta = {
       case "text":
         out["text"] = delta.text;
         if (delta.logprobs && delta.logprobs.length > 0) out["logprobs"] = logprobsToJSON(delta.logprobs) as JsonValue;
+        if (delta.logprobsComplete === false) out["logprobs_complete"] = false;
         break;
       case "thinking":
         out["text"] = delta.text;
@@ -261,6 +270,8 @@ export interface StreamStartEvent {
   readonly type: "start";
   readonly id?: string;
   readonly model?: string;
+  /** MAP-13: known before the first byte, carried by the first event; the coalesced Response carries the same list. */
+  readonly adaptations?: readonly Adaptation[];
 }
 export interface StreamDeltaEvent {
   readonly type: "delta";
@@ -291,6 +302,7 @@ function normalizeStreamEventValue(input: unknown): StreamEvent {
           type: "start" as const,
           id: optionalString(d["id"], "StreamStartEvent.id", false),
           model: optionalString(d["model"], "StreamStartEvent.model", false),
+          adaptations: normalizeAdaptations(d["adaptations"], "StreamStartEvent.adaptations"),
         }),
       );
     case "delta":
@@ -313,7 +325,7 @@ function normalizeStreamEventValue(input: unknown): StreamEvent {
   }
 }
 
-export function streamStart(fields: { id?: string; model?: string } = {}): StreamStartEvent {
+export function streamStart(fields: { id?: string; model?: string; adaptations?: readonly Adaptation[] } = {}): StreamStartEvent {
   return normalizeStreamEvent({ type: "start", ...fields }) as StreamStartEvent;
 }
 export function streamDelta(delta: Delta): StreamDeltaEvent {
@@ -331,7 +343,7 @@ export const StreamEvent = {
   fromJSON(d: JsonObject): StreamEvent {
     switch (d["type"]) {
       case "start":
-        return normalizeStreamEvent({ type: "start", id: d["id"], model: d["model"] });
+        return normalizeStreamEvent({ type: "start", id: d["id"], model: d["model"], adaptations: adaptationsFromJSON(d["adaptations"]) });
       case "delta":
         if (!isJsonObject(d["delta"])) throw new TypeError("StreamDeltaEvent.delta must be a Delta");
         return normalizeStreamEvent({ type: "delta", delta: Delta.fromJSON(d["delta"]) });
@@ -352,7 +364,7 @@ export const StreamEvent = {
   toJSON(e: StreamEvent): JsonObject {
     switch (e.type) {
       case "start":
-        return omitEmpty({ type: "start", id: e.id, model: e.model });
+        return omitEmpty({ type: "start", id: e.id, model: e.model, adaptations: adaptationsToJSON(e.adaptations) });
       case "delta":
         return { type: "delta", delta: Delta.toJSON(e.delta) };
       case "end":
