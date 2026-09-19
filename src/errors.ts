@@ -33,6 +33,8 @@
  */
 
 import type { ErrorCode } from "./vocab.ts";
+import { diagnosticsText, freezeRateLimits, type RateLimitHeaders } from "./rate_limits.ts";
+export type { RateLimitHeaders } from "./rate_limits.ts";
 import type { Response } from "./types/response.ts";
 
 export interface ErrorMetadata {
@@ -44,6 +46,7 @@ export interface ErrorMetadata {
   /** Float-typed (Number rule); an integer input is the same value. */
   readonly retryAfter?: number | null | undefined;
   readonly cause?: unknown;
+  readonly rateLimitHeaders?: RateLimitHeaders | undefined;
 }
 
 export class LM15Error extends Error {
@@ -55,6 +58,7 @@ export class LM15Error extends Error {
   readonly status: number | null;
   readonly requestId: string | null;
   readonly retryAfter: number | null;
+  readonly rateLimitHeaders: RateLimitHeaders;
 
   constructor(message = "", meta: ErrorMetadata = {}) {
     super(message, meta.cause !== undefined ? { cause: meta.cause } : undefined);
@@ -65,6 +69,7 @@ export class LM15Error extends Error {
     this.status = meta.status ?? null;
     this.requestId = meta.requestId ?? null;
     this.retryAfter = meta.retryAfter ?? null;
+    this.rateLimitHeaders = freezeRateLimits(meta.rateLimitHeaders);
   }
 
   /** `RETRYABLE_ERRORS` membership: data for the caller's own retry policy. */
@@ -265,11 +270,11 @@ export class ProviderError extends LM15Error {
       .filter((x): x is string => Boolean(x))
       .join(", ");
     const base = this.message || this.code;
-    if (!context) return `${this.name}: ${base}`;
     const idx = base.indexOf("\n\n");
-    const suffix = ` (${context})`;
-    if (idx >= 0) return `${this.name}: ${base.slice(0, idx)}${suffix}${base.slice(idx)}`;
-    return `${this.name}: ${base}${suffix}`;
+    const suffix = context ? ` (${context})` : "";
+    const details = diagnosticsText(this.rateLimitHeaders, this.retryAfter);
+    if (idx >= 0) return `${this.name}: ${base.slice(0, idx)}${suffix}${details}${base.slice(idx)}`;
+    return `${this.name}: ${base}${suffix}${details}`;
   }
 }
 
@@ -309,7 +314,7 @@ export class RateLimitError extends ProviderError {
     super(
       appendGuidance(
         message,
-        "\n\n  To fix:\n    - Wait a moment and retry\n    - Retry with backoff in your application layer (lm15 never retries for you)\n    - Reduce request rate or upgrade your API plan\n",
+        "\n\n  To fix:\n    - Wait a moment and retry\n    - Retry with backoff in your application layer (lm15 never retries for you)\n    - Check the reported limits and deployment capacity; a 429 does not prove the endpoint is unsupported\n",
       ),
       meta,
     );
@@ -375,6 +380,7 @@ export function withCredentialHint<E extends ProviderError>(error: E, hint: stri
     status: error.status,
     requestId: error.requestId,
     retryAfter: error.retryAfter,
+    rateLimitHeaders: error.rateLimitHeaders,
   });
 }
 

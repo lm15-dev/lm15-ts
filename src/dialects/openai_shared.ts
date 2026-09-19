@@ -29,6 +29,9 @@ export type ProviderErrorClass = new (message: string, meta?: never) => Provider
 export const RESPONSE_ERROR_CODE_MAP: Readonly<Record<string, typeof ProviderError>> = Object.freeze({
   server_error: ServerError,
   rate_limit_exceeded: RateLimitError,
+  // Azure Responses error frames can carry these under HTTP 200.
+  no_capacity: RateLimitError,
+  too_many_requests: RateLimitError,
   invalid_prompt: InvalidRequestError,
   vector_store_timeout: TimeoutError,
   invalid_image: InvalidRequestError,

@@ -183,7 +183,7 @@ export {
   errorClassForCode,
   mapHttpError,
 } from "./errors.ts";
-export type { ErrorMetadata, CapabilityMetadata, CollectionLimitMetadata } from "./errors.ts";
+export type { ErrorMetadata, CapabilityMetadata, CollectionLimitMetadata, RateLimitHeaders } from "./errors.ts";
 
 // Providers, direct
 export { OpenAILM, OpenAICodexLM } from "./dialects/openai_responses.ts";

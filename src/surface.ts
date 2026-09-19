@@ -172,7 +172,8 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
     "ErrorDetail": [
       "code",
       "message",
-      "provider_code"
+      "provider_code",
+      "http_response"
     ],
     "FileInfo": [
       "id",

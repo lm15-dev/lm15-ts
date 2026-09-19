@@ -275,6 +275,17 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   before a boundary is a `TransportError` when iterated as a turn, never a
   silent empty turn.
 
+## Rate-limit diagnostics
+
+Errors retain `rateLimitHeaders`, a bounded, immutable snapshot of the
+provider's reported limits, balances, resets and retry headers. `String(error)`
+shows advisory details alongside the provider message; `retryAfter` remains
+seconds or null, never a promise of success. HTTP-200 stream errors preserve
+handshake evidence through saving and replay. Browser CORS may hide headers.
+No automatic retry or endpoint switch is added.
+
+See [Rate and capacity errors](docs/error-diagnostics.md).
+
 ## Layout
 
 | Path | What |

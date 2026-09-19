@@ -7,6 +7,7 @@
  */
 
 import { canonicalFactory, canonicalValue } from "../canonical.ts";
+import { normalizeHttpResponse } from "../rate_limits.ts";
 import { float, isJsonObject, omitEmpty, parseJson, type JsonObject, type JsonValue } from "../json.ts";
 import { ERROR_CODES, FINISH_REASONS, type ErrorCode, type FinishReason } from "../vocab.ts";
 import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
@@ -195,17 +196,20 @@ export interface ErrorDetail {
   readonly code: ErrorCode;
   readonly message: string;
   readonly providerCode?: string;
+  readonly httpResponse?: JsonObject;
 }
 
 export const normalizeErrorDetail = canonicalFactory("error_detail", normalizeErrorDetailValue);
 function normalizeErrorDetailValue(input: unknown): ErrorDetail {
   if (typeof input !== "object" || input === null) throw new TypeError("ErrorDetail must be an object");
   const d = input as Record<string, unknown>;
+  const http = normalizeHttpResponse(d["httpResponse"] === undefined ? {} : d["httpResponse"]);
   return frozen(
     compact({
       code: requireOneOf(ERROR_CODES, d["code"], "error code"),
       message: requireString(d["message"] ?? "", "ErrorDetail.message"),
       providerCode: optionalString(d["providerCode"], "ErrorDetail.provider_code", false),
+      httpResponse: Object.keys(http).length ? http : undefined,
     }),
   );
 }
@@ -213,10 +217,12 @@ function normalizeErrorDetailValue(input: unknown): ErrorDetail {
 export const ErrorDetail = {
   create: normalizeErrorDetail,
   fromJSON(d: JsonObject): ErrorDetail {
-    return normalizeErrorDetail({ code: d["code"], message: d["message"] ?? "", providerCode: d["provider_code"] });
+    return normalizeErrorDetail({ code: d["code"], message: d["message"] ?? "", providerCode: d["provider_code"], httpResponse: d["http_response"] });
   },
   toJSON(e: ErrorDetail): JsonObject {
-    return omitEmpty({ code: e.code, message: e.message, provider_code: e.providerCode });
+    const http = e.httpResponse ? { ...e.httpResponse } : undefined;
+    if (http && typeof http["retry_after"] === "number") http["retry_after"] = float(http["retry_after"]);
+    return omitEmpty({ code: e.code, message: e.message, provider_code: e.providerCode, http_response: http });
   },
 };
 

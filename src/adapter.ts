@@ -44,7 +44,8 @@ import { CachedPrefix, normalizeFileUploadRequest, normalizeBatchRequest, normal
 import type { LiveConfig, LiveClientEvent, LiveServerEvent } from "./types/live.ts";
 import type { ModelInfo } from "./types/model_info.ts";
 import type { VideoPart } from "./types/parts.ts";
-import type { Response } from "./types/response.ts";
+import { ErrorDetail, type Response } from "./types/response.ts";
+import { captureRateLimits, millisecondsSeconds, type RateLimitHeaders } from "./rate_limits.ts";
 import type { StreamEvent } from "./types/stream.ts";
 import { ValueError } from "./types/validate.ts";
 import { BATCH_TERMINAL_STATUSES, VIDEO_TERMINAL_STATUSES } from "./vocab.ts";
@@ -334,7 +335,12 @@ export abstract class ProviderLM {
     }
     const resp = await this.send(built.request, opts.signal);
     if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
-    return this.finishResponse(request, this.parseResponse(request, resp), built.adaptations);
+    try {
+      return this.finishResponse(request, this.parseResponse(request, resp), built.adaptations);
+    } catch (error) {
+      if (error instanceof ProviderError) throw attachErrorMetadata(error, resp);
+      throw error;
+    }
   }
 
   /** The canonical event stream: exactly one `start`, deltas, exactly one final `end` (MAP-3/4). */
@@ -366,8 +372,14 @@ export abstract class ProviderLM {
       const buffered = await bufferResponse(res);
       throw attachErrorMetadata(this.normalizeError(buffered.status, buffered.text()), buffered);
     }
-    for await (const sse of parseSseAsync(splitLinesAsync(res.chunks()))) {
-      for (const event of this.parseStreamEvents(request, sse)) yield event;
+    const handshake = new HttpResponse({ status: res.status, headers: res.headers, body: new Uint8Array() });
+    try {
+      for await (const sse of parseSseAsync(splitLinesAsync(res.chunks()))) {
+        for (const event of this.parseStreamEvents(request, sse)) yield streamErrorMetadata(event, handshake);
+      }
+    } catch (error) {
+      if (error instanceof ProviderError) throw attachErrorMetadata(error, handshake);
+      throw error;
     }
   }
 
@@ -753,7 +765,7 @@ export function retryAfterSeconds(value: unknown): number | undefined {
 }
 
 /** The response headers a provider's request id lives in when its error body carried none, in the order they are tried. */
-export const REQUEST_ID_HEADERS: readonly string[] = Object.freeze(["x-request-id", "request-id", "x-amzn-requestid", "x-amz-request-id", "x-ms-request-id"]);
+export const REQUEST_ID_HEADERS: readonly string[] = Object.freeze(["x-request-id", "request-id", "x-amzn-requestid", "x-amz-request-id", "x-ms-request-id", "apim-request-id", "x-typesafe-request-id"]);
 
 /**
  * Fill HTTP diagnostics the error body did not say; never invent absent
@@ -761,12 +773,19 @@ export const REQUEST_ID_HEADERS: readonly string[] = Object.freeze(["x-request-i
  * before the header is consulted. A body request id is never replaced.
  */
 export function attachErrorMetadata(error: ProviderError, resp: HttpResponse): ProviderError {
-  const mutable = error as { retryAfter: number | null; requestId: string | null };
+  const mutable = error as { retryAfter: number | null; requestId: string | null; rateLimitHeaders: RateLimitHeaders };
+  mutable.rateLimitHeaders = captureRateLimits(resp.headers);
   const bodyHint = retryAfterSeconds(error.retryAfter);
   mutable.retryAfter = bodyHint ?? null;
   if (bodyHint === undefined) {
     const header = retryAfterSeconds(resp.header("retry-after"));
     if (header !== undefined) mutable.retryAfter = header;
+    else {
+      for (const name of ["retry-after-ms", "x-ms-retry-after-ms"]) {
+        const seconds = millisecondsSeconds(resp.header(name));
+        if (seconds !== undefined) { mutable.retryAfter = seconds; break; }
+      }
+    }
   }
   if (error.requestId === null || error.requestId === undefined || error.requestId === "") {
     for (const name of REQUEST_ID_HEADERS) {
@@ -778,6 +797,18 @@ export function attachErrorMetadata(error: ProviderError, resp: HttpResponse): P
     }
   }
   return error;
+}
+
+function streamErrorMetadata(event: StreamEvent, response: HttpResponse): StreamEvent {
+  if (event.type !== "error") return event;
+  const error = attachErrorMetadata(new ProviderError(), response);
+  const http: JsonObject = {};
+  if (error.requestId !== null) http["request_id"] = error.requestId;
+  if (error.retryAfter !== null) http["retry_after"] = error.retryAfter;
+  if (Object.keys(error.rateLimitHeaders).length)
+    http["rate_limit_headers"] = Object.fromEntries(Object.entries(error.rateLimitHeaders).map(([k, v]) => [k, [...v]]));
+  if (!Object.keys(http).length) return event;
+  return { ...event, error: ErrorDetail.create({ ...event.error, httpResponse: http }) };
 }
 
 /** Wrap a decoded batch entry body for the frozen parse path. */

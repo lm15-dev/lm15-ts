@@ -7,6 +7,7 @@
  */
 
 import { LM15Error, StreamAssemblyError, TransportError, errorClassForCode } from "./errors.ts";
+import { freezeRateLimits } from "./rate_limits.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
 import type { Request } from "./types/config.ts";
 import {
@@ -427,7 +428,14 @@ function push<T>(map: Map<number, T[]>, key: number, value: T): void {
 export function exceptionFromErrorEvent(event: StreamEvent & { type: "error" }): LM15Error {
   const err = event.error;
   const cls = errorClassForCode(err.code);
-  return new cls(err.message, { providerCode: err.providerCode ?? null });
+  const http = err.httpResponse ?? {};
+  const wait = http["retry_after"];
+  return new cls(err.message, {
+    providerCode: err.providerCode ?? null,
+    requestId: typeof http["request_id"] === "string" ? http["request_id"] : null,
+    retryAfter: typeof wait === "number" && Number.isFinite(wait) && wait >= 0 ? wait : null,
+    rateLimitHeaders: freezeRateLimits(http["rate_limit_headers"]),
+  });
 }
 
 /**
