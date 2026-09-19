@@ -55,6 +55,7 @@ import {
   buildUrl,
   isoUtc,
   mediaBase64,
+  dataPartText,
   modelInfosFromEntries,
   multipartRelatedBody,
   partsToText,
@@ -345,6 +346,8 @@ export class GeminiLM extends ProviderLM {
 
   protected part(part: Part, names: ReadonlyMap<string, string> = new Map()): JsonObject {
     switch (part.type) {
+      case "data":
+        return { text: dataPartText(part) }; // D3: a data part is its JSON on a text slot
       case "text": {
         const out: JsonObject = { text: part.text };
         const thought = continuationData(part, "gemini", "thought_signature");

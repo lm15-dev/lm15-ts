@@ -64,6 +64,7 @@ import {
   toolResult,
   type AssistantPart,
   type CitationPart,
+  type DataPart,
   type ImagePart,
   type Part,
   type PromptPart,
@@ -79,6 +80,7 @@ import {
   HttpResponse,
   MEDIA_KINDS,
   checkToolResultMedia,
+  dataPartText,
   mediaDataUri,
   modelInfosFromEntries,
   openaiTokenLogprobs,
@@ -138,6 +140,7 @@ function chatImageBlock(part: ImagePart, provider: string): JsonObject {
 function chatContentParts(msg: Message, provider: string, forceArray: boolean): string | JsonObject[] {
   const parts = msg.parts.filter((p) => p.type !== "tool_call" && p.type !== "tool_result");
   if (parts.length === 1 && parts[0]!.type === "text" && !forceArray) return (parts[0] as { text: string }).text;
+  if (parts.length === 1 && parts[0]!.type === "data" && !forceArray) return dataPartText(parts[0] as DataPart); // D3: the same string form as a lone text part
   const out: JsonObject[] = [];
   for (const part of parts) {
     if (part.type === "text") out.push({ type: "text", text: part.text });

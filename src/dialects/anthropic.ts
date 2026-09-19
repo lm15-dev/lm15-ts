@@ -45,6 +45,7 @@ import {
   MEDIA_KINDS,
   checkToolResultMedia,
   isoUtc,
+  dataPartText,
   mediaBase64,
   modelInfosFromEntries,
   multipartFormBody,
@@ -275,6 +276,8 @@ export class AnthropicLM extends ProviderLM {
     switch (part.type) {
       case "text":
         return { type: "text", text: part.text };
+      case "data":
+        return { type: "text", text: dataPartText(part) }; // D3: a data part is its JSON on a text slot
       case "image":
         return { type: "image", source: anthropicSource(part) };
       case "document":
@@ -304,6 +307,7 @@ export class AnthropicLM extends ProviderLM {
 
   protected toolResultContent(part: Part): JsonObject {
     if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "data") return { type: "text", text: dataPartText(part) };
     if (part.type === "image") return { type: "image", source: anthropicSource(part) };
     if (part.type === "document") return { type: "document", source: anthropicSource(part) };
     if (MEDIA_KINDS.has(part.type)) {

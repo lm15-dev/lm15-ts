@@ -56,11 +56,6 @@ function textOrValue(part: TextPart | DataPart): JsonValue {
   return part.type === "text" ? part.text : part.value;
 }
 
-function messageText(message: Message): string | undefined {
-  if (message.parts.every((p) => p.type === "text")) return message.parts.map((p) => (p as TextPart).text).join("\n");
-  return undefined;
-}
-
 export class TypeSafeLM extends ProviderLM {
   static override readonly manifest: AccessPolicy = TYPESAFE_API;
   protected readonly dialectBaseUrl = DEFAULT_BASE_URL;
@@ -81,26 +76,29 @@ export class TypeSafeLM extends ProviderLM {
     return new UnsupportedFeatureError(`${this.provider}: ${why}`, { provider: this.provider, feature });
   }
 
-  /** D6: one text part → string; one data part → its value; else the conversation object. Media/protocol parts have no wire slot. */
+  /**
+   * changes/2026-09-19-jev-state.md D1/D2: the state is the one user part,
+   * verbatim — a text's string or a data part's value. Jev has no system
+   * prompt and no conversation; anything else is refused with the native
+   * place named, never merged into a shape of ours. A media part is refused
+   * first, as the specific fault it is (MAP-10).
+   */
   protected state(request: Request): JsonValue {
     request.messages.forEach((message, mIndex) => {
       message.parts.forEach((part, pIndex) => {
         if (!isTextOrData(part)) throw this.refuse(`messages[${mIndex}].parts[${pIndex}]`, `a ${part.type} part has no slot on the systemone wire (MAP-10); Jev reads text or data`);
       });
     });
-    const system = request.system;
-    if (Array.isArray(system) && !system.every((p) => isTextOrData(p as Part))) throw this.refuse("system", "system parts must be text or data on the systemone wire");
-    if (system === undefined && request.messages.length === 1 && request.messages[0]!.role === "user") {
-      const parts = request.messages[0]!.parts;
-      if (parts.length === 1) return textOrValue(parts[0] as TextPart | DataPart);
+    if (request.system !== undefined) {
+      throw this.refuse("system", 'Jev has no system prompt; put context in the state as a named key (Message.user({ type: "data", value: { policy, note } })), or the framing in each question\'s description (changes/2026-09-19-jev-state.md D2)');
     }
-    const state: JsonObject = {};
-    if (system !== undefined) state["system"] = typeof system === "string" ? system : (system as readonly Part[]).map((p) => textOrValue(p as TextPart | DataPart));
-    state["messages"] = request.messages.map((m) => {
-      const text = messageText(m);
-      return { role: m.role, content: text !== undefined ? text : m.parts.map((p) => textOrValue(p as TextPart | DataPart)) };
-    });
-    return state;
+    if (request.messages.length !== 1) {
+      throw this.refuse("messages", `Jev judges one state, got ${request.messages.length} messages; put a transcript in the state as an array or object (Message.user({ type: "data", value: { messages: [...] } })), where a question can point at a turn with a backtick path (changes/2026-09-19-jev-state.md D2)`);
+    }
+    const message = request.messages[0]!;
+    if (message.role !== "user") throw this.refuse("messages[0].role", `Jev's state is a user message, got role ${JSON.stringify(message.role)}`);
+    if (message.parts.length !== 1) throw this.refuse("messages[0].parts", `Jev's state is one text or data part, got ${message.parts.length} parts; put several pieces in one data part as named keys`);
+    return textOrValue(message.parts[0] as TextPart | DataPart);
   }
 
   protected questions(request: Request): JsonObject {

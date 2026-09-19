@@ -21,6 +21,9 @@ import { Response } from "../src/types/response.ts";
 import type { JsonObject } from "../src/json.ts";
 import { installNodePlatform } from "../src/platform_node.ts";
 import type { TransportRequest } from "../src/wire.ts";
+import { utf8Decode } from "../src/bytes.ts";
+import { adapterFor } from "../src/providers.ts";
+import { Request } from "../src/types/config.ts";
 import type { Transport, TransportResponse } from "../src/transport.ts";
 
 installNodePlatform();
@@ -110,11 +113,31 @@ test("typesafe: refusals name the feature; a judgment without a description is d
   await assert.rejects(lm.build({ model: "jev-latest", messages: user("x") }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.response_format");
   await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), tools: [{ type: "function", name: "t" }], config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "tools");
   await assert.rejects(lm.build({ model: "jev-latest", messages: user("x"), config: { responseFormat: fmt } }, true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "stream");
-  // A data part is the state verbatim; a conversation becomes the messages object (D6).
+  // 2026-09-19 D1: the state is the one user part, verbatim — an object, an array; a transcript is the caller's object, not the adapter's.
   const data = await lm.build({ model: "jev-latest", messages: [Message.user([{ type: "data", value: { ticket: 12 } }])], config: { responseFormat: fmt } }, false);
   assert.deepEqual(decode(data.request)["state"], { ticket: 12 });
-  const convo = await lm.build({ model: "jev-latest", system: "Be fair.", messages: [Message.user("a"), Message.assistant("b")], config: { responseFormat: fmt } }, false);
-  assert.deepEqual(decode(convo.request)["state"], { system: "Be fair.", messages: [{ role: "user", content: "a" }, { role: "assistant", content: "b" }] });
+  const transcript = await lm.build({ model: "jev-latest", messages: [Message.user({ type: "data", value: { context: "Be fair.", messages: [{ from: "customer", text: "a" }, { from: "agent", text: "b" }] } })], config: { responseFormat: fmt } }, false);
+  assert.deepEqual(decode(transcript.request)["state"], { context: "Be fair.", messages: [{ from: "customer", text: "a" }, { from: "agent", text: "b" }] });
+  const list = await lm.build({ model: "jev-latest", messages: [Message.user({ type: "data", value: ["Hi", "My card was charged twice."] })], config: { responseFormat: fmt } }, false);
+  assert.deepEqual(decode(list.request)["state"], ["Hi", "My card was charged twice."]);
+  // 2026-09-19 D2: what Jev has no slot for is refused with the native place named, never merged.
+  await assert.rejects(lm.build({ model: "jev-latest", system: "Be fair.", messages: user("a"), config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "system" && /no system prompt/.test(e.message));
+  await assert.rejects(lm.build({ model: "jev-latest", messages: [Message.user("a"), Message.assistant("b")], config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "messages" && /got 2 messages/.test(e.message));
+  await assert.rejects(lm.build({ model: "jev-latest", messages: [Message.user(["a", "b"])], config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "messages[0].parts");
+});
+
+test("D3 (2026-09-19): a data part in a user message is its compact JSON on every text wire — the same bytes a lone text part would take", async () => {
+  const value = { note: "Ripe.", price_eur: 48, tags: ["red", null] };
+  const req = { model: "m", messages: [Message.user({ type: "data", value })], config: { responseFormat: judgments({ ok: yesNo("Ok?") }) } };
+  const text = '{"note":"Ripe.","price_eur":48,"tags":["red",null]}';
+  const bodyOf = async (p: string) => JSON.parse(utf8Decode((await adapterFor(p, { apiKey: "k" }).buildRequest(Request.create(req), false)).body)) as Record<string, unknown>;
+  assert.deepEqual((await bodyOf("openai"))["input"], [{ role: "user", content: [{ type: "input_text", text }] }]);
+  assert.deepEqual((await bodyOf("groq"))["messages"], [{ role: "user", content: text }]);
+  assert.deepEqual((await bodyOf("anthropic"))["messages"], [{ role: "user", content: [{ type: "text", text }] }]);
+  assert.deepEqual((await bodyOf("gemini"))["contents"], [{ role: "user", parts: [{ text }] }]);
+  // Beside a text part, the Chat wire keeps the block form.
+  const two = await adapterFor("groq", { apiKey: "k" }).buildRequest(Request.create({ ...req, messages: [Message.user(["Judge this:", { type: "data", value }])] }), false);
+  assert.deepEqual((JSON.parse(utf8Decode(two.body)) as { messages: unknown[] }).messages, [{ role: "user", content: [{ type: "text", text: "Judge this:" }, { type: "text", text }] }]);
 });
 
 test("token trie (pure): key paths after the prefill are prefix-free; nodes are every prefix; the fold sums log-probs and normalizes once", () => {

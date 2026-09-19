@@ -9,7 +9,7 @@ import { isJsonObject, parseJsonBytes, stringifyJson, type JsonObject, type Json
 import { getDefaultPlatform, noFilesystem } from "./platform.ts";
 import type { FileReadiness } from "./vocab.ts";
 import { ModelInfo } from "./types/model_info.ts";
-import type { MediaPart, Message, Part, ToolResultPart } from "./types/parts.ts";
+import type { DataPart, MediaPart, Message, Part, ToolResultPart } from "./types/parts.ts";
 import { type TokenLogprob, normalizeTokenLogprob } from "./types/response.ts";
 import { ValueError, encodeBase64 } from "./types/validate.ts";
 
@@ -163,6 +163,7 @@ export function partsToText(parts: readonly Part[], opts: { provider?: string; w
       );
     }
     if (part.type === "text") out.push(part.text);
+    else if (part.type === "data") out.push(dataPartText(part));
     else if (part.type === "thinking" && part.text) out.push(part.text);
     else if (part.type === "citation") {
       const bits = [part.title, part.url, part.text].filter((x): x is string => Boolean(x));
@@ -174,6 +175,15 @@ export function partsToText(parts: readonly Part[], opts: { provider?: string; w
 
 export function messageText(msg: Message): string {
   return partsToText(msg.parts);
+}
+
+/**
+ * A data part on a wire that takes only text: its `value` as compact
+ * canonical JSON, nothing added (changes/2026-09-19-jev-state.md D3;
+ * types.md §DataPart). An opaque payload: numbers as written.
+ */
+export function dataPartText(part: DataPart): string {
+  return stringifyJson(part.value);
 }
 
 /** The bytes of a path-addressed part or upload, through the host (`Platform.readFile`); a host without a filesystem refuses. */

@@ -22,7 +22,7 @@ import {
 import type { Request, ResponseFormat } from "../types/config.ts";
 import type { Message, Part, ToolResultPart } from "../types/parts.ts";
 import { ErrorDetail, Usage } from "../types/response.ts";
-import { MEDIA_KINDS, checkToolResultMedia, mediaBase64, mediaDataUri, partsToText, toolResultErrorText } from "../wire.ts";
+import { MEDIA_KINDS, checkToolResultMedia, dataPartText, mediaBase64, mediaDataUri, partsToText, toolResultErrorText } from "../wire.ts";
 
 export type ProviderErrorClass = new (message: string, meta?: never) => ProviderError;
 
@@ -243,6 +243,8 @@ export function partToOpenAIInput(part: Part, provider?: string): JsonObject {
   switch (part.type) {
     case "text":
       return { type: "input_text", text: part.text };
+    case "data":
+      return { type: "input_text", text: dataPartText(part) }; // D3: a data part is its JSON on a text slot
     case "image": {
       if (part.fileId !== undefined) return { type: "input_image", file_id: part.fileId };
       const payload: JsonObject = { type: "input_image", image_url: part.url ?? mediaDataUri(part) };
