@@ -737,12 +737,14 @@ export class OpenAIChatLM extends ProviderLM {
   /** Strict generated JSON boundary; no partial/lenient JSON recovery. */
   private async judgmentGenerate(request: Request, opts: { signal?: AbortSignal }, unmeasured = false): Promise<{ response: Response; reply?: HttpResponse; adaptations: readonly Adaptation[] }> {
     const generatedRequest = this.judgmentGeneratedRequest(request);
+    const plainConfig = { ...generatedRequest.config };
+    delete plainConfig.responseFormat;
+    const plain = Request.create({ ...generatedRequest, config: plainConfig });
     checkAborted(opts.signal);
     const building = this.build(generatedRequest, false);
     const built = await (opts.signal ? abortable(building, opts.signal) : building);
     if (hasClientSideStop(built.adaptations)) {
       // Same close-at-stop billing semantics as the ordinary complete driver.
-      const plain = Request.create({ ...generatedRequest, config: { ...generatedRequest.config, responseFormat: undefined } });
       const generated = await materializeResponseAsync(this.stream(generatedRequest, opts), plain);
       return { response: this.judgmentGeneratedValue(generatedRequest, generated, unmeasured), adaptations: built.adaptations };
     }
@@ -750,7 +752,6 @@ export class OpenAIChatLM extends ProviderLM {
     const response = this.parseReply(reply, () => {
       try {
         // Parse raw text first: the ordinary judgment fold is intentionally lenient.
-        const plain = Request.create({ ...generatedRequest, config: { ...generatedRequest.config, responseFormat: undefined } });
         const body = reply.json();
         if (isJsonObject(body) && isJsonObject(body["error"])) this.parseResponse(plain, reply); // preserve in-band errors
         const choices = isJsonObject(body) ? body["choices"] : undefined;

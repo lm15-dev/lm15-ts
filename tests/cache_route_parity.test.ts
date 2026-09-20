@@ -73,7 +73,7 @@ test("suffix destination validation and legacy canonical shape", () => {
 });
 
 test("direct cache has no invented destination and strips only own prefix once", async () => {
-  const lm = new OpenAIChatLM({ apiKey: "k", baseUrl: "https://custom.invalid/v1" });
+  const lm = new OpenAIChatLM({ apiKey: "k", baseUrl: "https://custom.invalid/v1", transport: new FakeTransport([]) });
   assert.equal((await lm.cache(req("m"))).provider, undefined);
   const cached = await lm.cache(req("openai_chat:m"));
   assert.equal(cached.provider, "openai-chat");
@@ -84,5 +84,4 @@ test("direct cache has no invented destination and strips only own prefix once",
     assert.equal(JSON.parse(new TextDecoder().decode(wire.body)).model, expected);
     await lm.plan(req(model));
   }
-  await lm.close();
 });

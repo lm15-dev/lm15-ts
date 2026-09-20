@@ -108,7 +108,9 @@ test("native judgments preserve measurements, argmax, opaque confidence/score an
   assert.equal(result.usage.inputTokens, undefined);
   assert.equal(result.usage.outputTokens, undefined);
   assert.equal(result.usage.totalTokens, undefined);
-  assert.equal(stringifyJson((result.providerData!["typesafe"] as JsonObject)["answers"]), stringifyJson(answers));
+  // Number rule: nonintegral floats may lose redundant trailing zeros;
+  // the integral-float score must still remain 1.0, not integer 1.
+  assert.equal(stringifyJson((result.providerData!["typesafe"] as JsonObject)["answers"]), '{"ok":{"type":"noul","noul":0.75,"confidence":0.9},"style":{"type":"choice","choice":"oak","probabilities":{"fruit":0.2,"oak":0.8}},"quality":{"type":"score","score":1.0,"probabilities":{"0":0.1,"1":0.3,"2":0.6}}}');
 });
 
 test("INV-052: no sum check, no normalization, no choice re-selection; ordered ties use declaration order", () => {

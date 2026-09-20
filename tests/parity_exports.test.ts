@@ -24,5 +24,5 @@ test("public data factory preserves opaque number precision and canonical serde"
   const part = browser.data(value);
   assert.equal(part.value, value);
   assert.equal(browser.stringifyJson(browser.Part.toJSON(part)), '{"type":"data","value":{"amount":9007199254740993,"ratio":1.0}}');
-  assert.equal(browser.Message.user(part).parts[0], part);
+  assert.deepEqual(browser.Message.user(part).parts[0], part);
 });

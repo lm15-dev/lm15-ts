@@ -154,6 +154,12 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "kind",
       "data"
     ],
+    "CredentialSource": [
+      "rung",
+      "label",
+      "named",
+      "expires_at"
+    ],
     "DataPart": [
       "type",
       "value",
@@ -377,6 +383,10 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "logprobs_complete",
       "provider_data",
       "adaptations"
+    ],
+    "SourcedCredentialProvider": [
+      "source",
+      "named"
     ],
     "SpeechGenerationRequest": [
       "model",
