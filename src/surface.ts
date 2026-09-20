@@ -102,7 +102,8 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
     ],
     "CachedPrefix": [
       "prefix",
-      "resource"
+      "resource",
+      "provider"
     ],
     "CitationDelta": [
       "type",

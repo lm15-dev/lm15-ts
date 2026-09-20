@@ -206,7 +206,7 @@ export type Part =
   | CitationPart
   | DataPart;
 
-export type ToolResultContentPart = TextPart | MediaPart | CitationPart;
+export type ToolResultContentPart = TextPart | MediaPart | CitationPart | DataPart;
 export type PromptPart = TextPart | MediaPart | DataPart;
 export type AssistantPart = Exclude<Part, ToolResultPart>;
 
@@ -228,7 +228,7 @@ const PART_TYPE_SET = new Set([
   "citation",
   "data",
 ]);
-const TOOL_RESULT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal", "data"]);
+const TOOL_RESULT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal"]);
 const PROMPT_FORBIDDEN = new Set(["tool_call", "tool_result", "thinking", "refusal", "citation"]);
 
 export const DEFAULT_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({
@@ -346,6 +346,7 @@ function normalizePartValue(input: unknown): Part {
             "ToolResultPart.content cannot contain tool calls, nested tool results, thinking parts, or refusals",
           );
         }
+        validateInputDataParts("tool results", [part]);
         return part as ToolResultContentPart;
       });
       const isError = absent(d["isError"]) ? false : requireBool(d["isError"], "ToolResultPart.is_error");
@@ -403,6 +404,11 @@ export interface ContinuationOption {
 
 export function text(content: string, opts: ContinuationOption = {}): TextPart {
   return normalizePart({ type: "text", text: content, continuation: opts.continuation }) as TextPart;
+}
+
+/** Structured input or an assistant's measured answer; opaque value is never copied. */
+export function data(value: JsonValue, opts: ContinuationOption & Pick<DataPart, "probabilities" | "method"> = {}): DataPart {
+  return normalizePart({ type: "data", value, ...opts }) as DataPart;
 }
 
 export function thinking(content: string, opts: ContinuationOption = {}): ThinkingPart {
@@ -675,9 +681,9 @@ function normalizeProbabilities(raw: unknown): Readonly<Record<string, Readonly<
       if (!key) throw new TypeError(`DataPart.probabilities[${JSON.stringify(name)}] keys must be non-empty strings`);
       const n = requireFloat(prob, `DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}]`);
       if (n < 0 || n > 1) throw new ValueError(`DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}] must be in [0, 1]`);
-      inner[key] = n;
+      Object.defineProperty(inner, key, { value: n, enumerable: true, configurable: true, writable: true });
     }
-    out[name] = Object.freeze(inner);
+    Object.defineProperty(out, name, { value: Object.freeze(inner), enumerable: true, configurable: true, writable: true });
   }
   return Object.freeze(out);
 }

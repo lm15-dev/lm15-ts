@@ -189,6 +189,7 @@ function normalizeLiveClientEventValue(input: unknown): LiveClientEvent {
         if (!isPart(p)) throw new TypeError("LiveClientTurnEvent.parts must contain Part objects");
         const part = normalizePart(p);
         if (PROMPT_FORBIDDEN.has(part.type)) throw new TypeError("LiveClientTurnEvent.parts cannot contain model/tool protocol parts");
+        if (part.type === "data" && part.probabilities !== undefined) throw new TypeError("live input data parts carry value only; probabilities belong to assistant messages (INV-052)");
         return part as PromptPart;
       });
       const turnComplete = absent(d["turnComplete"]) ? true : requireBool(d["turnComplete"], "LiveClientTurnEvent.turn_complete");
@@ -218,6 +219,7 @@ function normalizeLiveClientEventValue(input: unknown): LiveClientEvent {
         if (!isPart(p)) throw new TypeError("LiveClientToolResultEvent.content must contain Part objects");
         const part = normalizePart(p);
         if (TOOL_RESULT_FORBIDDEN.has(part.type)) throw new TypeError("LiveClientToolResultEvent.content cannot contain model or protocol parts");
+        if (part.type === "data" && part.probabilities !== undefined) throw new TypeError("live tool result data parts carry value only; probabilities belong to assistant messages (INV-052)");
         return part as ToolResultContentPart;
       });
       return frozen({ type: "tool_result", id: requireString(d["id"], "LiveClientToolResultEvent.id", false), content: Object.freeze(content) });

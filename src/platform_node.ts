@@ -27,8 +27,8 @@ function openCloudChain(opts: CloudChainOptions): CloudChain {
     set settings(value) {
       ctx.settings = { ...value };
     },
-    credentialProvider: (policy) => credentialProvider(policy, ctx),
-    explain: (policy, explicit) => explain(policy, ctx, explicit),
+    credentialProvider: (policy, named) => credentialProvider(policy, ctx, named),
+    explain: (policy, explicit, named) => explain(policy, ctx, explicit, named),
   };
 }
 

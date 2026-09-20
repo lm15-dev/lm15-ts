@@ -4,10 +4,11 @@
  * xAI, ollama, vLLM, …). Server quirks are `OpenAIChatCompat` presets.
  */
 
-import { AdaptationScope, adapt, collecting, nearestEffort, type Adaptation } from "../adaptation.ts";
-import { ProviderLM, attachErrorMetadata, type LMOptions, type EmitOptions } from "../adapter.ts";
-import { noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments, type Judgment } from "../judgments.ts";
-import { JUDGMENT_PREFILL, foldJudgment, judgmentAsk, keyPaths, scorePayload, scoresFromBody, tokenizePayload, tokensFromBody, trieNodes } from "./token_trie.ts";
+import { AdaptationScope, adapt, checkPolicy, collecting, hasClientSideStop, nearestEffort, type Adaptation, type AdaptationPolicy } from "../adaptation.ts";
+import { ProviderLM, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { abortable, checkAborted } from "../async.ts";
+import { nonJudgmentProperties, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments, type Judgment } from "../judgments.ts";
+import { JUDGMENT_PREFILL, foldJudgment, judgmentAsk, keyPaths, scorePayload, scoresFromBody, tokenizePayload, tokensFromBody, trieNodes, validateScoringRequest, mixedJudgments, sumScoringUsage } from "./token_trie.ts";
 import { OPENAI_CHAT_API, type AccessPolicy } from "../auth/policy.ts";
 import {
   OPENAI_CHAT_PRESET_BASE_URLS,
@@ -30,7 +31,7 @@ import {
   mapHttpError,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
-import type { SSEEvent } from "../stream.ts";
+import { materializeResponseAsync, type SSEEvent } from "../stream.ts";
 import {
   Request,
   builtinTool,
@@ -41,7 +42,7 @@ import {
   tool,
   type BuiltinTool,
   type CacheConfig,
-  type Config,
+  Config,
   type Reasoning,
   type ResponseFormat,
   type Tool,
@@ -360,6 +361,13 @@ export class OpenAIChatLM extends ProviderLM {
   payload(request: Request, stream: boolean): JsonObject {
     const compat = this.compatFor(request.model);
     const config = request.config ?? {};
+    // Streaming uses generated JSON, never the non-streamable trie driver.
+    // Check before message construction/credentials, even if response_format
+    // itself would be ignored by this server.
+    if (stream || !this.scoresNamedTokens(compat)) {
+      if (stream && this.judgmentsViaTokenScoring(request)) this.judgmentStreamPolicy(request);
+      else noteUnmeasurableProbabilities(request, this.provider);
+    }
     const payload: JsonObject = { model: request.model, messages: this.buildMessages(request, compat) };
     if (stream) {
       payload["stream"] = true;
@@ -449,7 +457,6 @@ export class OpenAIChatLM extends ProviderLM {
         // (api.openai.com strict honours it, receipted 2026-09-17); a server
         // that scores named tokens delivers probabilities through the trie
         // driver, every other one answers with the pick only.
-        if (!this.scoresNamedTokens(compat)) noteUnmeasurableProbabilities(request, this.provider);
         payload["response_format"] = responseFormatToChat(config.responseFormat);
       }
     }
@@ -555,7 +562,7 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   wireRequest(request: Request, stream: boolean): EmitOptions {
-    request = Request.create(request);
+    request = this.wireModelRequest(request);
     return {
       method: "POST",
       url: `${this.base()}/chat/completions`,
@@ -578,7 +585,7 @@ export class OpenAIChatLM extends ProviderLM {
 
   /** The conversation, the judgment's question as a final user turn, and the assistant's answer so far (prefill + key). */
   protected judgmentMessages(request: Request, j: Judgment, answer: string): JsonObject[] {
-    const messages = this.buildMessages(request, this.compatFor(request.model));
+    const messages = this.buildMessages(Request.create({ ...request, config: {} }), this.compatFor(request.model));
     messages.push({ role: "user", content: judgmentAsk(j) });
     messages.push({ role: "assistant", content: answer });
     return messages;
@@ -600,29 +607,61 @@ export class OpenAIChatLM extends ProviderLM {
     return this.emit({ method: "POST", url: `${this.base()}/completions`, endpoint: "completions", model, headers: this.headers(), payload: scorePayload(model, prompts, tokenIds) });
   }
 
-  private judgmentAdaptations(): readonly Adaptation[] {
-    const scope = new AdaptationScope(this.adaptations, this.provider);
-    collecting(scope, () =>
-      adapt(
-        "config.response_format",
-        "client_side",
-        "each judgment is asked as a final user turn and every declared key is scored as a token path (candidate-sequence likelihood, MAP-14 §4) instead of a generated JSON object; questions are scored independently",
-        { provider: this.provider },
-      ),
-    );
-    return scope.records;
+  private judgmentStreamPolicy(request: Request): void {
+    if (request.config?.probabilities === "required") {
+      throw new UnsupportedFeatureError(
+        `${this.provider}: candidate scoring produces a non-streamable DataPart; use complete() for required probabilities or a separate scoring request`,
+        { provider: this.provider, feature: "config.probabilities" },
+      );
+    }
+    adapt("config.probabilities", "dropped",
+      "stream() uses generated JSON, not candidate scoring; the answer carries an unmeasured pick only; use complete() for scoring",
+      { asked: request.config?.probabilities, provider: this.provider });
+  }
+
+  private judgmentAdaptations(request: Request, policy: AdaptationPolicy = this.adaptations): readonly Adaptation[] {
+    // One shared offline preflight for plan and complete; no tokenize builder,
+    // credential provider or transport is invoked, even under strict refusal.
+    validateScoringRequest(request, this.provider);
+    const scope = new AdaptationScope(checkPolicy(policy), this.provider, true);
+    collecting(scope, () => {
+      const mixed = mixedJudgments(request);
+      if (mixed) adapt("config.response_format", "client_side",
+        "an additional structured-output call answers ordinary properties, which are never scored", { provider: this.provider });
+      const config = Config.toJSON(request.config ?? {});
+      for (const name of ["max_tokens", "temperature", "top_p", "top_k", "stop", "seed", "frequency_penalty", "presence_penalty", "reasoning", "logprobs", "cache", "extensions"]) {
+        if (config[name] !== undefined) adapt(`config.${name}`, "dropped",
+          "candidate likelihood measures unmodified next-token probabilities with max_tokens=1 per trie node; this generation setting has no measurement slot (any generated JSON call still uses its usual mapping)",
+          { asked: config[name], provider: this.provider });
+      }
+      if (mixed) this.payload(this.judgmentGeneratedRequest(request), false);
+      this.buildMessages(Request.create({ ...request, config: {} }), this.compatFor(request.model));
+    });
+    return Object.freeze([...scope.records]);
+  }
+
+  override async plan(request: Request, opts: { policy?: AdaptationPolicy } = {}): Promise<readonly Adaptation[]> {
+    request = Request.create(request);
+    const wireRequest = this.wireModelRequest(request);
+    if (this.judgmentsViaTokenScoring(wireRequest)) return this.judgmentAdaptations(wireRequest, opts.policy ?? this.adaptations);
+    return super.plan(request, opts);
   }
 
   override async complete(request: Request, opts: { signal?: AbortSignal } = {}): Promise<Response> {
+    checkAborted(opts.signal);
     request = Request.create(request);
-    if (!this.judgmentsViaTokenScoring(request)) return super.complete(request, opts);
-    const adaptations = this.judgmentAdaptations();
+    const wireRequest = this.wireModelRequest(request);
+    if (!this.judgmentsViaTokenScoring(wireRequest)) return super.complete(request, opts);
+    const adaptations = this.judgmentAdaptations(wireRequest);
     const found = requestJudgments(request);
     const tokenized: Array<{ j: Judgment; prefix: number[]; paths: Map<string, number[]> }> = [];
     let calls = 0;
     const tokens = async (j: Judgment, answer: string, continueFinal: boolean): Promise<number[]> => {
+      checkAborted(opts.signal);
       calls++;
-      return tokensFromBody((await this.sendOk(await this.judgmentTokenizeRequest(request, j, answer, continueFinal))).text());
+      const building = this.judgmentTokenizeRequest(wireRequest, j, answer, continueFinal);
+      const wire = await (opts.signal ? abortable(building, opts.signal) : building);
+      return this.sendParsed(wire, resp => tokensFromBody(resp.text()), true, opts.signal);
     };
     for (const j of found.values()) {
       const prefix = await tokens(j, JUDGMENT_PREFILL, true);
@@ -642,34 +681,117 @@ export class OpenAIChatLM extends ProviderLM {
         for (const t of node.children) union.add(t);
       }
     });
-    const { scores, usage, model } = scoresFromBody((await this.sendOk(await this.judgmentScoreRequest(request.model, prompts, [...union]))).text(), prompts.length);
+    checkAborted(opts.signal);
+    const scoringBuild = this.judgmentScoreRequest(wireRequest.model, prompts, [...union]);
+    const scoringRequest = await (opts.signal ? abortable(scoringBuild, opts.signal) : scoringBuild);
+    const scoringReply = await this.sendOk(scoringRequest, opts.signal);
+    const { scores, usage, model } = this.parseReply(scoringReply, resp => scoresFromBody(resp.text(), prompts.length));
     const tables: Array<Map<string, Map<number, number>>> = tokenized.map(() => new Map());
     for (const [i, { index, key }] of meta.entries()) {
       const got = scores[i]!;
       const children = nodesPer[index]!.get(key)!.children;
-      for (const t of children) if (!got.has(t)) return this.judgmentUnmeasured(request, opts);
+      for (const t of children) if (!got.has(t)) return this.judgmentUnmeasured(request, opts, adaptations, usage);
       tables[index]!.set(key, new Map([...children].map((t) => [t, got.get(t)!])));
     }
     const value: JsonObject = {};
     const probabilities: Record<string, Record<string, number>> = {};
     const coverage: Record<string, number> = {};
     tokenized.forEach(({ j, paths }, index) => {
-      const folded = foldJudgment(paths, tables[index]!);
-      probabilities[j.name] = folded.distribution;
-      coverage[j.name] = folded.coverage;
+      const folded = this.parseReply(scoringReply, () => foldJudgment(paths, tables[index]!), false);
+      Object.defineProperty(probabilities, j.name, { value: folded.distribution, enumerable: true });
+      Object.defineProperty(coverage, j.name, { value: folded.coverage, enumerable: true });
       let best = j.keys[0]!;
       for (const k of j.keys) if (folded.distribution[k]! > folded.distribution[best]!) best = k;
-      value[j.name] = j.kind === "boolean" ? best === "true" : j.kind === "ordered" ? Number(best) : best;
+      Object.defineProperty(value, j.name, { value: j.kind === "boolean" ? best === "true" : j.kind === "ordered" ? Number(best) : best, enumerable: true });
     });
     const part = normalizePart({ type: "data", value, probabilities, method: "candidate_sequence_likelihood" });
-    const response = new Response({
-      model: model ?? request.model,
+    let response = new Response({
+      model: model ?? wireRequest.model,
       message: { role: "assistant", parts: [part] },
       finishReason: "stop",
-      usage: Usage.create({ inputTokens: Number(usage["prompt_tokens"] ?? 0) || 0, outputTokens: Number(usage["completion_tokens"] ?? 0) || 0 }),
+      usage,
       providerData: { coverage, judgments: { nodes: prompts.length, tokenize_calls: calls, method: "candidate_sequence_likelihood" } },
     });
-    return this.finishResponse(request, response, adaptations);
+    if (mixedJudgments(request)) {
+      const { response: generated, reply } = await this.judgmentGenerate(request, opts);
+      const merge = () => {
+        const original = generated.dataPart!;
+        const scored = response.dataPart!;
+        const part = normalizePart({ ...scored, value: { ...(original.value as JsonObject), ...(scored.value as JsonObject) }, continuation: original.continuation });
+        return response.with({
+          id: generated.id, finishReason: generated.finishReason,
+          message: { ...generated.message, parts: generated.message.parts.map(p => p === original ? part : p) },
+          usage: sumScoringUsage(response.usage, generated.usage),
+          providerData: { ...response.providerData, scoring_usage: Usage.toJSON(response.usage), generated_response: Response.toJSON(generated, { includeProviderData: true }) },
+        });
+      };
+      response = reply ? this.parseReply(reply, merge, false) : merge();
+    }
+    return response.with({ adaptations: this.visible(adaptations) });
+  }
+
+  private judgmentGeneratedRequest(request: Request): Request {
+    return Request.create({ ...request, config: { ...request.config, probabilities: "off" } });
+  }
+
+  /** Strict generated JSON boundary; no partial/lenient JSON recovery. */
+  private async judgmentGenerate(request: Request, opts: { signal?: AbortSignal }, unmeasured = false): Promise<{ response: Response; reply?: HttpResponse; adaptations: readonly Adaptation[] }> {
+    const generatedRequest = this.judgmentGeneratedRequest(request);
+    checkAborted(opts.signal);
+    const building = this.build(generatedRequest, false);
+    const built = await (opts.signal ? abortable(building, opts.signal) : building);
+    if (hasClientSideStop(built.adaptations)) {
+      // Same close-at-stop billing semantics as the ordinary complete driver.
+      const plain = Request.create({ ...generatedRequest, config: { ...generatedRequest.config, responseFormat: undefined } });
+      const generated = await materializeResponseAsync(this.stream(generatedRequest, opts), plain);
+      return { response: this.judgmentGeneratedValue(generatedRequest, generated, unmeasured), adaptations: built.adaptations };
+    }
+    const reply = await this.sendOk(built.request, opts.signal);
+    const response = this.parseReply(reply, () => {
+      try {
+        // Parse raw text first: the ordinary judgment fold is intentionally lenient.
+        const plain = Request.create({ ...generatedRequest, config: { ...generatedRequest.config, responseFormat: undefined } });
+        const body = reply.json();
+        if (isJsonObject(body) && isJsonObject(body["error"])) this.parseResponse(plain, reply); // preserve in-band errors
+        const choices = isJsonObject(body) ? body["choices"] : undefined;
+        if (!Array.isArray(choices) || choices.length !== 1 || !isJsonObject(choices[0]) || choices[0]["finish_reason"] !== "stop") {
+          throw new ProviderError("generated judgment reply needs one complete choice with finish_reason='stop'");
+        }
+        const generated = this.finishResponse(generatedRequest, this.parseResponse(plain, reply), built.adaptations);
+        return this.judgmentGeneratedValue(generatedRequest, generated, unmeasured);
+      } catch (cause) {
+        if (cause instanceof ProviderError) throw cause;
+        throw new ProviderError("malformed generated judgment JSON", { cause });
+      }
+    });
+    return { response, reply, adaptations: built.adaptations };
+  }
+
+  private judgmentGeneratedValue(request: Request, generated: Response, unmeasured: boolean): Response {
+    try {
+      if (generated.finishReason !== "stop") throw new ProviderError("generated judgment answer did not finish completely");
+      const texts = generated.message.parts.filter((p): p is TextPart => p.type === "text");
+      if (texts.length !== 1) throw new ProviderError("generated judgment answer needs one JSON object");
+      const value = parseJson(texts[0]!.text);
+      if (!isJsonObject(value)) throw new ProviderError("generated judgment answer needs a JSON object");
+      const format = request.config!.responseFormat!;
+      if (format.type !== "json_schema") throw new ProviderError("missing judgment schema");
+      const measuredFields = requestJudgments(request);
+      const required = format.schema["required"];
+      if (Array.isArray(required)) for (const name of required) {
+        if (typeof name === "string" && (unmeasured || !measuredFields.has(name)) && !Object.hasOwn(value, name)) {
+          throw new ProviderError(`generated answer is missing required property ${JSON.stringify(name)}`);
+        }
+      }
+      const part = normalizePart({ type: "data", value, continuation: texts[0]!.continuation });
+      return generated.with({ message: { ...generated.message, parts: generated.message.parts.map(p => p === texts[0] ? part : p) }, adaptations: [] });
+    } catch (cause) {
+      if (cause instanceof ProviderError) {
+        (cause as { provider: string | null }).provider ??= this.provider;
+        throw cause;
+      }
+      throw new ProviderError("malformed generated judgment JSON", { cause, provider: this.provider });
+    }
   }
 
   /**
@@ -677,7 +799,7 @@ export class OpenAIChatLM extends ProviderLM {
    * `logprob_token_ids` (receipted on vLLM 0.25.1). `required` refuses;
    * `if_available` answers by structured output instead and records it.
    */
-  private async judgmentUnmeasured(request: Request, opts: { signal?: AbortSignal }): Promise<Response> {
+  private async judgmentUnmeasured(request: Request, opts: { signal?: AbortSignal }, adaptations: readonly Adaptation[], usage: Usage): Promise<Response> {
     if (request.config?.probabilities === "required") {
       throw new UnsupportedFeatureError(`${this.provider}: config.probabilities='required' but this server ignored logprob_token_ids (vLLM < 0.29?); no distribution can be measured here`, {
         provider: this.provider,
@@ -691,10 +813,17 @@ export class OpenAIChatLM extends ProviderLM {
         provider: this.provider,
       }),
     );
-    const built = await this.build(request, false);
-    const resp = await this.send(built.request, opts.signal);
-    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
-    return this.finishResponse(request, this.parseResponse(request, resp), [...scope.records, ...built.adaptations.filter((a) => a.field !== "config.probabilities")]);
+    const generated = await this.judgmentGenerate(request, opts, true);
+    const records = [...adaptations, ...scope.records];
+    for (const record of generated.adaptations) {
+      if (!records.some(a => stringifyJson(a as unknown as JsonObject) === stringifyJson(record as unknown as JsonObject))) records.push(record);
+    }
+    const finish = () => generated.response.with({
+      usage: sumScoringUsage(usage, generated.response.usage),
+      providerData: { ...generated.response.providerData, scoring_usage: Usage.toJSON(usage) },
+      adaptations: this.visible(records),
+    });
+    return generated.reply ? this.parseReply(generated.reply, finish, false) : finish();
   }
 
   // ─── Response ────────────────────────────────────────────────────
@@ -716,6 +845,7 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    request = this.wireModelRequest(request);
     return foldJudgments(responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message)), request);
   }
 

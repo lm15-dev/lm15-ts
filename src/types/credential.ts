@@ -151,6 +151,40 @@ export class AwsCredentials {
 
 export type CredentialValue = ApiKey | BearerToken | AwsCredentials;
 
+export type NamedCredential = "platform" | "workload" | "environment" | "cli";
+
+/** AUTH-1 provenance: descriptive metadata only, never credential material. */
+export class CredentialSource {
+  readonly rung: string;
+  readonly label: string;
+  readonly named: NamedCredential | undefined;
+  readonly expiresAt: Date | undefined;
+
+  constructor(fields: { rung: string; label: string; named?: NamedCredential | undefined; expiresAt?: Date | undefined }) {
+    this.rung = fields.rung;
+    this.label = fields.label;
+    this.named = fields.named;
+    this.expiresAt = fields.expiresAt;
+    Object.freeze(this);
+  }
+
+  describe(now = new Date()): string {
+    let text = `${this.label} [${this.rung}]`;
+    if (this.named) text += ` (named credential "${this.named}")`;
+    if (this.expiresAt) text += `; expires ${formatRfc3339(this.expiresAt)}${this.expiresAt.getTime() <= now.getTime() ? " (expired)" : ""}`;
+    return text;
+  }
+
+  toString(): string { return this.describe(); }
+}
+
+/** The platform's cloud callable exposes its last resolution without invoking it. */
+export interface SourcedCredentialProvider {
+  (): Promise<CredentialValue>;
+  readonly source: CredentialSource | undefined;
+  readonly named: NamedCredential | undefined;
+}
+
 /** The AUTH-2 zero-arg provider: invoked at request-build time, never cached by the adapter. */
 export type CredentialProvider = () => string | CredentialValue | Promise<string | CredentialValue>;
 

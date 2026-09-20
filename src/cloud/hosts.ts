@@ -24,11 +24,13 @@ export function resolveSettings(
   hostSpec: HostSpec | undefined,
   given: Readonly<Record<string, string>> | undefined,
   env?: Readonly<Record<string, string>>,
-  opts: { provider?: string; profile?: (name: string) => string | undefined } = {},
+  opts: { provider?: string; profile?: (name: string) => string | undefined; endpoint?: string | undefined } = {},
 ): Record<string, string> {
   const out: Record<string, string> = {};
   if (!hostSpec) return { ...(given ?? {}) };
   const remaining = { ...(given ?? {}) };
+  const relaxed = opts.endpoint !== undefined ? urlOnlySettings(hostSpec) : new Set<string>();
+  if (opts.endpoint !== undefined) joinEndpoint(opts.endpoint, "", opts.provider);
   for (const setting of hostSpec.settings) {
     let value: string | undefined = remaining[setting.name];
     delete remaining[setting.name];
@@ -44,6 +46,7 @@ export function resolveSettings(
     if (!value && opts.profile) value = opts.profile(setting.name);
     if (!value) value = setting.default;
     if (!value) {
+      if (relaxed.has(setting.name)) continue;
       const hint = setting.env.length > 0 ? `set ${setting.env.join(" or ")}` : `pass settings={'${setting.name}': ...}`;
       throw new NotConfiguredError(`${opts.provider ?? "host"}: setting '${setting.name}' is required and has no default; ${hint}`, {
         provider: opts.provider ?? null,
@@ -66,7 +69,55 @@ export function locationHost(location: string): string {
   return `${location}-aiplatform.googleapis.com`;
 }
 
-export function renderBaseUrl(hostSpec: HostSpec, settings: Readonly<Record<string, string>>): string {
+/** The root and door path stay separate so an endpoint never replaces the dialect. */
+export function hostTemplates(hostSpec: HostSpec): { root: string; path: string } {
+  const at = hostSpec.baseUrl.indexOf("/", hostSpec.baseUrl.indexOf("://") + 3);
+  return at < 0 ? { root: hostSpec.baseUrl, path: "" } : { root: hostSpec.baseUrl.slice(0, at), path: hostSpec.baseUrl.slice(at) };
+}
+
+export function urlOnlySettings(hostSpec: HostSpec): Set<string> {
+  const templates = hostTemplates(hostSpec);
+  const fields = (text: string) => [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1]!);
+  const root = new Set(fields(templates.root));
+  if (root.delete("location_host")) root.add("location");
+  for (const name of fields(templates.path)) root.delete(name);
+  for (const [, name] of hostSpec.requiredHeaders) root.delete(name);
+  if (hostSpec.sigv4Service) root.delete("region");
+  return root;
+}
+
+export function endpointFromEnv(hostSpec: HostSpec | undefined, env: Readonly<Record<string, string | undefined>> | undefined): string | undefined {
+  for (const key of hostSpec?.endpointEnv ?? []) {
+    const value = env?.[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+/** Join a trusted endpoint with the door, merging an already-present leading door path. */
+export function joinEndpoint(endpoint: string, path: string, provider = "host"): string {
+  let parsed: URL;
+  try {
+    if (typeof endpoint !== "string" || !/^https?:\/\//i.test(endpoint.trim()) || /[\\\r\n\t]/.test(endpoint)) throw new Error();
+    parsed = new URL(endpoint.trim());
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname) throw new Error();
+  } catch {
+    throw new NotConfiguredError(`${provider}: endpoint must be an http(s) URL with a host`, { provider });
+  }
+  if (parsed.username || parsed.password || /[?#]/.test(endpoint) || endpoint.slice(endpoint.indexOf("://") + 3).split("/")[0]!.includes("@")) {
+    throw new NotConfiguredError(`${provider}: endpoint must not carry a query, fragment or userinfo`, { provider });
+  }
+  const given = parsed.pathname.split("/").filter(Boolean);
+  const door = path.split("/").filter(Boolean);
+  let base = given;
+  for (let k = Math.min(given.length, door.length); k > 0; k--) {
+    if (given.slice(-k).every((s, i) => s === door[i])) { base = given.slice(0, -k); break; }
+  }
+  const joined = [...base, ...door].join("/");
+  return parsed.origin + (joined ? `/${joined}` : "");
+}
+
+export function renderBaseUrl(hostSpec: HostSpec, settings: Readonly<Record<string, string>>, endpoint?: string, provider = "host"): string {
   const values: Record<string, string> = { ...settings };
   for (const name of ["region", "resource", "location"]) {
     const v = values[name];
@@ -74,11 +125,13 @@ export function renderBaseUrl(hostSpec: HostSpec, settings: Readonly<Record<stri
   }
   if (values["project"] !== undefined) values["project"] = percentEncode(values["project"]);
   if (values["location"] !== undefined && values["location_host"] === undefined) values["location_host"] = locationHost(values["location"]);
-  return hostSpec.baseUrl.replace(/\{(\w+)\}/g, (_m, name: string) => {
+  const template = endpoint === undefined ? hostSpec.baseUrl : hostTemplates(hostSpec).path;
+  const rendered = template.replace(/\{(\w+)\}/g, (_m, name: string) => {
     const v = values[name];
     if (v === undefined) throw new NotConfiguredError(`host base URL needs setting '${name}'`);
     return v;
   });
+  return endpoint === undefined ? rendered : joinEndpoint(endpoint, rendered, provider);
 }
 
 export interface FinishedRequest {

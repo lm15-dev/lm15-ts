@@ -13,6 +13,7 @@ import {
   LocalOAuthCredential,
   claudeCodeCredentialsPath,
   codexCliAuthPath,
+  credentialLockingDetail,
   defaultCredentialsPath,
   expandHome,
   loadClaudeCodeCredential,
@@ -48,7 +49,7 @@ function borrowedCliStep(provider: string, pathOverride: string | undefined, env
     throw e;
   }
   const detail = expiryDetail(credential);
-  return { kind: "oauth-file", source, detail, state: usableState(credential, detail, false) };
+  return { kind: "oauth-file", source, detail: `${detail}; ${credentialLockingDetail()}`, state: usableState(credential, detail, false) };
 }
 
 function ownStoreStep(pathOverride: string | undefined, shadowed: boolean, env: Env): ChainStep {
@@ -62,7 +63,7 @@ function ownStoreStep(pathOverride: string | undefined, shadowed: boolean, env: 
       continue;
     }
     const detail = expiryDetail(credential);
-    return { kind: "oauth-file", source: `local OAuth credential ${file}`, detail, state: usableState(credential, detail, shadowed) };
+    return { kind: "oauth-file", source: `local OAuth credential ${file}`, detail: `${detail}; ${credentialLockingDetail()}`, state: usableState(credential, detail, shadowed) };
   }
   return { kind: "oauth-file", source: `local OAuth credential ${paths.join(" or ")}`, detail: "missing or unreadable", state: "absent" };
 }

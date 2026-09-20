@@ -211,7 +211,7 @@ test("token-trie driver: one scoring call over every node, a distribution with c
   const dist = response.probabilities!["ok"]!;
   assert.ok(Math.abs(dist["true"]! - 0.7 / 0.9) < 1e-9); // 0.7·0.9 vs 0.2·0.9, one normalisation
   assert.ok(Math.abs((response.providerData!["coverage"] as Record<string, number>)["ok"]! - 0.81) < 1e-9);
-  assert.deepEqual(response.adaptations.map((a) => [a.field, a.action]), [["config.response_format", "client_side"]]);
+  assert.deepEqual(response.adaptations, []); // MAP-14: requested measurement is not itself an adaptation.
   // 1 prefill + 2 keys × 2 tokenizations = 5 tokenize calls, then exactly one scoring call.
   assert.deepEqual(server.requests.map((r) => r.url.split("/").pop()), ["tokenize", "tokenize", "tokenize", "tokenize", "tokenize", "completions"]);
   const scoring = decode(server.requests[5]!);

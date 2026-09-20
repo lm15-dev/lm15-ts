@@ -12,16 +12,17 @@ import { AdaptationScope, checkPolicy, collecting, hasClientSideStop, type Adapt
 import { abortable, checkAborted } from "./async.ts";
 import type { LiveSession, LiveSessionOptions } from "./live.ts";
 import { BatchJob, VideoJob } from "./jobs.ts";
-import { authHeader, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
-import { finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
-import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError, UnsupportedFeatureError, mapHttpError, withCredentialHint } from "./errors.ts";
-import { isJsonObject, type JsonObject } from "./json.ts";
-import { getDefaultPlatform, noStoredCredentials, type LoadedCredential } from "./platform.ts";
+import { authHeader, isCloudChain, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
+import { endpointFromEnv, finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
+import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError, UnsupportedFeatureError, malformedJsonError, mapHttpError, withCredentialHint } from "./errors.ts";
+import { isJsonObject, parseJson, type JsonObject } from "./json.ts";
+import { getDefaultPlatform, noCloudChain, noStoredCredentials, type Env, type LoadedCredential } from "./platform.ts";
+import { namedMeaning, validateNamedCredential } from "./cloud/identity.ts";
 import { lookup } from "./registry.ts";
 import { applyClientSideStop, truncateStreamAtStopAsync } from "./stop.ts";
 import { coalesceStreamAsync, materializeResponseAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
-import { AwsCredentials, coerceCredential, type CredentialLike, type CredentialValue } from "./types/credential.ts";
+import { AwsCredentials, CredentialSource, coerceCredential, type CredentialLike, type CredentialValue, type NamedCredential, type SourcedCredentialProvider } from "./types/credential.ts";
 import { isDefaultConfig, normalizeRequest, type Request } from "./types/config.ts";
 import type {
   BatchEntry,
@@ -54,6 +55,12 @@ import { HttpResponse, jsonBytes, makeJsonRequest, type TransportRequest } from 
 export interface LMOptions {
   /** A string, an AUTH-2 credential value, or a zero-arg (possibly async) provider. */
   readonly apiKey?: CredentialLike;
+  /** One cloud identity only; mutually exclusive with apiKey. */
+  readonly credential?: NamedCredential;
+  /** Router-selected provenance, without credential material. */
+  readonly credentialOrigin?: string | CredentialSource;
+  /** Explicit host environment; an empty map keeps construction host-independent. */
+  readonly env?: Env;
   readonly baseUrl?: string;
   /** The access policy to bind (default: the dialect's own manifest). */
   readonly access?: AccessPolicy;
@@ -105,7 +112,10 @@ export interface BuiltRequest {
  * policy with nothing given refuses naming the env keys.
  */
 export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | undefined, credentialsPath?: string): LoadedCredential {
-  if (apiKey !== undefined && apiKey !== "") return { credential: apiKey, source: "explicit" };
+  if (apiKey !== undefined) {
+    if (apiKey === "") throw new NotConfiguredError(`${policy.provider}: explicit apiKey is empty; ambient credentials will not be tried`, { provider: policy.provider });
+    return { credential: apiKey, source: "explicit" };
+  }
   const platform = getDefaultPlatform();
   if (policy.credentialPolicy !== "key" && platform.storedCredentials) return platform.storedCredentials.load(policy, credentialsPath);
   if (policy.credentialPolicy !== "key") throw noStoredCredentials(platform, policy);
@@ -134,9 +144,12 @@ export abstract class ProviderLM {
   readonly adaptations: AdaptationPolicy;
   protected credential: CredentialLike | undefined;
   protected credentialSource: "explicit" | "stored" = "explicit";
+  private origin: string | CredentialSource | undefined;
+  private readonly requestOrigins = new WeakMap<TransportRequest, string>();
 
   protected constructor(manifest: AccessPolicy, dialectBaseUrl: string, opts: LMOptions) {
     const policy = opts.access ?? manifest;
+    validateNamedCredential(policy, opts.credential, opts.apiKey !== undefined);
     this.access = policy;
     this.provider = policy.provider;
     this.adaptations = checkPolicy(opts.adaptations ?? "note");
@@ -144,20 +157,33 @@ export abstract class ProviderLM {
     this.clock = opts.clock;
     this.accountId = opts.accountId;
     this.baseUrl = opts.baseUrl ?? dialectBaseUrl;
-    const loaded = loadCredential(policy, opts.apiKey, opts.credentialsPath);
-    this.credential = loaded.credential;
-    this.credentialSource = loaded.source;
-    if (loaded.accountId !== undefined && this.accountId === undefined) this.accountId = loaded.accountId;
-    if (loaded.credential !== undefined && typeof loaded.credential !== "function") {
-      // A static credential of the wrong kind for this door fails now, not on the first request.
-      selectScheme(policy, coerceCredential(loaded.credential));
+    this.origin = opts.credentialOrigin;
+    const platform = getDefaultPlatform();
+    // An explicit empty environment makes planning host-independent. Direct
+    // cloud clients still honor endpoint/region environment with explicit keys.
+    const needsChain = isCloudChain(policy) && opts.apiKey === undefined;
+    const env = opts.env ?? (policy.host ? platform.env() : undefined);
+    const values: Record<string, string> = {};
+    for (const [k, v] of Object.entries(env ?? {})) if (v !== undefined) values[k] = v;
+    const endpoint = policy.host ? opts.baseUrl ?? endpointFromEnv(policy.host, env) : undefined;
+    const chain = needsChain ? platform.openCloudChain?.({ env: values, online: true }) : undefined;
+    if (needsChain && !chain) throw noCloudChain(platform, policy, opts.credential);
+    const profile = chain?.profile(policy);
+    this.hostSettings = resolveSettings(policy.host, opts.settings, values, { provider: policy.provider, endpoint, ...(profile ? { profile } : {}) });
+    if (chain) {
+      chain.settings = this.hostSettings;
+      this.credential = chain.credentialProvider(policy, opts.credential);
+    } else {
+      const loaded = loadCredential(policy, opts.apiKey, opts.credentialsPath);
+      this.credential = loaded.credential;
+      this.credentialSource = loaded.source;
+      if (loaded.accountId !== undefined && this.accountId === undefined) this.accountId = loaded.accountId;
+      if (loaded.credential !== undefined && typeof loaded.credential !== "function") {
+        selectScheme(policy, coerceCredential(loaded.credential));
+      }
     }
-    this.hostSettings = resolveSettings(policy.host, opts.settings, undefined, { provider: policy.provider });
-    if (policy.host) {
-      if (opts.baseUrl === undefined || this.baseUrl === dialectBaseUrl) this.baseUrl = renderBaseUrl(policy.host, this.hostSettings);
-    } else if (policy.baseUrl !== undefined && this.baseUrl === dialectBaseUrl) {
-      this.baseUrl = policy.baseUrl;
-    }
+    if (policy.host) this.baseUrl = renderBaseUrl(policy.host, this.hostSettings, endpoint, policy.provider);
+    else if (policy.baseUrl !== undefined && this.baseUrl === dialectBaseUrl) this.baseUrl = policy.baseUrl;
   }
 
   get supports() {
@@ -167,7 +193,8 @@ export abstract class ProviderLM {
   /** The compat preset the bound provider names in the registry (a bound policy with no `compat`). */
   protected registryCompat(): string | undefined {
     if (this.access === (this.constructor as typeof ProviderLM).manifest) return undefined;
-    return lookup(this.access.provider)?.compat;
+    const compat = lookup(this.access.provider)?.compat;
+    return typeof compat === "string" ? compat : undefined;
   }
 
   protected now(): Date {
@@ -176,6 +203,23 @@ export abstract class ProviderLM {
 
   protected base(): string {
     return this.baseUrl.replace(/\/+$/, "");
+  }
+
+  /** Router-selected env/shared-key origin; does not inspect the identity inside a callable. */
+  setCredentialOrigin(origin: string | CredentialSource): void { this.origin = origin; }
+
+  /** AUTH-1: where the last credential came from, without acquiring one. */
+  credentialOrigin(): string {
+    const provider = this.credential;
+    if (typeof provider === "function" && "source" in provider && "named" in provider) {
+      const sourced = provider as SourcedCredentialProvider;
+      if (sourced.source) return sourced.source.describe(this.now());
+      return sourced.named ? `named credential "${sourced.named}" (${namedMeaning(this.access, sourced.named)}; not yet resolved)` : `the ${this.access.credentialPolicy} (not yet resolved)`;
+    }
+    if (this.credentialSource === "stored") return `stored login for ${this.provider}`;
+    if (typeof provider === "function") return "an application-supplied callable (identity not inspected by lm15)";
+    if (this.origin instanceof CredentialSource) return this.origin.describe(this.now());
+    return this.origin ?? "an explicit api_key";
   }
 
   /** Resolve the credential provider (AUTH-2: once per request, never cached here). */
@@ -214,7 +258,7 @@ export abstract class ProviderLM {
       payload: finished.payload,
       body: opts.body,
     });
-    if (opts.stream) req = { ...req, readTimeout: 120 };
+    const origin = planning ? undefined : this.credentialOrigin();
     if (credential instanceof AwsCredentials) {
       const signed = await signRequest(this.access, this.hostSettings, {
         method: req.method,
@@ -224,8 +268,9 @@ export abstract class ProviderLM {
         credential,
         now: this.now(),
       });
-      return { ...req, headers: signed };
+      req = { ...req, headers: signed };
     }
+    if (origin !== undefined) this.requestOrigins.set(req, origin);
     return req;
   }
 
@@ -244,6 +289,18 @@ export abstract class ProviderLM {
    * scope, and `adapt()` inside it records to that scope (see
    * `adaptation.ts`).
    */
+  /** Normalize only this binding's prefix, once per codec boundary.
+   * Drivers retain the original request so a nested colon ID is not stripped twice.
+   */
+  protected wireModelRequest(request: Request): Request {
+    request = normalizeRequest(request);
+    const colon = request.model.indexOf(":");
+    if (colon > 0 && colon < request.model.length - 1 && request.model.slice(0, colon).replace(/_/g, "-") === this.provider.replace(/_/g, "-")) {
+      return normalizeRequest({ ...request, model: request.model.slice(colon + 1) });
+    }
+    return request;
+  }
+
   abstract wireRequest(request: Request, stream: boolean): EmitOptions;
   abstract parseResponse(request: Request, response: HttpResponse): Response;
   abstract parseStreamEvents(request: Request, event: SSEEvent): StreamEvent[];
@@ -272,8 +329,17 @@ export abstract class ProviderLM {
 
   /** Auth errors guide the user to re-login when the credential is a local login. */
   protected withLoginHint(error: ProviderError): ProviderError {
+    error = this.withCredentialOrigin(error);
     const hint = this.access.loginHint;
     if (hint && (this.access.credentialPolicy === "oauth" || this.credentialSource === "stored")) return withCredentialHint(error, hint);
+    return error;
+  }
+
+  /** Insert once, before guidance; request snapshots keep concurrent resolutions distinct. */
+  protected withCredentialOrigin(error: ProviderError, request?: TransportRequest): ProviderError {
+    if (!(error instanceof AuthError)) return error;
+    const origin = (request && this.requestOrigins.get(request)) || this.credentialOrigin();
+    error.message = credentialOriginMessage(error.message, origin);
     return error;
   }
 
@@ -334,11 +400,14 @@ export abstract class ProviderLM {
       return materializeResponseAsync(this.stream(request, opts), request);
     }
     const resp = await this.send(built.request, opts.signal);
-    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
+    if (resp.status >= 400) throw attachErrorMetadata(this.withCredentialOrigin(this.normalizeError(resp.status, resp.text()), built.request), resp);
     try {
       return this.finishResponse(request, this.parseResponse(request, resp), built.adaptations);
     } catch (error) {
-      if (error instanceof ProviderError) throw attachErrorMetadata(error, resp);
+      if (error instanceof ProviderError) {
+        (error as { provider: string | null }).provider ??= this.provider;
+        throw attachErrorMetadata(this.withCredentialOrigin(error, built.request), resp);
+      }
       throw error;
     }
   }
@@ -354,7 +423,7 @@ export abstract class ProviderLM {
     const building = this.build(request, true);
     const built = await (signal ? abortable(building, signal) : building);
     let events: AsyncIterable<StreamEvent> = coalesceStreamAsync(this.streamRaw(request, built.request, signal), {
-      model: request.model,
+      model: this.wireModelRequest(request).model,
       adaptations: this.visible(built.adaptations),
     });
     if (hasClientSideStop(built.adaptations)) events = truncateStreamAtStopAsync(events, request.config?.stop);
@@ -370,12 +439,28 @@ export abstract class ProviderLM {
     }
     if (res.status >= 400) {
       const buffered = await bufferResponse(res);
-      throw attachErrorMetadata(this.normalizeError(buffered.status, buffered.text()), buffered);
+      throw attachErrorMetadata(this.withCredentialOrigin(this.normalizeError(buffered.status, buffered.text()), req), buffered);
     }
     const handshake = new HttpResponse({ status: res.status, headers: res.headers, body: new Uint8Array() });
     try {
       for await (const sse of parseSseAsync(splitLinesAsync(res.chunks()))) {
-        for (const event of this.parseStreamEvents(request, sse)) yield streamErrorMetadata(event, handshake);
+        let events: StreamEvent[];
+        try { events = this.parseStreamEvents(request, sse); }
+        catch (cause) {
+          if (!(cause instanceof SyntaxError)) throw cause;
+          const excerpt = new TextDecoder().decode(new TextEncoder().encode(sse.data).subarray(0, 200));
+          // The handshake succeeded; do not label an in-stream fault HTTP 200.
+          throw new ProviderError(`SSE event data is not valid JSON (first 200 bytes: ${JSON.stringify(excerpt)})`, {
+            provider: this.provider, contentType: handshake.header("content-type"), bodyExcerpt: excerpt, cause,
+          });
+        }
+        for (let event of events) {
+          if (event.type === "error" && event.error.code === "auth") {
+            const origin = this.requestOrigins.get(req) ?? this.credentialOrigin();
+            event = { ...event, error: ErrorDetail.create({ ...event.error, message: credentialOriginMessage(event.error.message, origin) }) };
+          }
+          yield streamErrorMetadata(event, handshake);
+        }
       }
     } catch (error) {
       if (error instanceof ProviderError) throw attachErrorMetadata(error, handshake);
@@ -391,10 +476,31 @@ export abstract class ProviderLM {
     }
   }
 
-  protected async sendOk(request: TransportRequest): Promise<HttpResponse> {
-    const resp = await this.send(request);
-    if (resp.status >= 400) throw attachErrorMetadata(this.normalizeError(resp.status, resp.text()), resp);
+  protected async sendOk(request: TransportRequest, signal?: AbortSignal): Promise<HttpResponse> {
+    const resp = await this.send(request, signal);
+    if (resp.status >= 400) throw attachErrorMetadata(this.withCredentialOrigin(this.normalizeError(resp.status, resp.text()), request), resp);
     return resp;
+  }
+
+  /** Parse JSON auxiliary replies with the same fault/diagnostic boundary as chat. */
+  protected parseReply<T>(response: HttpResponse, parse: (response: HttpResponse) => T, json = true): T {
+    try {
+      if (json) response.json();
+      return parse(response);
+    } catch (cause) {
+      const error = cause instanceof SyntaxError ? malformedJsonError(response, cause, this.provider) : cause;
+      if (error instanceof ProviderError) {
+        const context = error as { provider: string | null; status: number | null };
+        context.provider ??= this.provider;
+        if (error.code === "provider") context.status ??= response.status;
+        throw attachErrorMetadata(this.withLoginHint(error), response);
+      }
+      throw error;
+    }
+  }
+
+  protected async sendParsed<T>(request: TransportRequest, parse: (response: HttpResponse) => T, json = true, signal?: AbortSignal): Promise<T> {
+    return this.parseReply(await this.sendOk(request, signal), parse, json);
   }
 
   // ─── Model listing ─────────────────────────────────────────────────
@@ -408,8 +514,7 @@ export abstract class ProviderLM {
 
   async listModels(): Promise<ModelInfo[]> {
     this.require("models");
-    const resp = await this.sendOk(await this.modelsRequest());
-    return this.modelsFromBody(resp.text());
+    return this.sendParsed(await this.modelsRequest(), resp => this.modelsFromBody(resp.text()));
   }
 
   // ─── Live ──────────────────────────────────────────────────────────
@@ -459,15 +564,15 @@ export abstract class ProviderLM {
   async fileUpload(request: FileUploadRequest): Promise<FileInfo> {
     this.require("files");
     request = normalizeFileUploadRequest(request);
-    return this.fileInfoFromBody((await this.sendOk(await this.fileUploadRequest(request))).text());
+    return this.sendParsed(await this.fileUploadRequest(request), resp => this.fileInfoFromBody(resp.text()));
   }
   async fileGet(fileId: string): Promise<FileInfo> {
     this.require("files");
-    return this.fileInfoFromBody((await this.sendOk(await this.fileGetRequest(fileId))).text());
+    return this.sendParsed(await this.fileGetRequest(fileId), resp => this.fileInfoFromBody(resp.text()));
   }
   async fileList(limit = 20, cursor?: string): Promise<FilePage> {
     this.require("files");
-    return this.filePageFromListBody((await this.sendOk(await this.fileListRequest(limit, cursor))).text());
+    return this.sendParsed(await this.fileListRequest(limit, cursor), resp => this.filePageFromListBody(resp.text()));
   }
   /** Returning without an exception IS the confirmation. */
   async fileDelete(fileId: string): Promise<void> {
@@ -496,8 +601,23 @@ export abstract class ProviderLM {
   protected batchUnsupported(): UnsupportedFeatureError {
     return new UnsupportedFeatureError(`${this.provider}: batch not supported`, { provider: this.provider });
   }
+  /** Plan all items before credentials or paid work; direct hooks use this too. */
+  protected batchPreflight(request: BatchRequest): void {
+    for (const nested of request.requests) {
+      const normalized = normalizeRequest(nested);
+      const scope = new AdaptationScope("note", this.provider, true);
+      collecting(scope, () => this.wireRequest(normalized, false));
+      if (hasClientSideStop(scope.records)) {
+        throw new UnsupportedFeatureError(`${this.provider}: batch cannot close the generation source at a client-side stop cut; use a dialect with native stop support or individual complete()/stream() calls`, { provider: this.provider, feature: "config.stop" });
+      }
+      if (this.adaptations === "refuse") {
+        collecting(new AdaptationScope("refuse", this.provider, true), () => this.wireRequest(normalized, false));
+      }
+    }
+  }
   /** Optional pre-submit upload step (OpenAI's JSONL file); `undefined` = single-step. */
-  batchUploadRequest(_request: BatchRequest): Promise<TransportRequest | undefined> {
+  batchUploadRequest(request: BatchRequest): Promise<TransportRequest | undefined> {
+    this.batchPreflight(request);
     return Promise.resolve(undefined);
   }
   batchSubmitRequest(_request: BatchRequest, _uploadBody?: JsonObject): Promise<TransportRequest> {
@@ -528,38 +648,45 @@ export abstract class ProviderLM {
   async batchSubmit(request: BatchRequest): Promise<BatchJobInfo> {
     this.require("batches");
     request = normalizeBatchRequest(request);
+    this.batchPreflight(request);
     let uploadBody: JsonObject | undefined;
     const upload = await this.batchUploadRequest(request);
     if (upload) {
-      const body = (await this.sendOk(upload)).json();
+      const body = await this.sendParsed(upload, resp => resp.json());
       uploadBody = isJsonObject(body) ? body : undefined;
     }
-    return this.batchJobFromBody((await this.sendOk(await this.batchSubmitRequest(request, uploadBody))).text());
+    return this.sendParsed(await this.batchSubmitRequest(request, uploadBody), resp => this.batchJobFromBody(resp.text()));
   }
   async batchStatus(batchId: string): Promise<BatchJobInfo> {
     this.require("batches");
-    return this.batchJobFromBody((await this.sendOk(await this.batchStatusRequest(batchId))).text());
+    return this.sendParsed(await this.batchStatusRequest(batchId), resp => this.batchJobFromBody(resp.text()));
   }
   /** Entries in submission order; throws while the job runs. */
   async batchResults(batchId: string): Promise<BatchEntry[]> {
     this.require("batches");
     const resp = await this.sendOk(await this.batchStatusRequest(batchId));
-    const job = this.batchJobFromBody(resp.text());
+    const job = this.parseReply(resp, reply => this.batchJobFromBody(reply.text()));
     if (!(BATCH_TERMINAL_STATUSES as readonly string[]).includes(job.status)) {
       throw new ValueError(`batch ${batchId} is not finished (status=${JSON.stringify(job.status)}); poll batchStatus() until done`);
     }
     const statusBody = resp.json() as JsonObject;
     const texts: string[] = [];
-    for (const fetch of await this.batchResultFetches(statusBody)) texts.push((await this.sendOk(fetch)).text());
-    return this.batchEntries(statusBody, texts);
+    for (const fetch of await this.batchResultFetches(statusBody)) {
+      texts.push(await this.sendParsed(fetch, reply => {
+        const text = reply.text();
+        for (const line of text.split(/\r?\n/)) if (line.trim()) parseJson(line);
+        return text;
+      }, false));
+    }
+    return this.parseReply(resp, () => this.batchEntries(statusBody, texts), false);
   }
   async batchCancel(batchId: string): Promise<BatchJobInfo> {
     this.require("batches");
-    return this.batchJobFromBody((await this.sendOk(await this.batchCancelRequest(batchId))).text());
+    return this.sendParsed(await this.batchCancelRequest(batchId), resp => this.batchJobFromBody(resp.text()));
   }
   async batchList(limit = 20): Promise<BatchJobInfo[]> {
     this.require("batches");
-    return this.batchJobsFromListBody((await this.sendOk(await this.batchListRequest(limit))).text());
+    return this.sendParsed(await this.batchListRequest(limit), resp => this.batchJobsFromListBody(resp.text()));
   }
 
   // Job handles (api-family § Beyond chat): sugar over the four verbs above.
@@ -616,15 +743,15 @@ export abstract class ProviderLM {
     this.require("caches");
     prefix = normalizeRequest(prefix);
     ProviderLM.checkCachePrefix(prefix, opts.ttlSeconds);
-    return this.cacheInfoFromBody((await this.sendOk(await this.cacheCreateRequest(prefix, opts.ttlSeconds, opts.label))).text());
+    return this.sendParsed(await this.cacheCreateRequest(prefix, opts.ttlSeconds, opts.label), resp => this.cacheInfoFromBody(resp.text()));
   }
   async cacheGet(cacheId: string): Promise<CacheInfo> {
     this.require("caches");
-    return this.cacheInfoFromBody((await this.sendOk(await this.cacheGetRequest(cacheId))).text());
+    return this.sendParsed(await this.cacheGetRequest(cacheId), resp => this.cacheInfoFromBody(resp.text()));
   }
   async cacheList(limit = 20, cursor?: string): Promise<CachePage> {
     this.require("caches");
-    return this.cachePageFromListBody((await this.sendOk(await this.cacheListRequest(limit, cursor))).text());
+    return this.sendParsed(await this.cacheListRequest(limit, cursor), resp => this.cachePageFromListBody(resp.text()));
   }
   async cacheDelete(cacheId: string): Promise<void> {
     this.require("caches");
@@ -633,14 +760,15 @@ export abstract class ProviderLM {
   async cacheUpdate(cacheId: string, ttlSeconds: number): Promise<CacheInfo> {
     this.require("caches");
     if (typeof ttlSeconds !== "number" || !Number.isInteger(ttlSeconds) || ttlSeconds <= 0) throw new ValueError("ttl_seconds must be a positive int");
-    return this.cacheInfoFromBody((await this.sendOk(await this.cacheUpdateRequest(cacheId, ttlSeconds))).text());
+    return this.sendParsed(await this.cacheUpdateRequest(cacheId, ttlSeconds), resp => this.cacheInfoFromBody(resp.text()));
   }
   /** Make a prompt beginning reusable with the best tier this provider has. */
   async cache(prefix: Request, opts: { ttlSeconds?: number; label?: string } = {}): Promise<CachedPrefixValue> {
-    prefix = normalizeRequest(prefix);
-    if (this.supports.caches) return CachedPrefix.create({ prefix, resource: await this.cacheCreate(prefix, opts) });
-    ProviderLM.checkCachePrefix(prefix, opts.ttlSeconds);
-    return CachedPrefix.create({ prefix });
+    const wire = this.wireModelRequest(prefix);
+    const provider = wire.model !== prefix.model ? this.provider : undefined;
+    if (this.supports.caches) return CachedPrefix.create({ prefix: wire, resource: await this.cacheCreate(wire, opts), provider });
+    ProviderLM.checkCachePrefix(wire, opts.ttlSeconds);
+    return CachedPrefix.create({ prefix: wire, provider });
   }
 
   // ─── Generation ────────────────────────────────────────────────────
@@ -664,12 +792,12 @@ export abstract class ProviderLM {
   async imageGenerate(request: ImageGenerationRequest): Promise<ImageGenerationResponse> {
     this.require("images");
     request = normalizeImageGenerationRequest(request);
-    return this.imageGenerationFromResponse(request, await this.sendOk(await this.imageGenerateRequest(request)));
+    return this.sendParsed(await this.imageGenerateRequest(request), resp => this.imageGenerationFromResponse(request, resp), false);
   }
   async speechGenerate(request: SpeechGenerationRequest): Promise<SpeechGenerationResponse> {
     this.require("speech");
     request = normalizeSpeechGenerationRequest(request);
-    return this.speechGenerationFromResponse(request, await this.sendOk(await this.speechGenerateRequest(request)));
+    return this.sendParsed(await this.speechGenerateRequest(request), resp => this.speechGenerationFromResponse(request, resp), false);
   }
 
   // ─── Video ─────────────────────────────────────────────────────────
@@ -703,27 +831,27 @@ export abstract class ProviderLM {
   async videoSubmit(request: VideoGenerationRequest): Promise<VideoJobInfo> {
     this.require("video");
     request = normalizeVideoGenerationRequest(request);
-    return this.videoJobFromBody((await this.sendOk(await this.videoSubmitRequest(request))).text());
+    return this.sendParsed(await this.videoSubmitRequest(request), resp => this.videoJobFromBody(resp.text()));
   }
   async videoStatus(videoId: string): Promise<VideoJobInfo> {
     this.require("video");
-    return this.videoJobFromBody((await this.sendOk(await this.videoStatusRequest(videoId))).text(), videoId);
+    return this.sendParsed(await this.videoStatusRequest(videoId), resp => this.videoJobFromBody(resp.text(), videoId));
   }
   async videoResult(videoId: string): Promise<VideoPart> {
     this.require("video");
     const resp = await this.sendOk(await this.videoStatusRequest(videoId));
-    const job = this.videoJobFromBody(resp.text(), videoId);
+    const job = this.parseReply(resp, reply => this.videoJobFromBody(reply.text(), videoId));
     if (!(VIDEO_TERMINAL_STATUSES as readonly string[]).includes(job.status)) {
       throw new ValueError(`video ${videoId} is not finished (status=${JSON.stringify(job.status)}); poll videoStatus() until done`);
     }
     const statusBody = resp.json() as JsonObject;
     const fetch = await this.videoResultFetch(statusBody);
     const fetched = fetch ? await this.sendOk(fetch) : undefined;
-    return this.videoPart(statusBody, fetched);
+    return this.parseReply(fetched ?? resp, () => this.videoPart(statusBody, fetched), false);
   }
   async videoList(limit = 20, model?: string): Promise<VideoJobInfo[]> {
     this.require("video");
-    return this.videoJobsFromListBody((await this.sendOk(await this.videoListRequest(limit, model))).text());
+    return this.sendParsed(await this.videoListRequest(limit, model), resp => this.videoJobsFromListBody(resp.text()));
   }
 
   /** Submit and wrap the ticket in a `VideoJob` handle. */
@@ -738,6 +866,15 @@ export abstract class ProviderLM {
   async videoJobs(limit = 20, model?: string): Promise<VideoJob[]> {
     return (await this.videoList(limit, model)).map((info) => new VideoJob(this, info));
   }
+}
+
+function credentialOriginMessage(message: string, origin: string): string {
+  const marker = "\nCredential came from: ";
+  const guidanceAt = message.indexOf("\n\n  To fix:");
+  const base = guidanceAt < 0 ? message : message.slice(0, guidanceAt);
+  const guidance = guidanceAt < 0 ? "" : message.slice(guidanceAt);
+  const prior = base.indexOf(marker);
+  return (prior < 0 ? base : base.slice(0, prior)) + marker + origin + guidance;
 }
 
 function wrapTransport(e: unknown): LM15Error {

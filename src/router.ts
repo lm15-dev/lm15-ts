@@ -11,16 +11,19 @@
 import { checkPolicy, type Adaptation, type AdaptationPolicy } from "./adaptation.ts";
 import type { ProviderLM } from "./adapter.ts";
 import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
-import { resolveSettings } from "./cloud/hosts.ts";
+import { endpointFromEnv, resolveSettings } from "./cloud/hosts.ts";
+import { validateNamedCredential } from "./cloud/identity.ts";
+import { explainAuth, type AuthReport } from "./auth/doctor.ts";
 import { AmbiguousModelError, NotConfiguredError, UnknownModelError } from "./errors.ts";
 import { adapterForDefinition } from "./providers.ts";
 import { getDefaultPlatform, noCloudChain } from "./platform.ts";
-import { PROVIDERS, canonicalProvider, lookup, type ProviderDefinition } from "./registry.ts";
-import type { Transport } from "./transport.ts";
+import { canonicalProvider, providerTable, type ProviderDefinition } from "./registry.ts";
+import { createTransport, Timeouts, type Transport, type TransportBudgetOptions } from "./transport.ts";
 import type { Request } from "./types/config.ts";
 import { normalizeRequest } from "./types/config.ts";
-import type { CredentialLike } from "./types/credential.ts";
-import type { CachedPrefix } from "./types/endpoints.ts";
+import type { CredentialLike, NamedCredential } from "./types/credential.ts";
+import type { CredentialPolicy } from "./vocab.ts";
+import { CachedPrefix } from "./types/endpoints.ts";
 import type { ModelInfo, ModelRegistry } from "./types/model_info.ts";
 import type { Response } from "./types/response.ts";
 import type { StreamEvent } from "./types/stream.ts";
@@ -30,7 +33,7 @@ import { ResponseStream } from "./stream.ts";
 export interface RouteRule {
   readonly prefix: string;
   readonly provider: string;
-  readonly note: string;
+  readonly note?: string;
 }
 
 const rule = (prefix: string, provider: string, note: string): RouteRule => Object.freeze({ prefix, provider, note });
@@ -47,6 +50,7 @@ export const DEFAULT_RULES: readonly RouteRule[] = Object.freeze([
   rule("nano-banana", "gemini", "Google image models on the Gemini API (live /models listing 2026-09-01)"),
   rule("grok-", "xai", "xAI Grok family (XAI_API_KEY or subscription OAuth)"),
   rule("sora-", "openai", "OpenAI Sora video generation"),
+  rule("jev-", "typesafe", "TypeSafe System One judgment models"),
   rule("veo-", "gemini", "Google Veo video generation"),
   rule("chat-latest", "openai", "OpenAI rolling chat alias (live /models listing 2026-09-01)"),
 ]);
@@ -64,7 +68,13 @@ export interface Resolution {
   /** WHICH env var the key would be read from; never the value. */
   readonly envKey?: string;
   readonly modelInfo?: ModelInfo;
-  readonly compat?: string;
+  readonly compat?: ProviderDefinition["compat"];
+  /** Provenance belongs to the resolution, not a later global lookup. */
+  readonly declared: boolean;
+  readonly credentialPolicy: CredentialPolicy;
+  readonly credential?: NamedCredential;
+  readonly placeholderKey?: string;
+  readonly note: string;
 }
 
 export function describeResolution(r: Resolution): string {
@@ -72,22 +82,28 @@ export function describeResolution(r: Resolution): string {
   if (r.source === "prefix") parts.push("via explicit provider prefix");
   else if (r.source === "catalog") parts.push("via catalog match");
   else if (r.rule) parts.push(`via built-in rule prefix=${JSON.stringify(r.rule.prefix)}${r.rule.note ? ` — ${r.rule.note}` : ""}`);
-  if (r.compat !== undefined) parts.push(`compat preset ${JSON.stringify(r.compat)}`);
+  if (r.compat !== undefined) parts.push(typeof r.compat === "string" ? `compat preset ${JSON.stringify(r.compat)}` : "caller-declared compat policy");
+  if (r.declared) parts.push("declared by RouterConfig.providers — no lm15 receipts");
   parts.push(`wire model ${JSON.stringify(r.model)}`);
-  const definition = lookup(r.provider);
-  const policy = definition?.access.credentialPolicy ?? "key";
-  if (policy === "oauth-unless-explicit") {
+  const policy = r.credentialPolicy;
+  if (r.credential !== undefined) parts.push(`named credential ${JSON.stringify(r.credential)}; no fallback to another identity`);
+  else if (policy.endsWith("-chain")) parts.push(`${policy} (doctor reports the selected identity)`);
+  else if (policy === "oauth-unless-explicit") {
     let chain = "key from explicit apiKeys, else the stored subscription OAuth credential";
     if (r.envKey !== undefined) chain += `, else $${r.envKey}`;
     parts.push(chain);
   } else if (r.envKey !== undefined) parts.push(`key from $${r.envKey}`);
   else if (policy === "oauth") parts.push("local OAuth credential (no env key)");
-  else if (definition?.placeholderKey !== undefined) parts.push("key from explicit apiKeys or the preset's local-server default");
+  else if (r.placeholderKey !== undefined) parts.push("key from explicit apiKeys or the preset's local-server default");
   else parts.push("key from explicit apiKeys");
   return parts.join("; ") + ".";
 }
 
-export interface RouterConfig {
+export interface RouterConfig extends TransportBudgetOptions {
+  /** Router-local declarations. Built-in ids and aliases cannot be replaced. */
+  readonly providers?: readonly ProviderDefinition[];
+  /** Name an identity, not a credential value. Never falls through to another identity. */
+  readonly credentials?: Readonly<Record<string, NamedCredential>>;
   /** Catalog use is opt-in. */
   readonly registry?: ModelRegistry;
   readonly rules?: readonly RouteRule[];
@@ -108,16 +124,23 @@ export interface RouterConfig {
   readonly adaptations?: AdaptationPolicy;
 }
 
-function routable(provider: string): ProviderDefinition | undefined {
-  return PROVIDERS.get(provider);
+type DefinitionConfig = { readonly providers?: readonly ProviderDefinition[] | undefined };
+
+/** Shared by routing and doctor; declarations remain local to this config. */
+export function routerProviderLookup(provider: string, config: DefinitionConfig = {}): ProviderDefinition | undefined {
+  return providerTable(config.providers).get(canonicalProvider(provider));
 }
 
-function knownProviders(): string {
-  return [...PROVIDERS.keys()].sort().join(", ");
+export function routerCanonicalProvider(provider: string, config: DefinitionConfig = {}): string {
+  return routerProviderLookup(provider, config)?.id ?? canonicalProvider(provider);
 }
 
-function declaredEnvKeys(provider: string): readonly string[] {
-  return lookup(provider)?.access.envKeys ?? [];
+function knownProviders(config: DefinitionConfig): string {
+  return [...providerTable(config.providers).keys()].sort().join(", ");
+}
+
+function declaredEnvKeys(provider: string, config: DefinitionConfig): readonly string[] {
+  return routerProviderLookup(provider, config)?.access.envKeys ?? [];
 }
 
 function sameEnvKeys(a: readonly string[], b: readonly string[]): boolean {
@@ -134,16 +157,17 @@ function sameEnvKeys(a: readonly string[], b: readonly string[]): boolean {
  * candidates are ambiguous even if their values look equal: credential
  * callables can change independently at request time.
  */
-export function apiKeysSource(config: { readonly apiKeys?: Readonly<Record<string, CredentialLike>> | undefined }, provider: string): string | undefined {
+export function apiKeysSource(config: DefinitionConfig & { readonly apiKeys?: Readonly<Record<string, CredentialLike>> | undefined }, provider: string): string | undefined {
+  provider = routerCanonicalProvider(provider, config);
   const keys = config.apiKeys;
   if (!keys) return undefined;
   const names = Object.keys(keys);
-  const exact = names.filter((k) => canonicalProvider(k) === provider);
+  const exact = names.filter((k) => routerCanonicalProvider(k, config) === provider);
   let candidates = exact;
-  if (exact.length === 0 && routable(provider)) {
-    const envKeys = declaredEnvKeys(provider);
+  if (exact.length === 0 && routerProviderLookup(provider, config)) {
+    const envKeys = declaredEnvKeys(provider, config);
     if (envKeys.length > 0) {
-      candidates = names.filter((k) => routable(canonicalProvider(k)) !== undefined && sameEnvKeys(declaredEnvKeys(canonicalProvider(k)), envKeys));
+      candidates = names.filter((k) => routerProviderLookup(k, config) !== undefined && sameEnvKeys(declaredEnvKeys(k, config), envKeys));
     }
   }
   if (candidates.length > 1) {
@@ -165,10 +189,13 @@ function apiKeysEntry(config: RouterConfig, provider: string): [CredentialLike |
   return key === undefined ? [undefined, false] : [config.apiKeys![key], true];
 }
 
-function baseUrlEntry(config: RouterConfig, provider: string): string | undefined {
-  if (!config.baseUrls) return undefined;
-  for (const [key, value] of Object.entries(config.baseUrls)) if (canonicalProvider(key) === provider) return value;
+function providerEntry<T>(mapping: Readonly<Record<string, T>> | undefined, provider: string, config: DefinitionConfig): T | undefined {
+  for (const [key, value] of Object.entries(mapping ?? {})) if (routerCanonicalProvider(key, config) === provider) return value;
   return undefined;
+}
+
+function baseUrlEntry(config: RouterConfig, provider: string): string | undefined {
+  return providerEntry(config.baseUrls, provider, config);
 }
 
 function levenshteinClose(word: string, candidates: string[]): string | undefined {
@@ -193,18 +220,34 @@ function levenshteinClose(word: string, candidates: string[]): string | undefine
  * refused rather than resolved by map order.
  */
 function checkProviderKeyed(config: RouterConfig): void {
-  const known = [...PROVIDERS.keys()].sort();
-  for (const field of ["apiKeys", "baseUrls", "settings"] as const) {
+  const table = providerTable(config.providers);
+  const known = [...table.keys()].sort();
+  const litellm = new Map(Object.entries(LITELLM_PROVIDER_PREFIXES).map(([name, provider]) => [canonicalProvider(name), provider]));
+  for (const d of config.providers ?? []) {
+    for (const name of [d.id, ...(d.aliases ?? [])]) {
+      if (litellm.has(name)) throw new NotConfiguredError(`RouterConfig providers: ${JSON.stringify(name)} already names the built-in ${JSON.stringify(litellm.get(name))} door in OpenAI-shaped routing`);
+    }
+  }
+  for (const field of ["apiKeys", "baseUrls", "settings", "credentials"] as const) {
     const mapping = config[field];
     if (!mapping) continue;
     const seen = new Set<string>();
     for (const key of Object.keys(mapping)) {
       const provider = canonicalProvider(key);
-      if (field === "apiKeys" && seen.has(provider)) {
-        throw new NotConfiguredError(`RouterConfig apiKeys: duplicate spellings for ${JSON.stringify(provider)}; use one entry`);
+      const aliasTarget = table.get(provider)?.id;
+      if (aliasTarget !== undefined && aliasTarget !== provider) throw new NotConfiguredError(`RouterConfig ${field}: ${JSON.stringify(key)} is a model-prefix alias, not a configuration id. Did you mean ${JSON.stringify(aliasTarget)}?`);
+      if (seen.has(provider)) {
+        throw new NotConfiguredError(`RouterConfig ${field}: duplicate spellings for ${JSON.stringify(provider)}; use one entry`);
       }
       seen.add(provider);
-      if (PROVIDERS.has(provider)) continue;
+      if (table.has(provider)) {
+        if (field === "credentials") {
+          const name = config.credentials![key];
+          if (typeof name !== "string") throw new NotConfiguredError(`RouterConfig credentials: ${JSON.stringify(key)} must name platform, workload, environment or cli`);
+          validateNamedCredential(table.get(provider)!.access, name, apiKeysSource(config, provider) !== undefined);
+        }
+        continue;
+      }
       const close = levenshteinClose(provider, known);
       const hint = close ? ` Did you mean ${JSON.stringify(close)}?` : "";
       throw new NotConfiguredError(
@@ -219,8 +262,8 @@ function envOf(config: RouterConfig): Readonly<Record<string, string | undefined
 }
 
 function envKeyFor(provider: string, config: RouterConfig): string | undefined {
-  if (apiKeysEntry(config, provider)[1]) return undefined;
-  const envKeys = lookup(provider)?.access.envKeys ?? [];
+  if (apiKeysEntry(config, provider)[1] || providerEntry(config.credentials, provider, config) !== undefined) return undefined;
+  const envKeys = declaredEnvKeys(provider, config);
   if (envKeys.length === 0) return undefined;
   const env = envOf(config);
   for (const key of envKeys) if (env[key]) return key;
@@ -228,13 +271,18 @@ function envKeyFor(provider: string, config: RouterConfig): string | undefined {
 }
 
 function resolution(requested: string, model: string, provider: string, source: ResolutionSource, config: RouterConfig, extra: { rule?: RouteRule; modelInfo?: ModelInfo } = {}): Resolution {
-  const definition = lookup(provider);
+  const definition = routerProviderLookup(provider, config)!;
   const envKey = envKeyFor(provider, config);
   return Object.freeze({
     requested,
     model,
     provider,
     source,
+    declared: (config.providers ?? []).some((d) => d.id === provider),
+    credentialPolicy: definition.access.credentialPolicy,
+    ...(providerEntry(config.credentials, provider, config) !== undefined ? { credential: providerEntry(config.credentials, provider, config)! } : {}),
+    note: definition.note,
+    ...(definition.placeholderKey !== undefined ? { placeholderKey: definition.placeholderKey } : {}),
     ...(extra.rule ? { rule: extra.rule } : {}),
     ...(envKey !== undefined ? { envKey } : {}),
     ...(extra.modelInfo ? { modelInfo: extra.modelInfo } : {}),
@@ -278,15 +326,15 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
   // Rung 1: explicit provider prefix (split on the FIRST colon).
   const colon = model.indexOf(":");
   if (colon >= 0) {
-    const head = canonicalProvider(model.slice(0, colon));
+    const head = routerCanonicalProvider(model.slice(0, colon), config);
     const rest = model.slice(colon + 1);
-    if (routable(head) && rest) return resolution(requested, rest, head, "prefix", config);
+    if (routerProviderLookup(head, config) && rest) return resolution(requested, rest, head, "prefix", config);
   }
 
   // Rung 2: catalog (only when a registry was supplied).
   if (config.registry) {
     const matches = config.registry.list().filter((info) => info.id === model || (info.aliases ?? []).includes(model));
-    const providers = [...new Set(matches.map((m) => m.provider))];
+    const providers = [...new Set(matches.map((m) => routerCanonicalProvider(m.provider, config)))];
     if (providers.length > 1) {
       const options = providers.map((p) => `"${p}:${model}"`).join(" or ");
       throw new AmbiguousModelError(
@@ -304,10 +352,10 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
         );
       }
       const info = narrowed[0]!;
-      const provider = canonicalProvider(info.provider);
-      if (!routable(provider)) {
+      const provider = routerCanonicalProvider(info.provider, config);
+      if (!routerProviderLookup(provider, config)) {
         throw new UnknownModelError(
-          `model ${JSON.stringify(model)} resolved in the catalog to provider ${JSON.stringify(info.provider)}, but lm15 has no adapter or compat preset for it. Known providers: ${knownProviders()}. Construct a provider LM directly (e.g. OpenAIChatLM with a custom baseUrl) for OpenAI-compatible servers.`,
+          `model ${JSON.stringify(model)} resolved in the catalog to provider ${JSON.stringify(info.provider)}, but lm15 has no adapter or compat preset for it. Known providers: ${knownProviders(config)}. Declare a provider with RouterConfig.providers or construct a provider LM directly (e.g. OpenAIChatLM with a custom baseUrl) for OpenAI-compatible servers.`,
           { model },
         );
       }
@@ -318,9 +366,9 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
   // Rung 3: built-in prefix rules, first match wins.
   for (const r of rules) {
     if (model.startsWith(r.prefix)) {
-      const provider = canonicalProvider(r.provider);
-      if (!routable(provider)) {
-        throw new UnknownModelError(`rule ${JSON.stringify(r)} names provider ${JSON.stringify(r.provider)}, which has no adapter. Known providers: ${knownProviders()}.`, { model });
+      const provider = routerCanonicalProvider(r.provider, config);
+      if (!routerProviderLookup(provider, config)) {
+        throw new UnknownModelError(`rule ${JSON.stringify(r)} names provider ${JSON.stringify(r.provider)}, which has no adapter. Known providers: ${knownProviders(config)}.`, { model });
       }
       return resolution(requested, model, provider, "rule", config, { rule: r });
     }
@@ -328,10 +376,10 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
 
   const hints: string[] = [];
   if (colon >= 0) {
-    const close = closeMatch(canonicalProvider(model.slice(0, colon)), [...PROVIDERS.keys()].sort());
+    const close = closeMatch(canonicalProvider(model.slice(0, colon)), [...providerTable(config.providers).keys()].sort());
     if (close) hints.push(`Did you mean "${close}:${model.slice(colon + 1)}"?`);
   }
-  hints.push(`Use an explicit provider prefix — "provider:${model}" with provider one of: ${knownProviders()}.`);
+  hints.push(`Use an explicit provider prefix — "provider:${model}" with provider one of: ${knownProviders(config)}.`);
   if (!config.registry) hints.push("Or pass a model catalog: new LMRouter({ registry }) built from canonical ModelInfo entries.");
   throw new UnknownModelError(
     `could not route model ${JSON.stringify(model)}: no provider prefix, ${config.registry ? "no catalog match" : "no catalog supplied"}, and none of the ${rules.length} built-in rules matched. ${hints.join(" ")}`,
@@ -342,70 +390,84 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
 /** Provider resolved but no key was found: a `NotConfiguredError` under the family. */
 export class MissingCredentialError extends NotConfiguredError {}
 
-function buildLm(res: Resolution, config: RouterConfig): ProviderLM {
-  const definition = lookup(res.provider)!;
+function buildLm(res: Resolution, config: RouterConfig, shared: Transport): ProviderLM {
+  const definition = routerProviderLookup(res.provider, config)!;
   const policy = definition.access.credentialPolicy;
-  const transport: { transport?: Transport; baseUrl?: string; adaptations?: AdaptationPolicy } = {
-    ...(config.transport ? { transport: config.transport } : {}),
+  const env = envOf(config);
+  const baseUrl = baseUrlEntry(config, res.provider) ?? endpointFromEnv(definition.access.host, env);
+  const options = {
+    transport: shared,
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
   };
-  const baseUrl = baseUrlEntry(config, res.provider);
-  if (baseUrl !== undefined) {
-    if (definition.hosted) {
-      throw new NotConfiguredError(
-        `RouterConfig baseUrls { ${JSON.stringify(res.provider)}: ... }: a cloud door's URL is built from its host settings (resource, region), not given whole; set them in RouterConfig settings { ${JSON.stringify(res.provider)}: {...} } instead.`,
-      );
-    }
-    transport.baseUrl = baseUrl;
-  }
-  if (policy === "oauth") return adapterForDefinition(definition, transport);
-  let [apiKey] = apiKeysEntry(config, res.provider);
-  const env = envOf(config);
+  if (policy === "oauth") return adapterForDefinition(definition, options);
+  const entry = apiKeysSource(config, res.provider);
+  let apiKey = entry === undefined ? undefined : config.apiKeys![entry];
+  let origin: string | undefined;
+  if (entry !== undefined && typeof apiKey !== "function") origin = `an explicit apiKeys entry (${JSON.stringify(entry)})`;
+  let settings: Readonly<Record<string, string>> | undefined;
   if (definition.hosted) {
-    const given = config.settings?.[res.provider];
-    // The cloud chain is a host service (AUTH-11): profile files, CLIs, metadata
-    // endpoints. Without one, explicit and env values still build the door.
+    const named = providerEntry(config.credentials, res.provider, config);
     const chain = getDefaultPlatform().openCloudChain?.({ env, online: true });
-    const profile = chain ? chain.profile(definition.access) : undefined;
-    const settings = resolveSettings(definition.access.host, given, env as Record<string, string>, { provider: res.provider, ...(profile ? { profile } : {}) });
+    const profile = chain?.profile(definition.access);
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) if (value !== undefined) values[key] = value;
+    settings = resolveSettings(definition.access.host, providerEntry(config.settings, res.provider, config), values, {
+      provider: res.provider, ...(profile ? { profile } : {}), ...(baseUrl !== undefined ? { endpoint: baseUrl } : {}),
+    });
     if (chain) chain.settings = settings;
-    if (apiKey === undefined && definition.access.credentialPolicy !== "key") {
-      if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access);
-      apiKey = chain.credentialProvider(definition.access);
-    } else if (apiKey === undefined) {
-      for (const key of definition.access.envKeys) {
-        if (env[key]) {
-          apiKey = env[key]!;
-          break;
-        }
-      }
+    if (apiKey === undefined && policy !== "key") {
+      if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access, named);
+      apiKey = chain.credentialProvider(definition.access, named);
     }
-    if (apiKey === undefined) {
-      throw new MissingCredentialError(
-        `no credential found for provider ${JSON.stringify(res.provider)}. Set ${definition.access.envKeys.join(" or ")} in the environment, or pass { apiKeys: { ${JSON.stringify(res.provider)}: "..." } }.`,
-        { provider: res.provider, envKeys: definition.access.envKeys },
-      );
-    }
-    return adapterForDefinition(definition, { apiKey, settings, ...transport });
   }
-  if (apiKey === undefined && policy === "oauth-unless-explicit" && getDefaultPlatform().storedCredentials?.has(definition.access)) return adapterForDefinition(definition, transport);
+  if (apiKey === undefined && policy === "oauth-unless-explicit" && getDefaultPlatform().storedCredentials?.has(definition.access)) return adapterForDefinition(definition, options);
   if (apiKey === undefined) {
     for (const key of definition.access.envKeys) {
       if (env[key]) {
         apiKey = env[key]!;
+        origin = `env $${key} (value never shown)`;
         break;
       }
     }
   }
-  if (apiKey === undefined && definition.placeholderKey !== undefined) apiKey = definition.placeholderKey;
-  if (!apiKey && policy === "oauth-unless-explicit") return adapterForDefinition(definition, transport);
-  if (!apiKey) {
+  if (apiKey === undefined && definition.placeholderKey !== undefined) {
+    apiKey = definition.placeholderKey;
+    origin = "the local server's placeholder key";
+  }
+  if (apiKey === undefined && policy === "oauth-unless-explicit") return adapterForDefinition(definition, options);
+  if (apiKey === undefined) {
     throw new MissingCredentialError(
-      `no API key found for provider ${JSON.stringify(res.provider)}. Set ${definition.access.envKeys.join(" or ")} in the environment, or pass { apiKeys: { ${JSON.stringify(res.provider)}: "..." } }.`,
+      `no credential found for provider ${JSON.stringify(res.provider)}. Set ${definition.access.envKeys.join(" or ")} in the environment, or pass { apiKeys: { ${JSON.stringify(res.provider)}: "..." } }.`,
       { provider: res.provider, envKeys: definition.access.envKeys },
     );
   }
-  return adapterForDefinition(definition, { apiKey, ...transport });
+  const lm = adapterForDefinition(definition, { apiKey, ...options, ...(settings !== undefined ? { settings } : {}) });
+  if (origin !== undefined) lm.setCredentialOrigin(origin);
+  return lm;
+}
+
+// Planning owns neither a pool nor a credential. Even an accidental send refuses locally.
+const PLANNING_TRANSPORT: Transport = Object.freeze({
+  async send(): Promise<never> { throw new Error("planning must never send a request"); },
+});
+
+function planningLm(res: Resolution, config: RouterConfig): ProviderLM {
+  const definition = routerProviderLookup(res.provider, config)!;
+  const host = definition.access.host;
+  const given = providerEntry(config.settings, res.provider, config) ?? {};
+  const settings = Object.fromEntries((host?.settings ?? []).map((s) => [s.name, given[s.name] ?? s.default ?? "planning"]));
+  const baseUrl = baseUrlEntry(config, res.provider) ?? endpointFromEnv(host, config.env ?? {});
+  return adapterForDefinition(definition, {
+    apiKey: "lm15-planning",
+    accountId: "lm15-planning",
+    transport: PLANNING_TRANSPORT,
+    // Explicit empty env is important: no host service may run during plan.
+    env: {},
+    settings,
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(config.adaptations !== undefined ? { adaptations: config.adaptations } : {}),
+  });
 }
 
 function routedRequest(request: Request, res: Resolution): Request {
@@ -465,17 +527,18 @@ const CLIENT_KEYWORDS: Readonly<Record<string, string>> = Object.freeze({
  * contain slashes itself: `groq/openai/gpt-oss-20b`); a bare name routes by
  * lm15's rules, except that OpenAI's models go to the Chat Completions door.
  */
-export function openaiChatModelString(model: string): string {
+export function openaiChatModelString(model: string, config: DefinitionConfig = {}): string {
   if (model.includes(":")) return model;
   const slash = model.indexOf("/");
   if (slash < 0) return model;
   const head = model.slice(0, slash);
   const rest = model.slice(slash + 1);
   if (!rest) return model;
-  const provider = LITELLM_PROVIDER_PREFIXES[head];
+  const declared = (config.providers ?? []).find((d) => [d.id, ...(d.aliases ?? [])].includes(canonicalProvider(head)));
+  const provider = LITELLM_PROVIDER_PREFIXES[head] ?? declared?.id;
   if (provider === undefined) {
     throw new UnknownModelError(
-      `could not read ${JSON.stringify(model)} as a litellm model string: ${JSON.stringify(head)} is not a provider prefix lm15 has a door for (known: ${Object.keys(LITELLM_PROVIDER_PREFIXES).sort().join(", ")}); write it as lm15's provider:model instead`,
+      `could not read ${JSON.stringify(model)} as a litellm model string: ${JSON.stringify(head)} is not a provider prefix lm15 has a door for (known: ${[...new Set([...Object.keys(LITELLM_PROVIDER_PREFIXES), ...(config.providers ?? []).flatMap((d) => [d.id, ...(d.aliases ?? [])])])].sort().join(", ")}); write it as lm15's provider:model instead`,
       { model },
     );
   }
@@ -497,11 +560,68 @@ function splitOpenAIChatCall(model: string, messages: unknown, kwargs: Readonly<
 export class LMRouter {
   readonly config: RouterConfig;
   private readonly lms = new Map<string, ProviderLM>();
+  private ownedTransport: Transport | undefined;
 
   constructor(config: RouterConfig = {}) {
     checkProviderKeyed(config);
-    this.config = Object.freeze({ ...config });
+    if (config.transport !== undefined && (config.timeouts !== undefined || config.maxConnections !== undefined)) {
+      throw new NotConfiguredError("RouterConfig transport cannot be combined with timeouts or maxConnections; configure the supplied transport directly");
+    }
+    if (config.timeouts !== undefined) new Timeouts(config.timeouts);
+    if (config.maxConnections !== undefined && (!Number.isSafeInteger(config.maxConnections) || config.maxConnections < 1)) throw new NotConfiguredError("maxConnections must be a positive safe integer");
+    if (config.adaptations !== undefined) checkPolicy(config.adaptations);
+    const table = providerTable(config.providers);
+    for (const r of config.rules ?? []) {
+      if (!r || typeof r.prefix !== "string" || typeof r.provider !== "string" || !table.has(canonicalProvider(r.provider))) throw new NotConfiguredError("RouterConfig rules must name a declared or built-in provider");
+    }
+    for (const key of Object.keys(config.apiKeys ?? {})) apiKeysSource(config, key);
+    this.config = Object.freeze({
+      ...config,
+      ...(config.providers ? { providers: Object.freeze([...config.providers]) } : {}),
+      ...(config.rules ? { rules: Object.freeze(config.rules.map((r) => Object.freeze({ ...r }))) } : {}),
+      ...(config.apiKeys ? { apiKeys: Object.freeze({ ...config.apiKeys }) } : {}),
+      ...(config.credentials ? { credentials: Object.freeze({ ...config.credentials }) } : {}),
+      ...(config.baseUrls ? { baseUrls: Object.freeze({ ...config.baseUrls }) } : {}),
+      ...(config.settings ? { settings: Object.freeze(Object.fromEntries(Object.entries(config.settings).map(([k, v]) => [k, Object.freeze({ ...v })]))) } : {}),
+      ...(config.timeouts ? { timeouts: Object.freeze({ ...config.timeouts }) } : {}),
+    });
   }
+
+  private sharedTransport(): Transport {
+    if (this.config.transport) return this.config.transport;
+    return this.ownedTransport ??= createTransport({
+      ...(this.config.timeouts !== undefined ? { timeouts: this.config.timeouts } : {}),
+      ...(this.config.maxConnections !== undefined ? { maxConnections: this.config.maxConnections } : {}),
+    });
+  }
+
+  /** Close only the pool this router owns; a supplied transport remains caller-owned.
+   * Idempotent. The next lm() creates a fresh shared pool.
+   */
+  async close(): Promise<void> {
+    const owned = this.ownedTransport;
+    this.ownedTransport = undefined;
+    this.lms.clear();
+    await owned?.close?.();
+  }
+
+  /** Offline credential/endpoint explanation for the route, including local declarations. */
+  explainAuth(model: string): AuthReport {
+    const res = this.resolve(model);
+    const credential = providerEntry(this.config.credentials, res.provider, this.config);
+    const settings = providerEntry(this.config.settings, res.provider, this.config);
+    const baseUrl = baseUrlEntry(this.config, res.provider);
+    return explainAuth(res.provider, {
+      ...(this.config.providers !== undefined ? { providers: this.config.providers } : {}),
+      ...(this.config.env !== undefined ? { env: this.config.env } : {}),
+      ...(this.config.apiKeys !== undefined ? { apiKeys: this.config.apiKeys } : {}),
+      ...(credential !== undefined ? { credential } : {}),
+      ...(settings !== undefined ? { settings } : {}),
+      ...(baseUrl !== undefined ? { baseUrl } : {}),
+    });
+  }
+
+  doctor(model: string): AuthReport { return this.explainAuth(model); }
 
   /** Pure lookup; touches no network and reads no secret values. */
   resolve(model: string): Resolution {
@@ -513,7 +633,7 @@ export class LMRouter {
     const res = this.resolve(model);
     let lm = this.lms.get(res.provider);
     if (!lm) {
-      lm = buildLm(res, this.config);
+      lm = buildLm(res, this.config, this.sharedTransport());
       this.lms.set(res.provider, lm);
     }
     return lm;
@@ -539,15 +659,17 @@ export class LMRouter {
    */
   plan(request: Request, opts: { policy?: AdaptationPolicy } = {}): Promise<readonly Adaptation[]> {
     const req = normalizeRequest(request);
-    const res = this.resolve(req.model);
-    return this.lm(req.model).plan(routedRequest(req, res), opts);
+    const planningConfig = { ...this.config, env: this.config.env ?? {} };
+    const res = resolveModel(req.model, planningConfig);
+    return planningLm(res, planningConfig).plan(routedRequest(req, res), opts);
   }
 
   /** The MAP-6 door, routed by the prefix's model. */
-  cache(prefix: Request, opts: { ttlSeconds?: number; label?: string } = {}): Promise<CachedPrefix> {
+  async cache(prefix: Request, opts: { ttlSeconds?: number; label?: string } = {}): Promise<CachedPrefix> {
     const req = normalizeRequest(prefix);
     const res = this.resolve(req.model);
-    return this.lm(req.model).cache(routedRequest(req, res), opts);
+    const cached = await this.lm(req.model).cache(routedRequest(req, res), opts);
+    return CachedPrefix.create({ ...cached, provider: res.provider });
   }
 
   // ─── the OpenAI-shaped door (api-family § Ingest) ──────────────────
@@ -559,7 +681,7 @@ export class LMRouter {
    * Like `resolve()`: no network, no credential invocation, no secret values.
    */
   resolveOpenAIChat(model: string): Resolution {
-    let res = this.resolve(openaiChatModelString(model));
+    let res = this.resolve(openaiChatModelString(model, this.config));
     if (res.source === "rule" && res.provider === "openai") res = this.resolve(`openai-chat:${res.model}`);
     return res;
   }

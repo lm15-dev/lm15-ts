@@ -303,7 +303,7 @@ export class GeminiLM extends ProviderLM {
       msg = body.trim().slice(0, 500) || `HTTP ${status}`;
       errStatus = "";
     }
-    return mapHttpError(status, msg, { provider: this.provider, envKeys: this.access.envKeys, providerCode: errStatus || null });
+    return this.withLoginHint(mapHttpError(status, msg, { provider: this.provider, envKeys: this.access.envKeys, providerCode: errStatus || null }));
   }
 
   // ─── Request ─────────────────────────────────────────────────────
@@ -563,7 +563,7 @@ export class GeminiLM extends ProviderLM {
   }
 
   wireRequest(request: Request, stream: boolean): EmitOptions {
-    request = Request.create(request);
+    request = this.wireModelRequest(request);
     const endpoint = stream ? "streamGenerateContent" : "generateContent";
     return {
       method: "POST",
@@ -618,6 +618,7 @@ export class GeminiLM extends ProviderLM {
   }
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    request = this.wireModelRequest(request);
     const data = obj(response.json());
     const inband = this.inbandError(data);
     if (inband) throw inband;
@@ -995,6 +996,7 @@ export class GeminiLM extends ProviderLM {
   // ─── Batches (Batch Mode, inline) ────────────────────────────────
 
   override batchSubmitRequest(request: BatchRequest): Promise<TransportRequest> {
+    this.batchPreflight(request);
     const model = request.model ?? request.requests[0]!.model;
     // MAP-13: under the adapter's policy so "refuse" refuses here too (a batch ticket has no adaptations field).
     const requests = collecting(new AdaptationScope(this.adaptations, this.provider), () =>

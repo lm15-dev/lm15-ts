@@ -38,15 +38,18 @@ Everything the Node entry has that is about communication:
 - `complete`, `stream` with cancellation, the MAP-3 coalescer, the MAP-9
   assembler, `ResponseStream`.
 - The router: `provider:model` strings, catalogs, explicit `apiKeys`,
-  `baseUrls`, `settings`, and `explainAuth`.
+  endpoint-root `baseUrls`, `settings`, router-local `ProviderDefinition`
+  declarations/aliases, and `explainAuth`. Named cloud credentials require a
+  custom `Platform.openCloudChain`; the built-in web platform refuses them.
 - Live sessions over the page's `WebSocket` where the provider's protocol
   allows a browser to open one.
 - The other surfaces a door carries — files, batches, caches, image and
   speech generation, video jobs — from bytes you supply.
 - The fetch transport, and `lm15/testing` (`FakeTransport`, `FakeLM`).
 
-Every one of those is exercised in the web build by the same corpus that
-pins the Node build, plus a real-browser run (below).
+The earlier baseline exercised these surfaces with the shared corpus and a
+real-browser run (below). The 2026-09-20 parity additions have **not** been run,
+built or typechecked in this pass.
 
 ## Included: the browser's own ways to supply what the host used to
 
@@ -88,6 +91,18 @@ skips, so a page can show a user *why* nothing is configured.
 No automatic tool loop, retries, fallbacks, model ranking, conversation
 storage, credential persistence, model downloads, or UI. An application
 builds those on lm15; lm15 never decides them.
+
+## Browser budgets and reply handling
+
+Fetch uses 600-second header/read deadlines and bounds outstanding operations
+(default 100). Its socket connect/write/pool phases cannot be configured:
+explicit settings for those refuse rather than pretend. Fetch already inflates
+responses; lm15 checks visible content codings but never decodes twice. CORS can
+hide coding and diagnostic headers. See [transport budgets](transport.md).
+
+`router.plan()` requires neither credentials nor host services, even for a cloud
+route or path-addressed media. It previews adaptations, not whether a file exists
+or a credential will be authorized.
 
 ## What a page cannot promise
 

@@ -4,6 +4,7 @@
  */
 
 import type { LMOptions, ProviderLM } from "./adapter.ts";
+import type { OpenAIChatCompat, OpenAIResponsesCompat, AnthropicCompat } from "./compat.ts";
 import { ValueError } from "./types/validate.ts";
 import { lookup, type ProviderDefinition } from "./registry.ts";
 import { AnthropicLM, ClaudeCodeLM } from "./dialects/anthropic.ts";
@@ -32,7 +33,7 @@ export function adapterFor(provider: string, opts: AdapterOptions = {}): Provide
 export function adapterForDefinition(definition: ProviderDefinition, opts: AdapterOptions = {}): ProviderLM {
   const base: LMOptions = { ...opts };
   const bound = definition.bound ? { access: definition.access } : {};
-  const compat = definition.compat !== undefined && definition.dialect !== "gemini" ? { compat: definition.compat } : {};
+  const compat = definition.compat;
   switch (definition.id) {
     case "openai-codex":
       return new OpenAICodexLM(base);
@@ -43,11 +44,11 @@ export function adapterForDefinition(definition: ProviderDefinition, opts: Adapt
   }
   switch (definition.dialect) {
     case "openai-responses":
-      return new OpenAILM({ ...base, ...bound, ...compat });
+      return new OpenAILM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | OpenAIResponsesCompat } : {}) });
     case "openai-chat":
-      return new OpenAIChatLM({ ...base, ...bound, ...compat });
+      return new OpenAIChatLM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | OpenAIChatCompat } : {}) });
     case "anthropic":
-      return new AnthropicLM({ ...base, ...bound, ...compat });
+      return new AnthropicLM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | AnthropicCompat } : {}) });
     case "gemini":
       return new GeminiLM({ ...base, ...bound });
     case "typesafe":

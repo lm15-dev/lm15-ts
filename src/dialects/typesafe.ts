@@ -14,17 +14,17 @@ import { adapt } from "../adaptation.ts";
 import { ProviderLM, type EmitOptions, type LMOptions } from "../adapter.ts";
 import { TYPESAFE_API, type AccessPolicy } from "../auth/policy.ts";
 import { AuthError, InvalidRequestError, ProviderError, RateLimitError, ServerError, UnsupportedFeatureError, UnsupportedModelError, mapHttpError } from "../errors.ts";
-import { isJsonObject, parseJson, type JsonObject, type JsonValue } from "../json.ts";
-import { MAX_CHOICE_KEYS, MAX_ORDERED_LEVELS, nonJudgmentProperties, requestJudgments, type Judgment } from "../judgments.ts";
+import { isJsonObject, isNumeric, numberValue, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
+import { MAX_CHOICE_KEYS, MAX_ORDERED_LEVELS, nonJudgmentProperties, parseTypeSafeResponse, requestJudgments, type Judgment } from "../judgments.ts";
 import type { SSEEvent } from "../stream.ts";
 import type { Request } from "../types/config.ts";
 import type { ModelInfo } from "../types/model_info.ts";
-import { normalizePart, type DataPart, type Message, type Part, type TextPart } from "../types/parts.ts";
-import { Response, Usage } from "../types/response.ts";
+import type { DataPart, Part, TextPart } from "../types/parts.ts";
+import type { Response } from "../types/response.ts";
 import type { StreamEvent } from "../types/stream.ts";
 import { HttpResponse, modelInfosFromEntries, type TransportRequest } from "../wire.ts";
 import { optionalWireFloat } from "./openai_responses.ts";
-import { obj, str } from "./openai_shared.ts";
+import { str } from "./openai_shared.ts";
 
 const DEFAULT_BASE_URL = "https://api.typesafe.ai";
 
@@ -127,7 +127,7 @@ export class TypeSafeLM extends ProviderLM {
         );
         instruction = name;
       }
-      questions[name] = this.question(name, j, instruction);
+      Object.defineProperty(questions, name, { value: this.question(name, j, instruction), enumerable: true, configurable: true, writable: true });
     }
     return questions;
   }
@@ -137,11 +137,11 @@ export class TypeSafeLM extends ProviderLM {
     if (j.kind === "choice") {
       if (j.keys.length > MAX_CHOICE_KEYS) throw this.refuse(`config.response_format.schema.properties.${name}`, `a Jev choice takes at most ${MAX_CHOICE_KEYS} keys, got ${j.keys.length}`);
       const criteria: JsonObject = {};
-      for (const k of j.keys) criteria[k] = j.descriptions[k] ?? null;
+      for (const k of j.keys) Object.defineProperty(criteria, k, { value: j.descriptions[k] ?? null, enumerable: true, configurable: true, writable: true });
       return { type: "choice", instructions: instruction, criteria };
     }
     if (j.keys.length > MAX_ORDERED_LEVELS) throw this.refuse(`config.response_format.schema.properties.${name}`, `a Jev score takes at most ${MAX_ORDERED_LEVELS} levels, got ${j.keys.length}`);
-    return { type: "score", instructions: instruction, criteria: j.keys.map((k) => j.descriptions[k] || j.titles[k] || k) };
+    return { type: "score", instructions: instruction, criteria: j.keys.map((k) => j.descriptions[k] || k) };
   }
 
   payload(request: Request): JsonObject {
@@ -151,16 +151,20 @@ export class TypeSafeLM extends ProviderLM {
     for (const [wire, key] of DROPPED_KNOBS) {
       const value = (cfg as Record<string, unknown>)[key];
       if (value === undefined || (Array.isArray(value) && value.length === 0)) continue;
-      const asked = FLOAT_KNOBS.has(wire) ? optionalWireFloat(value as number) : typeof value === "number" || typeof value === "string" || typeof value === "boolean" ? value : JSON.stringify(value);
+      const asked = FLOAT_KNOBS.has(wire) ? optionalWireFloat(value as number) : typeof value === "number" || typeof value === "string" || typeof value === "boolean" ? value : stringifyJson(value);
       adapt(`config.${wire}`, "dropped", "no such control on the systemone wire (Jev returns decisions, not samples)", { asked, provider: this.provider });
     }
     const questions = this.questions(request);
     const payload: JsonObject = { model: request.model, state: this.state(request), questions };
-    if (cfg.extensions) for (const [k, v] of Object.entries(cfg.extensions)) payload[k] = v;
+    if (cfg.extensions) for (const [k, v] of Object.entries(cfg.extensions)) {
+      if (k === "n" && isNumeric(v) && numberValue(v) > 1) throw this.refuse("config.extensions.n", "n > 1 has no canonical multiple-response representation");
+      Object.defineProperty(payload, k, { value: v, enumerable: true, configurable: true, writable: true });
+    }
     return payload;
   }
 
   wireRequest(request: Request, stream: boolean): EmitOptions {
+    request = this.wireModelRequest(request);
     if (stream) throw this.refuse("stream", "systemone answers in one piece; there is no stream to wrap");
     return { method: "POST", url: `${this.base()}/v1/systemone`, endpoint: "systemone", model: request.model, headers: this.headers(), payload: this.payload(request) };
   }
@@ -168,54 +172,8 @@ export class TypeSafeLM extends ProviderLM {
   // ─── Response parsing (pure) ─────────────────────────────────────
 
   parseResponse(request: Request, response: HttpResponse): Response {
-    const data = obj(response.json());
-    const found = requestJudgments(request);
-    const answers = isJsonObject(data["answers"]) ? data["answers"] : {};
-    const value: JsonObject = {};
-    const probabilities: Record<string, Record<string, number>> = {};
-    const unmapped: JsonObject[] = [];
-    for (const [name, j] of found) {
-      const answer = answers[name];
-      if (!isJsonObject(answer)) {
-        unmapped.push({ path: `answers.${name}`, detail: "missing" });
-        continue;
-      }
-      const kind = answer["type"];
-      if (kind === "noul" && j.kind === "boolean") {
-        const p = Number(answer["noul"] ?? 0);
-        value[name] = p >= 0.5;
-        probabilities[name] = { true: p, false: 1.0 - p };
-      } else if (kind === "choice" && j.kind === "choice") {
-        value[name] = (answer["choice"] ?? null) as JsonValue;
-        const dist = isJsonObject(answer["probabilities"]) ? answer["probabilities"] : {};
-        const probs: Record<string, number> = {};
-        for (const k of j.keys) probs[k] = Number(dist[k] ?? 0);
-        probabilities[name] = probs;
-      } else if (kind === "score" && j.kind === "ordered") {
-        const dist = isJsonObject(answer["probabilities"]) ? answer["probabilities"] : {};
-        const probs: Record<string, number> = {};
-        for (const k of j.keys) probs[k] = Number(dist[k] ?? 0);
-        probabilities[name] = probs;
-        let best = j.keys[0]!;
-        for (const k of j.keys) if (probs[k]! > probs[best]!) best = k;
-        value[name] = Number(best);
-      } else unmapped.push({ path: `answers.${name}`, detail: `unexpected answer type ${JSON.stringify(kind)}` });
-    }
-    for (const name of Object.keys(answers)) if (!found.has(name)) unmapped.push({ path: `answers.${name}`, detail: "answer to no declared judgment" });
-    const measured = Object.keys(probabilities).length > 0;
-    const part = normalizePart({ type: "data", value, ...(measured ? { probabilities, method: "provider_classification" } : {}) });
-    const usageRaw = isJsonObject(data["usage"]) ? data["usage"] : {};
-    const usage = Usage.create({ inputTokens: Number(usageRaw["input_tokens"] ?? 0) || 0, outputTokens: Number(usageRaw["output_tokens"] ?? 0) || 0 });
-    const providerData: JsonObject = { typesafe: { answers } };
-    if (unmapped.length > 0) providerData["_lm15_unmapped"] = unmapped;
-    return new Response({
-      id: response.header("x-typesafe-request-id") || undefined,
-      model: str(data["model"]) || request.model,
-      message: { role: "assistant", parts: [part] },
-      finishReason: "stop",
-      usage,
-      providerData,
-    });
+    request = this.wireModelRequest(request);
+    return parseTypeSafeResponse(request, response, this.provider);
   }
 
   parseStreamEvents(_request: Request, _event: SSEEvent): StreamEvent[] {

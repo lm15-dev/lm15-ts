@@ -3,7 +3,13 @@
 This pass fixes the confirmed runtime findings from the Python/Rust comparison.
 It is not a line-by-line audit of all three implementations or a release approval.
 
-## Fixed and tested
+The 2026-09-20 cloud/router/transport/judgment/native-lock changes are source-only
+and **unverified**: no tests, builds, typechecks, lint or verification programs
+were run. The historical results in this document are not evidence for those
+changes. See [transport budgets](transport.md), [cloud identity](cloud-identity.md)
+and [native lock packaging](credential-locking.md).
+
+## Earlier fixes and tests
 
 - Generic `toJSON()` distinguishes parts, deltas, live events, configuration and
   empty usage. Each constructed kind is checked through the public serializer
@@ -66,11 +72,11 @@ if the body is not needed. The built-in transport's bodies are single-consumptio
 
 ## Compatibility decisions
 
-- Stored credential mutation/refresh currently requires Linux plus util-linux
-  `flock` on PATH. Other platforms can use explicit API keys or credential
-  providers. A portable native locking backend remains future work. Stop older
-  `.node.lock`-using processes when upgrading; they cannot coordinate with this
-  kernel-lock implementation. Never delete a lock file to resolve contention.
+- Linux stored credential mutation/refresh retains util-linux `flock` on PATH.
+  Other platforms require the optional native kernel-lock addon, whose source
+  is included but whose binaries and interoperability were not verified here.
+  Missing or unloadable addons refuse refresh/write explicitly. Stop older
+  `.node.lock`-using processes when upgrading. Never delete a lock file to resolve contention.
 - Factory identity is local to a package instance. Use type-specific serializers
   or the explicit generic kind after object spread, cloning or package boundaries.
 - Typed integers are numbers, not a new number/bigint union. Rejecting unsafe
@@ -84,8 +90,8 @@ if the body is not needed. The built-in transport's bodies are single-consumptio
 ## Still unfinished
 
 - A complete source audit of Python, Rust and TypeScript.
-- Python's BatchJob/VideoJob polling handles and live Turn collection helpers.
-  The lower-level batch/video/live operations remain available.
+- Native locking binary packaging and cross-platform interoperability execution.
+- Source-only regressions for the latest parity pass need execution after authorization.
 - Python-style automatic discovery of installed model catalogs and function
   signature-to-schema derivation; no implicit package scanning was added.
 - Broad live-provider verification for files, batches, caches, generation,

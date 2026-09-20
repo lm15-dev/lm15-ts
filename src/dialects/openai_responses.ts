@@ -490,7 +490,7 @@ export class OpenAILM extends ProviderLM {
   }
 
   wireRequest(request: Request, stream: boolean): EmitOptions {
-    request = RequestNs.create(request);
+    request = this.wireModelRequest(request);
     return {
       method: "POST",
       url: `${this.base()}/responses`,
@@ -505,6 +505,7 @@ export class OpenAILM extends ProviderLM {
   // ─── Response ────────────────────────────────────────────────────
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    request = this.wireModelRequest(request);
     const data = obj(response.json());
     const respError = data["error"];
     if (isJsonObject(respError)) throw this.responseError(str(respError["code"]), str(respError["message"]) || stringifyJson(respError));
@@ -585,6 +586,7 @@ export class OpenAILM extends ProviderLM {
   // ─── Stream ──────────────────────────────────────────────────────
 
   parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
+    request = this.wireModelRequest(request);
     if (!raw.data) return [];
     if (raw.data === "[DONE]") return [{ type: "end" }];
     const payload = parseJson(raw.data);
@@ -857,6 +859,7 @@ export class OpenAILM extends ProviderLM {
   // ─── Batches ─────────────────────────────────────────────────────
 
   override async batchUploadRequest(request: BatchRequest): Promise<TransportRequest | undefined> {
+    this.batchPreflight(request);
     // MAP-13: under the adapter's policy so "refuse" refuses here too (a batch ticket has no adaptations field).
     const lines = collecting(new AdaptationScope(this.adaptations, this.provider), () =>
       request.requests.map((nested, i) => stringifyJson({ custom_id: String(i), method: "POST", url: "/v1/responses", body: this.payload(nested, false) })),
@@ -867,6 +870,7 @@ export class OpenAILM extends ProviderLM {
   }
 
   override batchSubmitRequest(request: BatchRequest, uploadBody?: JsonObject): Promise<TransportRequest> {
+    this.batchPreflight(request);
     const inputFileId = uploadBody?.["id"];
     if (typeof inputFileId !== "string" || !inputFileId) throw new ProviderError("openai: batch input file upload returned no id", { provider: this.provider });
     const extensions: JsonObject = { ...(request.extensions ?? {}) };

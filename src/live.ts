@@ -359,7 +359,7 @@ export function liveEventSize(event: LiveServerEvent, remaining = Number.POSITIV
   const compact = stringifyJson(LiveServerEventNs.toJSON(event));
   let size = 0;
   for (let i = 0; i < compact.length; i++) {
-    size += compact.charCodeAt(i) < 0x80 ? 1 : 6;
+    size += compact.charCodeAt(i) < 0x7f ? 1 : 6;
     if (size > remaining) break;
   }
   return size;

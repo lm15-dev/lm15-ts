@@ -19,12 +19,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { AuthError, NotConfiguredError } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
-import { ApiKey, AwsCredentials, BearerToken, parseRfc3339, type CredentialValue } from "../types/credential.ts";
+import { ApiKey, AwsCredentials, BearerToken, CredentialSource, parseRfc3339, type CredentialValue, type NamedCredential, type SourcedCredentialProvider } from "../types/credential.ts";
 import type { AccessPolicy } from "../auth/policy.ts";
 import type { RungKind } from "../vocab.ts";
 import { ValueError } from "../types/validate.ts";
 import * as rs256 from "./rs256.ts";
 import { sign as sigv4Sign } from "./sigv4.ts";
+import { NAMED_RUNGS, namedMeaning, validateNamedCredential } from "./identity.ts";
+export { NAMED_RUNGS, namedMeaning } from "./identity.ts";
+export { CredentialSource } from "../types/credential.ts";
 
 const SKEW_MS = 300_000;
 const GCP_SCOPE = "https://www.googleapis.com/auth/cloud-platform";
@@ -1106,15 +1109,43 @@ export function chainFor(policy: AccessPolicy): Rung[] {
   return builder(policy);
 }
 
+/** Exactly the selected identity's rungs, never the rest of the chain. */
+export function namedRungs(policy: AccessPolicy, name: NamedCredential): Rung[] {
+  validateNamedCredential(policy, name);
+  const wanted = NAMED_RUNGS[policy.credentialPolicy]![name];
+  const rungs = chainFor(policy).filter((r) => wanted.includes(r.name));
+  if (policy.credentialPolicy !== "gcp-chain" || !["workload", "environment"].includes(name)) return rungs;
+  const allowed = name === "workload" ? ["external_account"] : ["service_account", "impersonated_service_account"];
+  const mismatch = (ctx: ChainContext): string | undefined => {
+    const file = ctx.env["GOOGLE_APPLICATION_CREDENTIALS"];
+    if (!file) return undefined;
+    const info = gcpCredentialFile(ctx, file);
+    if (!info || allowed.includes(str(info["type"]))) return undefined;
+    const kind = info["type"];
+    const other = kind === "external_account" ? "workload" : ["service_account", "impersonated_service_account"].includes(str(kind)) ? "environment" : kind === "authorized_user" ? "cli" : undefined;
+    // A file's arbitrary type string is not trusted diagnostic text.
+    return `${file}: credential file type is not accepted by named credential "${name}"; ${other ? `use named credential "${other}"` : "use an external_account or service_account configuration"}`;
+  };
+  return rungs.map((r) => ({ ...r,
+    probe: (ctx: ChainContext): [Verdict, string] => { const reason = mismatch(ctx); return reason ? ["absent", reason] : r.probe(ctx); },
+    acquire: async (ctx: ChainContext) => { const reason = mismatch(ctx); if (reason) throw new NotConfiguredError(reason, { provider: policy.provider }); return r.acquire(ctx); },
+  }));
+}
+
+function walk(policy: AccessPolicy, named?: NamedCredential): Rung[] {
+  return named === undefined ? chainFor(policy) : namedRungs(policy, named);
+}
+
 /** The AUTH-7 walk. `explicit` = an api_keys entry exists (rung 0). */
-export function explain(policy: AccessPolicy, ctx: ChainContext, explicit: boolean): [Step[], boolean] {
+export function explain(policy: AccessPolicy, ctx: ChainContext, explicit: boolean, named?: NamedCredential): [Step[], boolean] {
+  validateNamedCredential(policy, named, explicit);
   const steps: Step[] = [];
   let selected = false;
   if (explicit) {
     steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "provided (value never shown)", state: "selected" });
     selected = true;
   } else steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "not provided", state: "absent" });
-  for (const r of chainFor(policy)) {
+  for (const r of walk(policy, named)) {
     let verdict: Verdict;
     let detail: string;
     try {
@@ -1137,9 +1168,14 @@ export function explain(policy: AccessPolicy, ctx: ChainContext, explicit: boole
 }
 
 /** Walk the chain online; the first rung that yields wins. Azure developer commands are tried through errors. */
-export async function resolve(policy: AccessPolicy, ctx: ChainContext): Promise<CredentialValue> {
+export async function resolve(policy: AccessPolicy, ctx: ChainContext, named?: NamedCredential): Promise<CredentialValue> {
+  return (await resolveWithSource(policy, ctx, named))[0];
+}
+
+export async function resolveWithSource(policy: AccessPolicy, ctx: ChainContext, named?: NamedCredential): Promise<[CredentialValue, CredentialSource]> {
   let developerFailed = false;
-  for (const r of chainFor(policy)) {
+  const rungs = walk(policy, named);
+  for (const r of rungs) {
     let got: CredentialValue | undefined;
     try {
       got = await r.acquire(ctx);
@@ -1148,11 +1184,26 @@ export async function resolve(policy: AccessPolicy, ctx: ChainContext): Promise<
         developerFailed = true;
         continue;
       }
+      if (e instanceof AuthError || e instanceof NotConfiguredError) {
+        const marker = "\nCredential source attempted: ";
+        if (!e.message.includes(marker)) {
+          const at = e.message.indexOf("\n\n  To fix:");
+          const base = at < 0 ? e.message : e.message.slice(0, at);
+          const guidance = at < 0 ? "" : e.message.slice(at);
+          e.message = base + marker + new CredentialSource({ rung: r.name, label: r.source, named }).describe(ctx.now()) + guidance;
+        }
+      }
       throw e;
     }
-    if (got !== undefined) return got;
+    if (got !== undefined) return [got, new CredentialSource({ rung: r.name, label: r.source, named, expiresAt: got instanceof ApiKey ? undefined : got.expiresAt })];
   }
-  if (developerFailed) throw new AuthError("Azure developer credentials failed; sign in with az, Azure PowerShell, or azd", { provider: policy.provider });
+  if (developerFailed) throw new AuthError(`Azure developer credentials failed${named ? ` (named credential "${named}": ${namedMeaning(policy, named)}; probed ${rungs.map((r) => r.name).join(", ")}; no other identity tried)` : ""}; sign in with az, Azure PowerShell, or azd`, { provider: policy.provider });
+  if (named) {
+    const probes = rungs.map((r) => {
+      try { return `${r.name}: ${r.probe(ctx)[1]}`; } catch { return `${r.name}: source unavailable`; }
+    }).join("; ");
+    throw new NotConfiguredError(`${policy.provider}: named credential "${named}" — ${namedMeaning(policy, named)} — answered nothing (${probes}). Only this identity was requested; the rest of the ${policy.credentialPolicy} chain is not tried.`, { provider: policy.provider });
+  }
   throw new NotConfiguredError(
     `${policy.provider}: no credential found in the ${policy.credentialPolicy} chain${policy.envKeys.length > 0 ? `; set ${policy.envKeys[0]} or configure the cloud SDK` : "; configure the cloud SDK"}`,
     { provider: policy.provider, envKeys: policy.envKeys },
@@ -1160,15 +1211,18 @@ export async function resolve(policy: AccessPolicy, ctx: ChainContext): Promise<
 }
 
 /** AUTH-2/AUTH-3: resolve once, hand out until the skew window, re-resolve after. In memory only. */
-export function credentialProvider(policy: AccessPolicy, ctx: ChainContext): () => Promise<CredentialValue> {
+export function credentialProvider(policy: AccessPolicy, ctx: ChainContext, named?: NamedCredential): SourcedCredentialProvider {
+  validateNamedCredential(policy, named);
   let cached: CredentialValue | undefined;
+  let source: CredentialSource | undefined;
   let inflight: Promise<CredentialValue> | undefined;
-  return async () => {
+  const provider = async () => {
     if (cached !== undefined && !cached.isExpired(ctx.now())) return cached;
     inflight ??= (async () => {
       try {
-        const value = await resolve(policy, ctx);
-        if (value.isExpired(ctx.now())) throw new AuthError("cloud credential is expired; renew the configured credential source", { provider: policy.provider });
+        const [value, origin] = await resolveWithSource(policy, ctx, named);
+        source = origin;
+        if (value.isExpired(ctx.now())) throw new AuthError(`cloud credential is expired; renew the configured credential source\nCredential came from: ${origin.describe(ctx.now())}`, { provider: policy.provider });
         // CLI output without an expiry cannot safely be cached forever.
         cached = value instanceof ApiKey || value instanceof AwsCredentials || value.expiresAt !== undefined ? value : undefined;
         return value;
@@ -1178,6 +1232,8 @@ export function credentialProvider(policy: AccessPolicy, ctx: ChainContext): () 
     })();
     return inflight;
   };
+  Object.defineProperties(provider, { source: { get: () => source }, named: { value: named } });
+  return provider as SourcedCredentialProvider;
 }
 
 /** Provider id + the identity-selecting settings (AUTH-3). */

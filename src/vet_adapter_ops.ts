@@ -451,6 +451,8 @@ registerOps({
       ...(files ? { files } : {}),
       ...(env["HOME"] ? { home: env["HOME"] } : {}),
       ...(settings ? { settings } : {}),
+      ...(msg["credential"] !== undefined ? { credential: String(msg["credential"]) as import("./types/credential.ts").NamedCredential } : {}),
+      ...(msg["base_url"] !== undefined ? { baseUrl: String(msg["base_url"]) } : {}),
       ...(credentialsPath !== undefined
         ? canonical === "claude-code"
           ? { claudeCredentialsPath: credentialsPath }
@@ -461,6 +463,7 @@ registerOps({
     });
     return {
       configured: report.configured,
+      ...(report.baseUrl !== undefined ? { base_url: report.baseUrl } : {}),
       steps: report.steps.map((s) => ({ kind: s.kind, state: s.state })),
       report_text: [describeReport(report), JSON.stringify(report.steps.map((s) => ({ ...s })))].join("\n"),
     };

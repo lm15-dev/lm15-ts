@@ -63,6 +63,8 @@ export interface HostSpec {
   /** Template over the settings: `{region}`, `{project}`, `{location}`, `{location_host}`, `{resource}`. */
   readonly baseUrl: string;
   readonly settings: readonly HostSetting[];
+  /** Vendor endpoint variables, in priority order (AUTH-10). */
+  readonly endpointEnv?: readonly string[];
   /** Endpoint-path overrides keyed by the dialect's endpoint name; `{model}` is the request's model. */
   readonly paths: Readonly<Record<string, string>>;
   readonly modelIn: ModelPlacement;
@@ -77,6 +79,7 @@ export interface HostSpec {
 function host(spec: Partial<HostSpec> & { baseUrl: string }): HostSpec {
   return Object.freeze({
     settings: [],
+    endpointEnv: [],
     paths: {},
     modelIn: "body",
     anthropicVersionIn: "header",
@@ -439,6 +442,7 @@ export const AWS_ANTHROPIC = policy({
   backend: "aws-external-anthropic",
   host: host({
     baseUrl: "https://aws-external-anthropic.{region}.api.aws/v1",
+    endpointEnv: ["AWS_ENDPOINT_URL_AWS_EXTERNAL_ANTHROPIC", "AWS_ENDPOINT_URL"],
     settings: [AWS_REGION, AWS_WORKSPACE],
     requiredHeaders: [["anthropic-workspace-id", "workspace"]],
     sigv4Service: "aws-external-anthropic",
@@ -453,7 +457,7 @@ export const BEDROCK_ANTHROPIC = policy({
   envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
   authScheme: ["sigv4", "x-api-key"],
   backend: "bedrock-mantle",
-  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/anthropic/v1", settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
+  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/anthropic/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_MANTLE", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
 });
 
 export const BEDROCK_CHAT = policy({
@@ -464,7 +468,7 @@ export const BEDROCK_CHAT = policy({
   envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
   authScheme: ["sigv4", "bearer"],
   backend: "bedrock-runtime",
-  host: host({ baseUrl: "https://bedrock-runtime.{region}.amazonaws.com/openai/v1", settings: [AWS_REGION], sigv4Service: "bedrock" }),
+  host: host({ baseUrl: "https://bedrock-runtime.{region}.amazonaws.com/openai/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock" }),
 });
 
 export const BEDROCK_MANTLE_CHAT = policy({
@@ -475,7 +479,7 @@ export const BEDROCK_MANTLE_CHAT = policy({
   envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
   authScheme: ["sigv4", "bearer"],
   backend: "bedrock-mantle",
-  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/v1", settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
+  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_MANTLE", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
 });
 
 export const AZURE = policy({
@@ -486,7 +490,7 @@ export const AZURE = policy({
   envKeys: ["AZURE_OPENAI_API_KEY"],
   authScheme: ["api-key", "bearer"],
   backend: "azure-openai",
-  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
+  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", endpointEnv: ["AZURE_OPENAI_ENDPOINT"], settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
 });
 
 export const AZURE_CHAT = policy({
@@ -497,7 +501,7 @@ export const AZURE_CHAT = policy({
   envKeys: ["AZURE_OPENAI_API_KEY"],
   authScheme: ["api-key", "bearer"],
   backend: "azure-openai",
-  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
+  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", endpointEnv: ["AZURE_OPENAI_ENDPOINT"], settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
 });
 
 export const AZURE_ANTHROPIC = policy({
@@ -510,6 +514,7 @@ export const AZURE_ANTHROPIC = policy({
   backend: "azure-foundry",
   host: host({
     baseUrl: "https://{resource}.services.ai.azure.com/anthropic/v1",
+    endpointEnv: ["ANTHROPIC_FOUNDRY_BASE_URL"],
     settings: [AZURE_FOUNDRY_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE],
   }),
 });
@@ -615,13 +620,8 @@ export function authHeader(
   const value = coerceCredential(credential);
   const scheme = selectScheme(p, value);
   if (value instanceof AwsCredentials) return undefined;
-  if ((scheme === "api-key" || scheme === "x-api-key") && p.authScheme.includes("bearer") && looksLikeJwt(value.value)) {
-    throw new NotConfiguredError(
-      `${p.provider}: the credential is a JWT (a bearer token), but a plain string travels as an API key here (\`${
-        scheme === "x-api-key" ? "x-api-key" : "api-key"
-      }\` header); wrap it: new BearerToken(token)`,
-      { provider: p.provider, envKeys: p.envKeys, credentialHint: "apiKey: () => new BearerToken(provider())" },
-    );
+  if ((scheme === "api-key" || scheme === "x-api-key") && p.authScheme.includes("bearer") && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.value) && looksLikeJwt(value.value)) {
+    return ["Authorization", `Bearer ${value.value}`];
   }
   if (scheme === "bearer") return ["Authorization", `Bearer ${value.value}`];
   if (scheme === "x-api-key") return [apiKeyHeader, value.value];

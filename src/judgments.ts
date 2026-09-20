@@ -12,11 +12,13 @@
  */
 
 import { adapt } from "./adaptation.ts";
-import { UnsupportedFeatureError } from "./errors.ts";
-import { isJsonObject, parseJson, type JsonObject, type JsonValue } from "./json.ts";
+import { ProviderError, UnsupportedFeatureError, responseErrorMetadata } from "./errors.ts";
+import { RawNumber, isJsonObject, isNumeric, numberValue, parseJson, type JsonObject, type JsonValue } from "./json.ts";
 import type { Request, ResponseFormat } from "./types/config.ts";
 import { normalizePart, type DataPart, type Part, type TextPart } from "./types/parts.ts";
-import { ValueError } from "./types/validate.ts";
+import { Response, Usage } from "./types/response.ts";
+import { ValueError, requireBool, requireJsonObject, requireString } from "./types/validate.ts";
+import type { HttpResponse } from "./wire.ts";
 
 export type JudgmentKind = "boolean" | "choice" | "ordered";
 
@@ -62,8 +64,8 @@ function judgmentOf(name: string, prop: unknown): Judgment | undefined {
   const enumValues = prop["enum"];
   const branches = constBranches(prop);
   let values: JsonValue[];
-  const descs: Record<string, string | undefined> = {};
-  const titles: Record<string, string | undefined> = {};
+  const descs: Record<string, string | undefined> = Object.create(null);
+  const titles: Record<string, string | undefined> = Object.create(null);
   if (Array.isArray(enumValues) && enumValues.length > 0 && branches === undefined) {
     values = enumValues;
   } else if (branches !== undefined && enumValues === undefined) {
@@ -90,9 +92,7 @@ function judgmentOf(name: string, prop: unknown): Judgment | undefined {
 }
 
 function pick(map: Record<string, string | undefined>, keys: readonly string[]): Record<string, string | undefined> {
-  const out: Record<string, string | undefined> = {};
-  for (const k of keys) out[k] = map[k];
-  return out;
+  return Object.fromEntries(keys.map((k) => [k, Object.hasOwn(map, k) ? map[k] : undefined]));
 }
 
 /**
@@ -129,7 +129,7 @@ export function nonJudgmentProperties(schema: unknown, found: ReadonlyMap<string
 /** MAP-14 §3 on a wire with no distribution: `if_available` records `dropped`; `required` refuses before the wire (MAP-13 b). */
 export function noteUnmeasurableProbabilities(request: Request, provider: string): void {
   const policy = request.config?.probabilities;
-  if (policy === undefined || policy === "off" || requestJudgments(request).size === 0) return;
+  if (policy == null || policy === "off" || requestJudgments(request).size === 0) return;
   if (policy === "required") {
     throw new UnsupportedFeatureError(
       `${provider}: config.probabilities='required' but this wire cannot measure a distribution over the declared keys (it returns a pick only); use 'if_available' or a provider that can (typesafe, or a vLLM/SGLang server that honours logprob_token_ids)`,
@@ -140,7 +140,13 @@ export function noteUnmeasurableProbabilities(request: Request, provider: string
 }
 
 function deepCopy<T extends JsonValue>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  // INV-002/INV-050: opaque numbers keep their lexemes; native JSON
+  // serialization deliberately throws for RawNumber. Clone containers too,
+  // so a wire rewrite cannot mutate the caller's schema or branch objects.
+  if (value instanceof RawNumber) return new RawNumber(value.raw) as T;
+  if (Array.isArray(value)) return value.map((item) => deepCopy(item)) as T;
+  if (isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCopy(item)])) as T;
+  return value;
 }
 
 /**
@@ -232,11 +238,12 @@ export function normalizeLogprobs(scores: Readonly<Record<string, number>>): Rec
   const weights: Record<string, number> = {};
   let total = 0;
   for (const [k, v] of Object.entries(scores)) {
-    weights[k] = Math.exp(v - top);
-    total += weights[k]!;
+    const weight = Math.exp(v - top);
+    Object.defineProperty(weights, k, { value: weight, enumerable: true });
+    total += weight;
   }
   const out: Record<string, number> = {};
-  for (const [k, w] of Object.entries(weights)) out[k] = w / total;
+  for (const [k, w] of Object.entries(weights)) Object.defineProperty(out, k, { value: w / total, enumerable: true });
   return out;
 }
 
@@ -246,16 +253,115 @@ export function expectedLevel(distribution: Readonly<Record<string, number>>): n
   return total;
 }
 
+/**
+ * Fold a native TypeSafe reply without fabricating measurements (MAP-14).
+ * Kept pure so the dialect and callers of its buffered parser use the same
+ * validation. INV-052 deliberately does NOT validate or normalize sums.
+ */
+export function parseTypeSafeResponse(request: Request, response: HttpResponse, provider = "typesafe"): Response {
+  const requestId = response.header("x-typesafe-request-id") || undefined;
+  const invalid = (path: string, detail: string, cause?: unknown): ProviderError => new ProviderError(
+    `malformed systemone reply at ${path}: ${detail}`,
+    { ...responseErrorMetadata(response, provider), cause },
+  );
+  let data: JsonValue;
+  try {
+    data = response.json();
+  } catch (cause) {
+    if (cause instanceof ProviderError) {
+      (cause as { provider: string | null }).provider ??= provider;
+      throw cause;
+    }
+    const excerpt = new TextDecoder().decode(response.body.subarray(0, 200));
+    throw new ProviderError(`expected JSON; content-type=${response.header("content-type") ?? "<absent>"}; first 200 bytes=${JSON.stringify(excerpt)}`, {
+      ...responseErrorMetadata(response, provider), bodyExcerpt: excerpt, cause,
+    });
+  }
+  if (!isJsonObject(data)) throw invalid("$", "expected an object");
+  const found = requestJudgments(request);
+  const answers = data["answers"];
+  if (!isJsonObject(answers)) throw invalid("answers", "expected an object containing every declared judgment");
+  if (Object.keys(answers).length !== found.size || [...found.keys()].some((name) => !Object.hasOwn(answers, name))) {
+    throw invalid("answers", "keys must match the declared judgments exactly");
+  }
+  const probability = (raw: unknown, path: string): number => {
+    if (!isNumeric(raw)) throw invalid(path, "expected a finite number in [0, 1]");
+    const p = numberValue(raw);
+    if (!Number.isFinite(p) || p < 0 || p > 1) throw invalid(path, "expected a finite number in [0, 1]");
+    return p;
+  };
+  const values: Array<[string, JsonValue]> = [];
+  const distributions: Array<[string, Record<string, number>]> = [];
+  for (const [name, j] of found) {
+    const answer = answers[name];
+    const path = `answers.${name}`;
+    if (!isJsonObject(answer)) throw invalid(path, "expected an answer object");
+    const expected = j.kind === "boolean" ? "noul" : j.kind === "choice" ? "choice" : "score";
+    if (answer["type"] !== expected) throw invalid(`${path}.type`, `expected ${JSON.stringify(expected)}`);
+    if (j.kind === "boolean") {
+      const p = probability(answer["noul"], `${path}.noul`);
+      values.push([name, p >= 0.5]);
+      distributions.push([name, { true: p, false: 1 - p }]);
+      continue;
+    }
+    const raw = answer["probabilities"];
+    if (!isJsonObject(raw) || Object.keys(raw).length !== j.keys.length || j.keys.some((key) => !Object.hasOwn(raw, key))) {
+      throw invalid(`${path}.probabilities`, "expected one probability for every declared key, and no other keys");
+    }
+    const probs = Object.fromEntries(j.keys.map((key) => [key, probability(raw[key], `${path}.probabilities.${key}`)]));
+    distributions.push([name, probs]);
+    if (j.kind === "choice") {
+      const chosen = answer["choice"];
+      if (typeof chosen !== "string" || !j.keys.includes(chosen)) throw invalid(`${path}.choice`, "expected a declared choice key");
+      values.push([name, chosen]);
+    } else {
+      // The first declared level wins a tie; Jev's score is an expectation,
+      // not a chosen level, and stays verbatim in provider_data.
+      let best = j.keys[0]!;
+      for (const key of j.keys) if (probs[key]! > probs[best]!) best = key;
+      values.push([name, Number(best)]);
+    }
+  }
+  const usageRaw = data["usage"] ?? {};
+  if (!isJsonObject(usageRaw)) throw invalid("usage", "expected an object or null");
+  let usage: Usage;
+  try {
+    usage = Usage.create({ inputTokens: usageRaw["input_tokens"], outputTokens: usageRaw["output_tokens"] });
+  } catch (cause) {
+    if (!(cause instanceof TypeError || cause instanceof ValueError)) throw cause;
+    throw invalid("usage", cause.message, cause);
+  }
+  const model = data["model"];
+  if (model != null && (typeof model !== "string" || model === "")) throw invalid("model", "expected a non-empty string");
+  try {
+    const part = normalizePart({
+      type: "data", value: Object.fromEntries(values),
+      ...(distributions.length > 0 ? { probabilities: Object.fromEntries(distributions), method: "provider_classification" } : {}),
+    });
+    return new Response({
+      id: requestId, model: model ?? request.model,
+      message: { role: "assistant", parts: [part] }, finishReason: "stop", usage,
+      providerData: { typesafe: { answers } },
+    });
+  } catch (cause) {
+    if (!(cause instanceof TypeError || cause instanceof ValueError)) throw cause;
+    throw invalid("answers", cause.message, cause);
+  }
+}
+
 // ─── §4 sugar that emits the convention ─────────────────────────────
 
 /** A choice judgment property: `{key: description-or-undefined}` or a list of keys. */
 export function choice(instruction: string, options: Readonly<Record<string, string | null | undefined>> | readonly string[]): JsonObject {
+  requireString(instruction, "choice instruction");
+  if (!Array.isArray(options) && !isJsonObject(options)) throw new TypeError("choice options must be a mapping or a list of keys");
   const items: Array<[string, string | undefined]> = Array.isArray(options)
-    ? (options as readonly string[]).map((k) => [k, undefined])
+    ? Array.from(options as readonly string[], (k): [string, undefined] => [k, undefined])
     : Object.entries(options as Record<string, string | null | undefined>).map(([k, d]) => [k, d ?? undefined]);
   if (items.length === 0) throw new ValueError("choice needs at least one option");
   if (items.some(([k]) => typeof k !== "string" || k === "")) throw new TypeError("choice option keys must be non-empty strings");
   if (new Set(items.map(([k]) => k)).size !== items.length) throw new ValueError("choice option keys must be unique");
+  for (const [key, description] of items) if (description !== undefined) requireString(description, `choice option ${JSON.stringify(key)} description`);
   const prop: JsonObject = { type: "string", description: instruction };
   if (items.every(([, d]) => d === undefined)) prop["enum"] = items.map(([k]) => k);
   else prop["anyOf"] = items.map(([k, d]) => (d ? { const: k, description: d } : { const: k }));
@@ -263,17 +369,20 @@ export function choice(instruction: string, options: Readonly<Record<string, str
 }
 
 export function yesNo(instruction: string): JsonObject {
-  return { type: "boolean", description: instruction };
+  return { type: "boolean", description: requireString(instruction, "yesNo instruction") };
 }
 
 /** An ordered judgment: levels low → high; `{name: description}` or a list of descriptions. */
 export function score(instruction: string, levels: Readonly<Record<string, string>> | readonly string[]): JsonObject {
+  requireString(instruction, "score instruction");
+  if (!Array.isArray(levels) && !isJsonObject(levels)) throw new TypeError("score levels must be a mapping or a list of descriptions");
   const items: Array<[string | undefined, string]> = Array.isArray(levels)
-    ? (levels as readonly string[]).map((d) => [undefined, d])
+    ? Array.from(levels as readonly string[], (d): [undefined, string] => [undefined, d])
     : Object.entries(levels as Record<string, string>);
   if (items.length < 2) throw new ValueError("score needs at least two levels");
   if (items.length > MAX_ORDERED_LEVELS) throw new ValueError(`score takes at most ${MAX_ORDERED_LEVELS} levels`);
   const branches = items.map(([name, desc], i) => {
+    requireString(desc, `score level ${i} description`);
     const b: JsonObject = { const: i };
     if (name) b["title"] = name;
     if (desc) b["description"] = desc;
@@ -287,8 +396,13 @@ export type JudgmentsFormat = Extract<ResponseFormat, { type: "json_schema" }> &
 
 /** A `response_format` declaring the given judgment properties. */
 export function judgments(properties: Readonly<Record<string, JsonObject>>, opts: { name?: string; strict?: boolean } = {}): JudgmentsFormat {
+  requireJsonObject(properties, "judgments properties");
   const names = Object.keys(properties);
   if (names.length === 0) throw new ValueError("judgments needs at least one property");
+  for (const name of names) requireJsonObject(properties[name], `judgments property ${JSON.stringify(name)}`);
+  if (!isJsonObject(opts)) throw new TypeError("judgments options must be an object");
+  const name = opts.name === undefined ? "judgments" : requireString(opts.name, "judgments name", false);
+  const strict = opts.strict === undefined ? true : requireBool(opts.strict, "judgments strict");
   const schema: JsonObject = { type: "object", properties: { ...properties }, required: names, additionalProperties: false };
-  return { type: "json_schema", name: opts.name ?? "judgments", strict: opts.strict ?? true, schema };
+  return { type: "json_schema", name, strict, schema };
 }

@@ -6,7 +6,7 @@
  * distribution over the declared keys of every judgment. The driver in
  * `openai_chat.ts` sequences these hooks like files and batch:
  *
- * 1. one `/tokenize` per (judgment, key) and per judgment prefill, so the
+ * 1. two `/tokenize` calls per key plus one per judgment prefill, so the
  *    server's chat template is honoured and the key path is read in
  *    context (terminator included: prefix-free paths);
  * 2. ONE `/v1/completions` call carrying every trie node as a prompt
@@ -14,12 +14,60 @@
  *    tokens; raw log-probs sum along each path, one normalisation.
  */
 
-import { UnsupportedFeatureError } from "../errors.ts";
-import { isJsonObject, parseJson, type JsonObject } from "../json.ts";
-import { normalizeLogprobs, type Judgment } from "../judgments.ts";
-import { ValueError } from "../types/validate.ts";
+import { ProviderError, UnsupportedFeatureError } from "../errors.ts";
+import { isJsonObject, isNumeric, numberValue, parseJson, type JsonObject } from "../json.ts";
+import { Usage } from "../types/response.ts";
+import { usageFromChat } from "./openai_shared.ts";
+import { nonJudgmentProperties, normalizeLogprobs, requestJudgments, type Judgment } from "../judgments.ts";
+import type { Request } from "../types/config.ts";
 
 export const JUDGMENT_PREFILL = "Answer:";
+
+/** Reject harmful omissions before any credential or tokenization call. */
+export function validateScoringRequest(request: Request, provider: string): void {
+  const refuse = (feature: string, reason: string): never => {
+    throw new UnsupportedFeatureError(
+      `${provider}: ${reason}; use generated JSON with probabilities='off' or a separate scoring request`,
+      { provider, feature },
+    );
+  };
+  const config = request.config ?? {};
+  if (request.tools?.length) refuse("tools", "candidate scoring cannot execute tools; the program may depend on their results");
+  if (config.toolChoice !== undefined) refuse("config.tool_choice", "candidate scoring cannot preserve tool/action semantics");
+  if (config.cache?.resource !== undefined) refuse("config.cache.resource", "candidate scoring cannot read a stored cache object; omitting it would lose prompt content");
+  const n = config.extensions?.["n"];
+  if (isNumeric(n) && numberValue(n) > 1) refuse("config.extensions.n", "n > 1 has no canonical multiple-response representation");
+  for (const [name, value] of [["store", config.store], ["user_id", config.userId], ["service_tier", config.serviceTier]] as const) {
+    if (value !== undefined) refuse(`config.${name}`, "measurement endpoints have no established mapping for this privacy, safety or billing control");
+  }
+  if (config.cache?.mode === "off") refuse("config.cache.mode", "measurement endpoints cannot guarantee cache writes are disabled");
+  if (config.cache?.retention !== undefined) refuse("config.cache.retention", "measurement endpoints cannot preserve cache lifetime and billing intent");
+  const harmless = new Set(["temperature", "top_p", "top_k", "seed", "frequency_penalty", "presence_penalty"]);
+  for (const [name, value] of Object.entries(config.extensions ?? {})) {
+    const number = isNumeric(value) ? numberValue(value) : NaN;
+    if (Number.isFinite(number) && ((name === "n" && number === 1) || harmless.has(name))) continue;
+    refuse(`config.extensions.${name}`, "unknown measurement extension semantics; dropping it could lose privacy, money or action controls");
+  }
+}
+
+export function mixedJudgments(request: Request): boolean {
+  const format = request.config?.responseFormat;
+  return nonJudgmentProperties(format?.type === "json_schema" ? format.schema : undefined, requestJudgments(request)).length > 0;
+}
+
+/** Unknown dimensions propagate; totals remain provider-verbatim. */
+export function sumScoringUsage(scoring: Usage, generated: Usage): Usage {
+  const sum: Record<string, number> = {};
+  for (const field of ["inputTokens", "outputTokens", "totalTokens", "cacheReadTokens", "cacheWriteTokens", "reasoningTokens", "inputAudioTokens", "outputAudioTokens"] as const) {
+    const a = scoring[field], b = generated[field];
+    if (a !== undefined && b !== undefined) {
+      const total = a + b;
+      if (!Number.isSafeInteger(total)) throw new ProviderError("combined judgment usage exceeds exact integer range");
+      sum[field] = total;
+    }
+  }
+  return Usage.create(sum);
+}
 
 /** The judgment's question as the final user turn's text. */
 export function judgmentAsk(j: Judgment): string {
@@ -39,7 +87,7 @@ export function tokenizePayload(model: string, messages: JsonObject[], continueF
 export function tokensFromBody(body: string): number[] {
   const data = parseJson(body);
   const tokens = isJsonObject(data) ? data["tokens"] : undefined;
-  if (!Array.isArray(tokens) || !tokens.every((t) => typeof t === "number" && Number.isInteger(t))) throw new ValueError("tokenize reply carries no integer token list");
+  if (!Array.isArray(tokens) || tokens.length === 0 || !tokens.every((t) => typeof t === "number" && Number.isSafeInteger(t) && t >= 0)) throw new ProviderError("malformed judgment reply: tokenize reply carries no non-negative exact integer token list");
   return tokens as number[];
 }
 
@@ -48,24 +96,47 @@ export function scorePayload(model: string, prompts: number[][], tokenIds: numbe
 }
 
 /** Per prompt, `{token_id: logprob}` for the ids the server reported; plus usage and model. */
-export function scoresFromBody(body: string, nPrompts: number): { scores: Map<number, number>[]; usage: JsonObject; model: string | undefined } {
+export function scoresFromBody(body: string, nPrompts: number): { scores: Map<number, number>[]; usage: Usage; model: string | undefined } {
+  const invalid = (detail: string) => new ProviderError(`malformed judgment reply: ${detail}`);
   const data = parseJson(body);
-  const raw = isJsonObject(data) && Array.isArray(data["choices"]) ? data["choices"] : [];
-  const choices = raw.filter(isJsonObject).sort((a, b) => Number(a["index"] ?? 0) - Number(b["index"] ?? 0));
-  if (choices.length !== nPrompts) throw new ValueError(`completions reply has ${choices.length} choices for ${nPrompts} prompts`);
+  if (!isJsonObject(data)) throw invalid("expected an object");
+  const raw = data["choices"];
+  if (!Array.isArray(raw) || raw.length !== nPrompts || raw.some(c => !isJsonObject(c) || typeof c["index"] !== "number" || !Number.isSafeInteger(c["index"]) || c["index"] < 0 || c["index"] >= nPrompts)) {
+    throw invalid("choices must contain every prompt index exactly once");
+  }
+  const choices = (raw as JsonObject[]).slice().sort((a, b) => Number(a["index"]) - Number(b["index"]));
+  if (choices.some((c, index) => c["index"] !== index)) throw invalid("choices must contain every prompt index exactly once");
   const scores = choices.map((choice) => {
-    const logprobs = isJsonObject(choice["logprobs"]) ? choice["logprobs"] : {};
-    const tops = Array.isArray(logprobs["top_logprobs"]) ? logprobs["top_logprobs"] : [];
-    const top = isJsonObject(tops[0]) ? tops[0] : {};
+    const logprobs = choice["logprobs"] ?? {};
+    if (!isJsonObject(logprobs)) throw invalid("logprobs must be an object or null");
+    const tops = logprobs["top_logprobs"];
+    let top: JsonObject = {};
+    if (tops != null && !(Array.isArray(tops) && tops.length === 0)) {
+      if (!Array.isArray(tops) || tops.length !== 1 || (tops[0] !== null && !isJsonObject(tops[0]))) throw invalid("expected one top_logprobs object");
+      top = (tops[0] as JsonObject | null) ?? {};
+    }
     const out = new Map<number, number>();
     for (const [token, value] of Object.entries(top)) {
-      if (token.startsWith("token_id:") && /^\d+$/.test(token.slice(9))) out.set(Number(token.slice(9)), Number(value));
+      if (!token.startsWith("token_id:") || !/^\d+$/.test(token.slice(9))) continue;
+      const id = Number(token.slice(9));
+      if (!Number.isSafeInteger(id) || !isNumeric(value)) throw invalid(`invalid token score for ${token}`);
+      const score = numberValue(value);
+      if (Number.isNaN(score) || score > 0) throw invalid(`invalid log probability for ${token}`);
+      out.set(id, score);
     }
     return out;
   });
-  const usage = isJsonObject(data) && isJsonObject(data["usage"]) ? data["usage"] : {};
-  const model = isJsonObject(data) && typeof data["model"] === "string" ? data["model"] : undefined;
-  return { scores, usage, model };
+  const usageRaw = data["usage"] ?? {};
+  if (!isJsonObject(usageRaw)) throw invalid("usage must be an object or null");
+  for (const name of ["prompt_tokens_details", "completion_tokens_details"]) {
+    if (usageRaw[name] != null && !isJsonObject(usageRaw[name])) throw invalid(`${name} must be an object or null`);
+  }
+  let usage: Usage;
+  try { usage = usageFromChat(usageRaw); }
+  catch (cause) { throw new ProviderError("malformed judgment reply: invalid usage", { cause }); }
+  const model = data["model"];
+  if (model != null && (typeof model !== "string" || !model)) throw invalid("model must be a non-empty string");
+  return { scores, usage, model: model ?? undefined };
 }
 
 const startsWith = (seq: readonly number[], prefix: readonly number[]): boolean => prefix.every((t, i) => seq[i] === t);
@@ -119,8 +190,10 @@ export function foldJudgment(paths: ReadonlyMap<string, readonly number[]>, tabl
   for (const [key, seq] of paths) {
     let total = 0;
     for (let i = 0; i < seq.length; i++) total += table.get(nodeKey(seq.slice(0, i)))!.get(seq[i]!)!;
-    raw[key] = total;
+    Object.defineProperty(raw, key, { value: total, enumerable: true });
   }
-  const coverage = Object.values(raw).reduce((n, v) => n + Math.exp(v), 0);
+  const values = Object.values(raw);
+  if (values.some(Number.isNaN) || !values.some(Number.isFinite)) throw new ProviderError("malformed judgment reply: every declared key has zero or unknown likelihood; cannot normalize");
+  const coverage = values.reduce((n, v) => n + Math.exp(v), 0);
   return { distribution: normalizeLogprobs(raw), coverage };
 }

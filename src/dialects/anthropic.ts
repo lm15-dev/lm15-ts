@@ -606,7 +606,7 @@ export class AnthropicLM extends ProviderLM {
   }
 
   wireRequest(request: Request, stream: boolean): EmitOptions {
-    request = Request.create(request);
+    request = this.wireModelRequest(request);
     return {
       method: "POST",
       url: `${this.base()}/messages`,
@@ -621,6 +621,7 @@ export class AnthropicLM extends ProviderLM {
   // ─── Response ────────────────────────────────────────────────────
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    request = this.wireModelRequest(request);
     const data = obj(response.json());
     const parts: Part[] = [];
     const unmapped: Unmapped = [];
@@ -665,6 +666,7 @@ export class AnthropicLM extends ProviderLM {
   // ─── Stream ──────────────────────────────────────────────────────
 
   parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
+    request = this.wireModelRequest(request);
     if (!raw.data) return [];
     const payload = parseJson(raw.data);
     if (!isJsonObject(payload)) return [];
@@ -804,6 +806,7 @@ export class AnthropicLM extends ProviderLM {
   // ─── Batches ─────────────────────────────────────────────────────
 
   override batchSubmitRequest(request: BatchRequest): Promise<TransportRequest> {
+    this.batchPreflight(request);
     // MAP-13: the batch builder runs under the adapter's policy so "refuse"
     // refuses here too; a batch ticket has no adaptations field (provisional
     // surface), so under "note" the record is not kept.

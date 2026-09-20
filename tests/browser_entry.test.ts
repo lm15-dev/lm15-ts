@@ -93,14 +93,14 @@ test("lm15/browser: the runtime import graph has no node:* module, no bare impor
     assert.ok(files.includes(must), `${must} is part of the web entry`);
   }
   // And none of the host services.
-  for (const mustNot of ["src/auth/stores.ts", "src/auth/stores_doctor.ts", "src/cloud/chains.ts", "src/cloud/sigv4.ts", "src/cloud/rs256.ts", "src/platform_node.ts", "src/vet.ts"]) {
+  for (const mustNot of ["src/auth/stores.ts", "src/auth/stores_doctor.ts", "src/cloud/chains.ts", "src/cloud/sigv4.ts", "src/cloud/rs256.ts", "src/platform_node.ts", "src/transport_node.ts", "src/auth/native_lock.cjs", "src/vet.ts"]) {
     assert.ok(!files.includes(mustNot), `${mustNot} must not be reachable from the web entry`);
   }
 });
 
 test("lm15 (Node entry) reaches exactly the host services the web entry lacks — and the auditor sees them", () => {
   const { files, findings } = auditRuntimeGraph(resolve(root, "src/index.ts"));
-  for (const must of ["src/platform_node.ts", "src/auth/stores.ts", "src/cloud/chains.ts", "src/cloud/sigv4.ts"]) assert.ok(files.includes(must), must);
+  for (const must of ["src/platform_node.ts", "src/transport_node.ts", "src/auth/stores.ts", "src/cloud/chains.ts", "src/cloud/sigv4.ts"]) assert.ok(files.includes(must), must);
   // The Node entry legitimately imports node:* and reads process/Buffer; the auditor must report every one, or its clean bill for the web entry means nothing.
   assert.ok(findings.some((f) => f.what === "imports node:fs"), "node:fs seen");
   assert.ok(findings.some((f) => f.what === "uses Node global process"), "process seen");

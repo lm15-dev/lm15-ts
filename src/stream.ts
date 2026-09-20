@@ -8,6 +8,7 @@
 
 import { LM15Error, StreamAssemblyError, TransportError, errorClassForCode } from "./errors.ts";
 import { freezeRateLimits } from "./rate_limits.ts";
+import { replaceTextWithData, requestJudgments } from "./judgments.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
 import type { Request } from "./types/config.ts";
 import {
@@ -403,7 +404,7 @@ export class StreamAccumulator {
       model: this.startedModel ?? this.request.model,
       message: {
         role: "assistant",
-        parts,
+        parts: replaceTextWithData(parts, requestJudgments(this.request)),
         ...(this.messageContinuation.length > 0 ? { continuation: this.messageContinuation } : {}),
       },
       finishReason: finish,

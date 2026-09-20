@@ -44,6 +44,7 @@ export {
   continuationState,
   continuationData,
   text,
+  data,
   thinking,
   refusal,
   citation,
@@ -61,6 +62,7 @@ export {
 } from "./types/parts.ts";
 export type {
   TextPart,
+  DataPart,
   ThinkingPart,
   RefusalPart,
   CitationPart,
@@ -142,8 +144,9 @@ export type {
   LiveServerErrorEvent,
 } from "./types/live.ts";
 export { ModelInfo, ModelOrigin, InferenceModelInfo, InferencePricing, ModelRegistry } from "./types/model_info.ts";
-export { ApiKey, BearerToken, AwsCredentials, Credential, coerceCredential, isCredentialValue, parseRfc3339, formatRfc3339 } from "./types/credential.ts";
-export type { CredentialValue, CredentialProvider, CredentialLike } from "./types/credential.ts";
+export { ApiKey, BearerToken, AwsCredentials, Credential, CredentialSource, coerceCredential, isCredentialValue, parseRfc3339, formatRfc3339 } from "./types/credential.ts";
+export type { CredentialValue, CredentialProvider, CredentialLike, NamedCredential, SourcedCredentialProvider } from "./types/credential.ts";
+export { NAMED_CREDENTIALS, NAMED_RUNGS, namedMeaning } from "./cloud/identity.ts";
 export { ValueError } from "./types/validate.ts";
 
 // Vocabularies
@@ -159,6 +162,7 @@ export type { JsonValue, JsonObject, JsonPrimitive } from "./json.ts";
 export {
   LM15Error,
   TransportError,
+  ProtocolError,
   LockTimeoutError,
   StreamAssemblyError,
   CollectionLimitError,
@@ -199,8 +203,10 @@ export { TypeSafeLM } from "./dialects/typesafe.ts";
 export { ProviderLM } from "./adapter.ts";
 export type { LMOptions, BuiltRequest, EmitOptions } from "./adapter.ts";
 export { adapterFor } from "./providers.ts";
-export { PROVIDERS, lookup, canonicalProvider, DIALECT_API_FAMILY } from "./registry.ts";
-export type { ProviderDefinition, Dialect } from "./registry.ts";
+export { PROVIDERS, ProviderDefinition, lookup, canonicalProvider, DIALECT_API_FAMILY } from "./registry.ts";
+export type { Dialect, ProviderDeclarationOptions, Compat } from "./registry.ts";
+export { BatchJob, VideoJob } from "./jobs.ts";
+export type { WaitOptions } from "./jobs.ts";
 export { LiveSession, TurnView, materializeTurn, incompleteTurn, liveEventSize, sumUsage, DEFAULT_TURN_MAX_BYTES, DEFAULT_TURN_MAX_EVENTS } from "./live.ts";
 export type { Turn, ToolCallInfo, TurnViewOptions } from "./live.ts";
 export type { LiveSessionOptions } from "./live.ts";
@@ -227,8 +233,8 @@ export { explainAuth, describeReport } from "./auth/doctor.ts";
 export type { AuthReport, AuthStep, ExplainAuthOptions } from "./auth/doctor.ts";
 
 // Transport
-export { FetchTransport } from "./transport.ts";
-export type { Transport, TransportResponse, FetchTransportOptions } from "./transport.ts";
+export { FetchTransport, Timeouts, createTransport } from "./transport.ts";
+export type { Transport, TransportResponse, FetchTransportOptions, TransportBudgetOptions, TimeoutValues } from "./transport.ts";
 export { HttpResponse } from "./wire.ts";
 export type { TransportRequest } from "./wire.ts";
 

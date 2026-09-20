@@ -34,9 +34,9 @@ test("AUTH-2 scheme selection: ApiKey takes the policy's order, BearerToken the 
   assert.throws(() => selectScheme(ANTHROPIC_API, new AwsCredentials({ accessKeyId: "a", secretAccessKey: "s" })), NotConfiguredError);
   assert.deepEqual(authHeader(OPENAI_API, "k"), ["Authorization", "Bearer k"]);
   assert.deepEqual(authHeader(GEMINI_API, "k", "x-goog-api-key"), ["x-goog-api-key", "k"]);
-  // A JWT handed over as a plain string on a key-header door is named, not sent as a key.
+  // AUTH-2, 2026-09-19 D3: a JWT on a hybrid key/bearer door travels as bearer.
   const jwt = `${Buffer.from('{"alg":"RS256"}').toString("base64url")}.e30.sig`;
-  assert.throws(() => authHeader(AZURE_ANTHROPIC, jwt), NotConfiguredError);
+  assert.deepEqual(authHeader(AZURE_ANTHROPIC, jwt), ["Authorization", `Bearer ${jwt}`]);
 });
 
 test("AUTH-1: an explicit key wins; a key policy with nothing is a typed not-configured error", () => {

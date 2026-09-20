@@ -230,6 +230,7 @@ test("liveEventSize: compact ASCII JSON — non-ASCII code units cost six bytes,
   const { liveEventSize } = await import("../src/live.ts");
   assert.equal(liveEventSize({ type: "text", text: "a/b" }), '{"type":"text","text":"a/b"}'.length);
   assert.equal(liveEventSize({ type: "text", text: "é" }), '{"type":"text","text":"\\u00e9"}'.length);
+  assert.equal(liveEventSize({ type: "text", text: "\u007f" }), '{"type":"text","text":"\\u007f"}'.length);
   assert.equal(liveEventSize({ type: "text", text: "😀" }), '{"type":"text","text":"\\ud83d\\ude00"}'.length);
   assert.ok(liveEventSize({ type: "text", text: "abcdef" }, 5) > 5); // counting stops once the budget is exceeded
 });

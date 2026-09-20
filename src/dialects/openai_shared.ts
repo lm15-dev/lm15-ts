@@ -5,7 +5,7 @@
  */
 
 import { adapt } from "../adaptation.ts";
-import { isJsonObject, type JsonObject, type JsonValue } from "../json.ts";
+import { isJsonObject, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import {
   AuthError,
   BillingError,
@@ -88,7 +88,7 @@ export function str(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "object" && "raw" in (value as object)) return (value as { raw: string }).raw;
-  if (typeof value === "object") return JSON.stringify(value);
+  if (typeof value === "object") return stringifyJson(value);
   return String(value);
 }
 

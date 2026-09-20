@@ -4,8 +4,9 @@
  * multipart bodies, timestamps, and the MAP-10 tool-result media policy.
  */
 
+import { isPlanning } from "./adaptation.ts";
 import { UnsupportedFeatureError, ProviderError } from "./errors.ts";
-import { isJsonObject, parseJsonBytes, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
+import { isJsonObject, parseJsonBytes, parseProviderJson, stringifyJson, type JsonObject, type JsonValue } from "./json.ts";
 import { getDefaultPlatform, noFilesystem } from "./platform.ts";
 import type { FileReadiness } from "./vocab.ts";
 import { ModelInfo } from "./types/model_info.ts";
@@ -24,7 +25,7 @@ export interface TransportRequest {
   /** Ordered header pairs; names as the dialect spelled them. */
   readonly headers: ReadonlyArray<readonly [string, string]>;
   readonly body: Uint8Array;
-  /** Seconds. Requires a custom transport; platform fetch has no separate connect timer. */
+  /** Seconds. Node supports socket establishment; Fetch refuses this separate phase control. */
   readonly connectTimeout?: number;
   /** Per-chunk idle timeout in seconds, overriding the transport default. */
   readonly readTimeout?: number;
@@ -55,7 +56,7 @@ export class HttpResponse {
   }
 
   json(): JsonValue {
-    return parseJsonBytes(this.body);
+    return parseProviderJson(this);
   }
 }
 
@@ -188,6 +189,9 @@ export function dataPartText(part: DataPart): string {
 
 /** The bytes of a path-addressed part or upload, through the host (`Platform.readFile`); a host without a filesystem refuses. */
 export function readFileBytes(path: string): Uint8Array {
+  // The planning request is discarded. File contents cannot change adaptation
+  // decisions; inspecting the host here would make offline planning impure.
+  if (isPlanning()) return new Uint8Array(0);
   const platform = getDefaultPlatform();
   if (!platform.readFile) throw noFilesystem(platform, `path ${JSON.stringify(path)}`);
   return platform.readFile(path);

@@ -22,6 +22,8 @@
  * form. Use `new RawNumber("1.0")` to force a float lexeme by hand.
  */
 
+import { malformedJsonError, type ReplyMetadataSource } from "./errors.ts";
+
 export class RawNumber {
   readonly raw: string;
 
@@ -162,6 +164,16 @@ export function parseJsonObject(text: string): JsonObject {
 /** Parse UTF-8 bytes as JSON. */
 export function parseJsonBytes(bytes: Uint8Array): JsonValue {
   return parseJson(UTF8.decode(bytes));
+}
+
+/** Parse a provider reply, keeping HTTP evidence when the JSON is malformed. */
+export function parseProviderJson(response: ReplyMetadataSource, provider?: string): JsonValue {
+  try {
+    // Invalid UTF-8 must not quietly turn into replacement characters in JSON.
+    return parseJson(new TextDecoder("utf-8", { fatal: true }).decode(response.body));
+  } catch (cause) {
+    throw malformedJsonError(response, cause, provider);
+  }
 }
 
 const UTF8 = new TextDecoder("utf-8", { fatal: false });
@@ -363,6 +375,7 @@ function write(value: unknown, out: string[], indent: number, depth: number): vo
       out.push(value ? "true" : "false");
       return;
     case "string":
+      assertUnicodeScalars(value);
       out.push(JSON.stringify(value));
       return;
     case "number":
@@ -405,6 +418,7 @@ function write(value: unknown, out: string[], indent: number, depth: number): vo
   for (const key of keys) {
     const item = (value as Record<string, unknown>)[key];
     if (item === undefined) continue;
+    assertUnicodeScalars(key);
     out.push(first ? nl : "," + nl);
     first = false;
     out.push(JSON.stringify(key), sep);
@@ -415,6 +429,19 @@ function write(value: unknown, out: string[], indent: number, depth: number): vo
     return;
   }
   out.push(close, "}");
+}
+
+/** INV-055: UTF-16 pairs are valid, isolated surrogate code units are not. */
+export function assertUnicodeScalars(text: string): void {
+  for (let i = 0; i < text.length; i++) {
+    const cp = text.charCodeAt(i);
+    if (cp < 0xd800 || cp > 0xdfff) continue;
+    if (cp <= 0xdbff && i + 1 < text.length) {
+      const low = text.charCodeAt(i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) { i++; continue; }
+    }
+    throw new TypeError(`stringifyJson: unpaired surrogate U+${cp.toString(16).toUpperCase().padStart(4, "0")} has no UTF-8 representation`);
+  }
 }
 
 // ─── Equality ────────────────────────────────────────────────────────

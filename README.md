@@ -2,11 +2,12 @@
 
 The TypeScript port of lm15: one canonical request/response model over every
 provider the [lm15-contract](https://github.com/lm15-dev/lm15-contract) names,
-byte-exact against its corpus. Async only, `fetch` + `WebSocket` (Node 22+),
+byte-exact against its corpus. Async only, native HTTP on Node 22+ and Fetch in browsers, plus `WebSocket`,
 zero npm runtime dependencies. The same package has a web entry point,
 `lm15/browser` — the whole wire, none of the host — for pages, workers,
-PWAs and Electron renderers ([docs/browser.md](docs/browser.md)). Stored-credential refresh/writes require Linux
-and util-linux `flock`; explicit credentials work without it. One npm package serves TypeScript and plain
+PWAs and Electron renderers ([docs/browser.md](docs/browser.md)). Stored-credential refresh/writes use Linux
+util-linux `flock`, or the optional native kernel-lock backend on other hosts
+([packaging and limitations](docs/credential-locking.md)); explicit credentials need neither. One npm package serves TypeScript and plain
 JavaScript (ESM and CommonJS, with `.d.ts`).
 
 The contract commit this port is built against is in `CONTRACT_PIN`;
@@ -14,7 +15,12 @@ The contract commit this port is built against is in `CONTRACT_PIN`;
 
 ## Status
 
-**Passing the pinned corpus, not a claim of SDK or release completeness.**
+**2026-09-20 parity implementation is unverified.** No tests, builds, typechecks,
+lint or verification programs were run for this pass. The results below describe
+the earlier baseline, not these changes. New native locking code also requires
+platform builds and interoperability testing before a release claim.
+
+**Historical baseline: passing the pinned corpus, not a claim of SDK or release completeness.**
 Every harness direction is green at the pin, with zero failures and no skips
 added; the skips are corpus gaps (`openai.computer_use` has no canonical
 request and no golden; fourteen adapted-request cases pin no reply body — the reference skips the same fifteen). The
@@ -72,6 +78,23 @@ Files, batches, caches, image/video generation, the cloud credential chains
 xAI device-code login, and OpenAI Realtime. The harness pins recorded
 lifecycles, token vectors and transcripts for all of them. Those fixtures prove
 recorded wire behavior, not working network lifecycles or release readiness.
+
+## Cached-prefix routing
+
+`router.cache(prefix)` stores its resolved destination as optional canonical
+`CachedPrefix.provider`, including router-local provider names. `prefix.model`
+and `resource.model` remain matching wire model names; `CachedPrefix.request(c, ...)`
+emits `provider:wiremodel`. The route survives `toJSON`/`fromJSON`. Reuse it with
+the same router configuration/account: it carries no credentials, endpoint or
+provider declaration. The router's bound `router.lm(...)` also accepts that
+qualified request and strips only its own provider prefix, once.
+
+Direct `lm.cache` with bare input does not invent a router destination. Explicit
+own-provider prefixes retain their route; underscore input aliases canonicalize
+to hyphens. Suffix Requests may name the wire model or the same destination, not
+another provider. Old values without `provider` keep unqualified behavior and
+unchanged canonical output (the absent field is omitted). These changes and their
+regression sources have not been execution-verified and add no conformance claim.
 
 ## Gates
 
@@ -212,13 +235,12 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   `serde_roundtrip` and every response are byte-exact. Typed float fields
   (`temperature`, `top_p`, `logprob`, pricing) are always emitted as floats.
   Use `new RawNumber("1.0")` to force a float lexeme by hand.
-- **Shared credential locking requires Linux and util-linux `flock`**
-  (spec/auth.md AUTH-4). The utility locks a descriptor inherited from Node;
-  Node retains the kernel lock after the utility exits. The `<digest>.lock`
-  path and primitive match Python/Rust; process death releases the lock.
-  Missing utility or unsupported platform fails explicitly, with no fallback.
-  Existing processes using the old `.node.lock` implementation must be stopped
-  before upgrading. Foreign CLIs still do not cooperate with lm15's lock.
+- **Shared credential locking uses kernel locks** (spec/auth.md AUTH-4).
+  Linux retains the existing util-linux `flock` descriptor protocol. The optional
+  Node-API backend uses POSIX `flock` / Windows `LockFileEx`; it must be built and
+  packaged for that host. Missing helpers fail explicitly; no stale-lockfile
+  stealing or unlocked writes. Native portability/interoperability is unverified
+  in this pass. See [credential locking](docs/credential-locking.md).
 - **Typed integers must fit JavaScript's safe integer range.** Larger counters
   and overflowing computed totals are rejected, never rounded. Opaque JSON
   payloads still preserve arbitrarily large integer lexemes using `RawNumber`.
@@ -226,17 +248,16 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   canonical values remember their kind out of band. Use `toJSON(value, "delta")`
   or `Delta.toJSON(value)` for literals, copied objects, or values from another
   package instance. A text part, text delta and live text event can share a shape.
-- **Platform fetch cannot separately configure connection timing or proxies.**
-  `FetchTransport` exposes header-wait and per-chunk idle deadlines (60s each;
-  streaming provider requests set a 120s read deadline), plus an optional total
-  deadline. A request's `readTimeout` overrides the transport default. Supply a
-  configured fetch/Transport for connection-specific settings, TLS and proxies.
-  An unsupported request-level `connectTimeout` is rejected, not ignored.
+- **Connection budgets are host-appropriate.** Node's transport exposes
+  `Timeouts({ connect: 10, read: 600, write: 600, pool: 600 })` (seconds),
+  `maxConnections: 100`, pooling and explicit close. Fetch exposes 600-second
+  header/read deadlines and bounded request concurrency; it refuses explicit
+  socket connect/write/pool controls it cannot honor. It never re-inflates a
+  body Fetch already decoded. See [transport budgets](docs/transport.md).
 - **No schema derivation from a function signature** (api-family.md § Tools):
   `tool(name, { parameters })` takes the JSON Schema you write. Stated once
   for all three non-Python ports.
-- **Job handles and live turns** (api-family § Beyond chat, 2026-09-11,
-  pending ratification): `lm.batch(...)` / `batchJob(id)` / `batches()` →
+- **Job handles and live turns** (api-family § Beyond chat, 2026-09-11): `lm.batch(...)` / `batchJob(id)` / `batches()` →
   `BatchJob`; `lm.videoGenerate(...)` / `videoJob(id)` / `videoJobs()` →
   `VideoJob`; `wait({ pollEveryMs, timeoutMs, signal })` is the only thing
   that waits, and a deadline that elapses throws a `DOMException` named
@@ -274,6 +295,18 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   since 2026-09-15; before, the port said `"error"`. A session that closes
   before a boundary is a `TransportError` when iterated as a turn, never a
   silent empty turn.
+
+## Cloud identity and local provider declarations
+
+Named cloud credentials, endpoint roots, provenance and browser usage are in
+[cloud identity](docs/cloud-identity.md). Router-local `ProviderDefinition`
+values declare chat, Responses or Anthropic doors without modifying the global
+registry. `plan()` builds a standalone offline binding: it needs no credentials,
+reads no host environment/profile and never allocates a transport.
+
+Judgment distributions validate every declared measurement and selected answer.
+**INV-052 does not validate sums or normalize distributions**: providers round.
+Absent usage remains unknown, never zero; schema copies preserve `RawNumber`.
 
 ## Rate-limit diagnostics
 

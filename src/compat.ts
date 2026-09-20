@@ -8,7 +8,7 @@
  * policy.
  */
 
-import { isJsonObject, type JsonObject } from "./json.ts";
+import { isJsonObject, isStrictJson, type JsonObject } from "./json.ts";
 import { REASONING_EFFORTS } from "./vocab.ts";
 import { ValueError } from "./types/validate.ts";
 import { NotConfiguredError } from "./errors.ts";
@@ -478,6 +478,66 @@ export function validateReasoningEfforts(words: readonly string[] | undefined): 
   if (!words) return;
   const bad = words.filter((w) => !(REASONING_EFFORTS as readonly string[]).includes(w) || w === "off");
   if (bad.length > 0) throw new ValueError(`reasoning_efforts must be ReasoningEffort words other than 'off'; got ${JSON.stringify(words)}`);
+}
+
+/** Validate caller-declared policy objects before they can influence routing. */
+export function validateCompat(dialect: string, compat: unknown): void {
+  if (!isJsonObject(compat)) throw new ValueError(`${dialect}: compat must be a policy object or preset name`);
+  const active = new WeakSet<object>();
+  const checked = new WeakSet<object>();
+  function acyclic(value: unknown): void {
+    if (value === null || typeof value !== "object" || checked.has(value)) return;
+    if (active.has(value)) throw new ValueError(`${dialect}: compat must not contain cycles`);
+    active.add(value);
+    for (const child of Object.values(value)) acyclic(child);
+    active.delete(value);
+    checked.add(value);
+  }
+  acyclic(compat);
+  const common: Record<string, readonly string[]> = { toolResultMedia: ["native", "images", "reject"] };
+  const fields: Record<string, Record<string, readonly string[]>> = {
+    "openai-chat": {
+      instructionRole: ["developer", "system"], maxTokensField: ["max_completion_tokens", "max_tokens"],
+      streamUsage: ["include", "omit"], toolResultName: ["include", "omit"], assistantAfterToolResult: ["insert", "omit"],
+      thinkingFormat: ["none", "reasoning_effort", "openrouter", "deepseek", "kimi", "qwen", "qwen_chat_template"],
+      thinkingReplay: ["native", "as_text", "omit"], assistantReasoningContent: ["include_empty", "omit"],
+      strictTools: ["include", "omit"], builtinTools: ["reject", "groq"], cacheControl: ["none", "openai", "openai_implicit", "anthropic"],
+      userField: ["user", "user_id", "safety_identifier"], forcedToolChoice: ["send", "reject"], jsonSchema: ["send", "reject"],
+      tokenScoring: ["none", "logprob_token_ids"],
+    },
+    "openai-responses": {
+      developerRole: ["developer", "system"], maxOutputTokensField: ["max_output_tokens", "max_completion_tokens", "max_tokens"],
+      reasoningFormat: ["none", "responses_reasoning", "reasoning_effort", "openrouter", "deepseek", "qwen", "qwen_chat_template", "zai"],
+      toolResultName: ["include", "omit"], strictTools: ["include", "omit"], cacheControl: ["none", "openai", "openai_implicit", "anthropic"],
+      commentaryPhase: ["omit", "tag"], editImageField: ["array", "indexed"], builtinTools: ["openai", "verbatim"],
+    },
+    anthropic: {
+      thinkingFormat: ["anthropic", "deepseek", "adaptive", "effort"], thinkingReplay: ["signed", "unsigned"],
+      cacheControl: ["anthropic", "none"], structuredOutput: ["send", "reject"], parallelToolCalls: ["send", "reject"], samplingParams: ["send", "reject"],
+    },
+  };
+  const allowed = fields[dialect];
+  if (!allowed) throw new ValueError(`${dialect}: no compat policy is supported`);
+  for (const [key, value] of Object.entries(compat)) {
+    if (value === undefined) continue;
+    const words = Object.hasOwn(allowed, key) ? allowed[key] : Object.hasOwn(common, key) ? common[key] : undefined;
+    if (words) {
+      if (typeof value !== "string" || (value !== "auto" && !words.includes(value))) throw new ValueError(`${dialect}: invalid compat ${key}`);
+    } else if (key === "extensions" || (key === "routing" && dialect !== "anthropic")) {
+      if (!isJsonObject(value) || !isStrictJson(value)) throw new ValueError(`${dialect}: compat ${key} must be a JSON object`);
+    } else if (key === "reasoningEfforts" && dialect !== "openai-responses") {
+      if (!Array.isArray(value) || value.some((v) => typeof v !== "string")) throw new ValueError(`${dialect}: reasoningEfforts must be an array of strings`);
+      validateReasoningEfforts(value as string[]);
+    } else if (key === "modelPrefixes" && dialect === "anthropic") {
+      if (!Array.isArray(value) || value.some((v) => typeof v !== "string" || !v)) throw new ValueError("anthropic: modelPrefixes must be non-empty strings");
+    } else if (key === "modelOverrides" && dialect === "openai-chat") {
+      if (!Array.isArray(value)) throw new ValueError("openai-chat: modelOverrides must be prefix/knobs pairs");
+      for (const pair of value) {
+        if (!Array.isArray(pair) || pair.length !== 2 || typeof pair[0] !== "string") throw new ValueError("openai-chat: invalid modelOverrides entry");
+        validateCompat(dialect, pair[1]);
+      }
+    } else throw new ValueError(`${dialect}: unknown compat field ${JSON.stringify(key)}`);
+  }
 }
 
 /** MAP-7: the one effort→budget grading table. */

@@ -315,6 +315,8 @@ export interface CachedPrefix {
   /** Its config must be default: a cached object has no generation settings. */
   readonly prefix: Request;
   readonly resource?: CacheInfo;
+  /** Canonical router destination; models remain provider wire names. */
+  readonly provider?: string;
 }
 
 export const normalizeCachedPrefix = canonicalFactory("cached_prefix", normalizeCachedPrefixValue);
@@ -330,7 +332,11 @@ function normalizeCachedPrefixValue(input: unknown): CachedPrefix {
   if (resource && resource.model !== prefix.model) {
     throw new ValueError("CachedPrefix.resource.model must equal the prefix model (a stored cache belongs to one model)");
   }
-  return frozen(compact({ prefix, resource }));
+  const provider = optionalString(d["provider"], "CachedPrefix.provider", false)?.replace(/_/g, "-");
+  if (provider !== undefined && /[:/\s]/.test(provider)) {
+    throw new ValueError("CachedPrefix.provider must be a provider name without routing separators");
+  }
+  return frozen(compact({ prefix, resource, provider }));
 }
 
 export const CachedPrefix = {
@@ -350,6 +356,8 @@ export const CachedPrefix = {
    * Request with the same model and no system/tools) and set the boundary.
    */
   request(c: CachedPrefix, messages: string | Message | readonly Message[] | Request, config?: Config): Request {
+    c = normalizeCachedPrefix(c);
+    const model = c.provider === undefined ? c.prefix.model : `${c.provider}:${c.prefix.model}`;
     let suffix: readonly Message[];
     let base = config;
     if (typeof messages === "string") suffix = [Message.user(messages)];
@@ -361,7 +369,9 @@ export const CachedPrefix = {
     } else if ("role" in messages) suffix = [messages as Message];
     else {
       const req = normalizeRequest(messages);
-      if (req.model !== c.prefix.model) throw new ValueError("suffix Request model must equal the prefix model");
+      const colon = req.model.indexOf(":");
+      const sameRoute = c.provider !== undefined && colon > 0 && req.model.slice(0, colon).replace(/_/g, "-") === c.provider && req.model.slice(colon + 1) === c.prefix.model;
+      if (req.model !== c.prefix.model && !sameRoute) throw new ValueError("suffix Request model must equal the prefix model or destination");
       if (req.system !== undefined || (req.tools && req.tools.length > 0)) {
         throw new ValueError("suffix Request cannot redefine system or tools: the prefix owns them");
       }
@@ -371,7 +381,7 @@ export const CachedPrefix = {
     const baseConfig = base ?? {};
     if (baseConfig.cache !== undefined) throw new ValueError("config.cache is decided by the CachedPrefix; leave it unset");
     return normalizeRequest({
-      model: c.prefix.model,
+      model,
       system: c.prefix.system,
       tools: c.prefix.tools,
       messages: [...c.prefix.messages, ...suffix],
@@ -383,10 +393,12 @@ export const CachedPrefix = {
     return normalizeCachedPrefix({
       prefix: Request.fromJSON(d["prefix"]),
       resource: isJsonObject(d["resource"]) ? CacheInfo.fromJSON(d["resource"]) : undefined,
+      provider: d["provider"],
     });
   },
   toJSON(c: CachedPrefix): JsonObject {
-    return omitEmpty({ prefix: Request.toJSON(c.prefix), resource: c.resource ? CacheInfo.toJSON(c.resource) : undefined });
+    c = normalizeCachedPrefix(c);
+    return omitEmpty({ prefix: Request.toJSON(c.prefix), resource: c.resource ? CacheInfo.toJSON(c.resource) : undefined, provider: c.provider });
   },
 };
 

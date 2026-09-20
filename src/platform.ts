@@ -19,7 +19,7 @@
 
 import type { AccessPolicy } from "./auth/policy.ts";
 import { NotConfiguredError, UnsupportedFeatureError } from "./errors.ts";
-import type { AwsCredentials, CredentialLike, CredentialValue } from "./types/credential.ts";
+import type { AwsCredentials, CredentialLike, CredentialValue, NamedCredential, SourcedCredentialProvider } from "./types/credential.ts";
 import type { AuthStepState } from "./vocab.ts";
 
 export type Env = Readonly<Record<string, string | undefined>>;
@@ -56,9 +56,9 @@ export interface CloudChain {
   /** The resolved host settings, handed back once known; the chain's rungs read them. */
   settings: Readonly<Record<string, string>>;
   /** The chain's credential provider: resolved once, cached until the skew window, re-resolved after. */
-  credentialProvider(policy: AccessPolicy): () => Promise<CredentialValue>;
+  credentialProvider(policy: AccessPolicy, named?: NamedCredential): (() => Promise<CredentialValue>) | SourcedCredentialProvider;
   /** The rung-by-rung walk, no network: `explicit` says an api_keys entry exists (rung 0). */
-  explain(policy: AccessPolicy, explicit: boolean): [ChainStep[], boolean];
+  explain(policy: AccessPolicy, explicit: boolean, named?: NamedCredential): [ChainStep[], boolean];
 }
 
 export interface CloudChainOptions {
@@ -140,9 +140,9 @@ export function noFilesystem(platform: Platform, what: string): UnsupportedFeatu
   );
 }
 
-export function noCloudChain(platform: Platform, policy: AccessPolicy): NotConfiguredError {
+export function noCloudChain(platform: Platform, policy: AccessPolicy, named?: NamedCredential): NotConfiguredError {
   return new NotConfiguredError(
-    `${policy.provider}: the ${policy.credentialPolicy} credential chain is not available on the ${platform.name} platform (it reads profile files, runs CLIs and calls metadata endpoints); pass an explicit credential (apiKeys, a BearerToken from your own token endpoint)`,
+    `${policy.provider}: ${named ? `named credential "${named}" in the ` : "the "}${policy.credentialPolicy} credential chain is not available on the ${platform.name} platform (it reads profile files, runs CLIs and calls metadata endpoints); pass an explicit credential (apiKeys, a BearerToken from your own token endpoint)`,
     { provider: policy.provider, envKeys: policy.envKeys },
   );
 }

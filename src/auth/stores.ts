@@ -6,11 +6,14 @@
  * Linux: the system `flock` utility locks an inherited open file description.
  * Node retains the descriptor after the utility exits; close or process death
  * releases the kernel lock. The lock path and primitive match Python/Rust.
- * Requires util-linux flock on PATH; other platforms fail explicitly.
+ * macOS/Windows: optional Node-API addon owns a descriptor locked with
+ * flock/LockFileEx. Missing/unloadable addons fail closed before the callback.
+ * See docs/credential-locking.md for packaging and interoperability limits.
  */
 
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import * as nativeLock from "./native_lock.cjs";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -36,7 +39,11 @@ const XAI_DEFAULT_TOKEN_LIFETIME_S = 3600;
 
 export function expandHome(p: string, home?: string): string {
   if (p === "~") return home ?? os.homedir();
-  if (p.startsWith("~/")) return path.join(home ?? os.homedir(), p.slice(2));
+  if (p.startsWith("~/") || (process.platform === "win32" && p.startsWith("~\\"))) {
+    const base = home ?? os.homedir();
+    // Resolve symlinks before later '..' components; path.join would erase them.
+    return (base.endsWith(path.sep) ? base : base + path.sep) + p.slice(2);
+  }
   return p;
 }
 
@@ -69,17 +76,106 @@ export function lockDir(env: NodeJS.ProcessEnv = process.env): string {
 
 // ─── AUTH-4: lock + atomic write ─────────────────────────────────────
 
-function realPathAllowMissing(target: string): string {
-  try { return fs.realpathSync(target); } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    const parent = path.dirname(target);
-    if (parent === target) throw e;
-    return path.join(realPathAllowMissing(parent), path.basename(target));
+function stripWindowsLockVerbatim(value: string): string {
+  value = value.replaceAll("/", "\\");
+  if (value.slice(0, 8).toLowerCase() === "\\\\?\\unc\\") return "\\\\" + value.slice(8);
+  if (value.startsWith("\\\\?\\")) {
+    if (!/^[a-z]:\\/i.test(value.slice(4))) throw new TypeError("Unsupported Windows credential path namespace");
+    return value.slice(4);
   }
+  return value;
+}
+
+/** Pure post-resolution key spelling, testable on any OS.
+ * WINDOWS MIGRATION: old/new SDK processes MUST NOT overlap: removing the
+ * verbatim prefix and Unicode-lowercasing changes old lock filenames.
+ * Like Python normcase, overlocking opt-in case-sensitive directories is
+ * intentional. Use string lowercase, never locale lowercase or casefold.
+ */
+export function windowsLockIdentityKey(canonical: string): string {
+  return stripWindowsLockVerbatim(canonical).toLowerCase();
+}
+
+function realPathAllowMissing(target: string): string {
+  const windows = process.platform === "win32";
+  const parts = (value: string, base: string): { resolved: string; pending: string[] } => {
+    // Buffer's replacement of unpaired surrogates must never choose a key.
+    if (value.includes("\0") || Buffer.from(value, "utf8").toString("utf8") !== value) {
+      throw new TypeError("Credential lock path must be valid Unicode without NUL");
+    }
+    if (windows) {
+      value = stripWindowsLockVerbatim(value);
+      if (value.startsWith("\\\\.\\") || /^[a-z]:(?!\\)/i.test(value)) {
+        throw new TypeError("Unsupported Windows credential path namespace or drive-relative path");
+      }
+      const root = path.win32.parse(value).root;
+      if (value.startsWith("\\\\")) {
+        const roots = root.slice(2).replace(/\\$/, "").split("\\");
+        if (roots.length !== 2 || roots.some((p) => !p || /[^\x00-\x7f]/.test(p) || p === "." || p === ".." || /[?:]/.test(p) || /[. ]$/.test(p))) {
+          throw new TypeError("Unsupported Windows credential path root");
+        }
+      }
+      if (root) {
+        base = root === "\\" ? path.win32.parse(base).root : root;
+        if (!base.endsWith("\\")) base += "\\";
+      }
+      base = stripWindowsLockVerbatim(fs.realpathSync.native(base));
+      const pending = value.slice(root.length).split("\\").filter(Boolean);
+      for (const name of pending) {
+        if (name === "." || name === "..") continue;
+        if (/[. :]$/.test(name) || name.includes(":") || /^(con|prn|aux|nul|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)) {
+          throw new TypeError("Unsupported Windows credential path component");
+        }
+      }
+      return { resolved: base, pending };
+    }
+    return { resolved: value.startsWith("/") ? "/" : base, pending: value.split("/").filter(Boolean) };
+  };
+  // expandHome uses path.join, which collapses symlink/.. too early. Keep
+  // the raw suffix here; do not change the store/path helpers' behavior.
+  if (target === "~" || target.startsWith("~/") || (windows && target.startsWith("~\\"))) {
+    target = os.homedir() + target.slice(1);
+  } else if (target.startsWith("~")) {
+    throw new TypeError("Named-user home expansion is unsupported for credential locks");
+  }
+  const cwd = fs.realpathSync.native(process.cwd());
+  let { resolved, pending } = parts(target, windows ? stripWindowsLockVerbatim(cwd) : cwd);
+  let links = 0;
+  while (pending.length) {
+    const name = pending.shift()!;
+    if (name === ".") continue;
+    if (name === "..") { resolved = path.dirname(resolved); continue; }
+    const candidate = path.join(resolved, name);
+    let info: fs.Stats;
+    try { info = fs.lstatSync(candidate); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      // Windows upcase tables differ from Unicode lowercase (sigma/final
+      // sigma). Without an on-disk spelling, fail closed for non-ASCII.
+      if (windows && /[^\x00-\x7f]/.test(name)) throw new TypeError("Missing non-ASCII Windows credential path component is unsupported");
+      resolved = candidate;
+      continue;
+    }
+    if (info.isSymbolicLink()) {
+      if (++links > 40) throw Object.assign(new Error("Too many credential path symlinks"), { code: "ELOOP" });
+      const bytes = fs.readlinkSync(candidate, { encoding: "buffer" });
+      const link = bytes.toString("utf8");
+      if (!Buffer.from(link, "utf8").equals(bytes)) throw new TypeError("Credential symlink target must be valid Unicode");
+      const linked = parts(link, resolved);
+      resolved = linked.resolved;
+      pending = linked.pending.concat(pending);
+    } else {
+      if (pending.length && !info.isDirectory()) {
+        throw Object.assign(new Error("Credential path ancestor is not a directory"), { code: "ENOTDIR" });
+      }
+      resolved = windows ? stripWindowsLockVerbatim(fs.realpathSync.native(candidate)) : candidate;
+    }
+  }
+  return resolved;
 }
 
 export function lockPathFor(target: string): string {
-  const canonical = realPathAllowMissing(path.resolve(expandHome(target)));
+  const resolved = realPathAllowMissing(target);
+  const canonical = process.platform === "win32" ? windowsLockIdentityKey(resolved) : resolved;
   const digest = createHash("sha256").update(canonical, "utf-8").digest("hex").slice(0, 32);
   return path.join(lockDir(), `${digest}.lock`);
 }
@@ -100,18 +196,68 @@ function tryFlock(fd: number): Promise<boolean> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Offline description only: neither executes flock nor loads native code. */
+export function credentialLockingDetail(): string {
+  if (process.platform === "linux" && !process.env["LM15_NATIVE_LOCK_PATH"]) return "refresh/write locking: util-linux flock on PATH (not probed)";
+  return nativeLock.nativeCredentialLockPresent()
+    ? "refresh/write locking: native kernel-lock addon present (loadability not probed)"
+    : "refresh/write locking UNAVAILABLE: install the native kernel-lock addon or set absolute LM15_NATIVE_LOCK_PATH; fresh reads still work";
+}
+
+interface KernelLock {
+  tryAcquire(): Promise<boolean>;
+  close(): void;
+}
+
+function lockBackend(): (file: string) => KernelLock {
+  // Keep the established Linux primitive and deployment dependency unchanged.
+  // An explicit override permits native Linux builds, never an unsafe fallback.
+  if (process.platform === "linux" && !process.env["LM15_NATIVE_LOCK_PATH"]) return (file) => {
+    const fd = fs.openSync(file, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+    try {
+      if (!fs.fstatSync(fd).isFile()) throw new NotConfiguredError("credential lock must be a regular file");
+    } catch (error) {
+      fs.closeSync(fd);
+      throw error;
+    }
+    return { tryAcquire: () => tryFlock(fd), close: () => fs.closeSync(fd) };
+  };
+  let addon: ReturnType<typeof nativeLock.loadNativeCredentialLock>;
+  try {
+    addon = nativeLock.loadNativeCredentialLock();
+  } catch (cause) {
+    throw new NotConfiguredError("Stored credential refresh/write requires the native kernel-lock addon on this platform. Install the matching native/credential_lock-<platform>-<arch>.node or set absolute LM15_NATIVE_LOCK_PATH; see docs/credential-locking.md. Fresh reads and explicit credentials do not require locking.", { cause });
+  }
+  return (file) => {
+    let handle: unknown;
+    try { handle = addon.openLock(file); }
+    catch (cause) { throw new NotConfiguredError("Could not open native credential lock file; no unsafe fallback was used", { cause }); }
+    return {
+      async tryAcquire() {
+        try {
+          const acquired = addon.tryLock(handle);
+          if (typeof acquired !== "boolean") throw new Error("invalid native lock result");
+          return acquired;
+        } catch (cause) {
+          throw new NotConfiguredError("Native credential kernel lock failed; no unsafe fallback was used", { cause });
+        }
+      },
+      close() { addon.closeLock(handle); },
+    };
+  };
+}
+
 /** Hold the exclusive advisory lock for `target` while `fn` runs. Not re-entrant. */
 export async function withFileLock<T>(target: string, fn: () => Promise<T>, opts: { timeoutMs?: number } = {}): Promise<T> {
-  if (process.platform !== "linux") throw new NotConfiguredError("shared credential locking currently requires Linux and util-linux flock; pass an explicit credential on other platforms");
   const timeoutMs = opts.timeoutMs ?? 60_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0) throw new RangeError("lock timeoutMs must be non-negative and finite");
+  const openLock = lockBackend();
   const lockFile = lockPathFor(target);
   fs.mkdirSync(path.dirname(lockFile), { recursive: true, mode: 0o700 });
   const deadline = performance.now() + timeoutMs;
-  const fd = fs.openSync(lockFile, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const lock = openLock(lockFile);
   try {
-    if (!fs.fstatSync(fd).isFile()) throw new NotConfiguredError("credential lock must be a regular file");
-    while (!(await tryFlock(fd))) {
+    while (!(await lock.tryAcquire())) {
       const remaining = deadline - performance.now();
       if (remaining <= 0) throw new LockTimeoutError(`Could not lock credential file ${target} within ${timeoutMs}ms; another process holds the lock. Do not delete the lock file.`, { path: target, lockPath: lockFile });
       await sleep(Math.min(50, remaining));
@@ -119,7 +265,7 @@ export async function withFileLock<T>(target: string, fn: () => Promise<T>, opts
     return await fn();
   } finally {
     // Never unlink: concurrent processes must keep locking the same inode.
-    fs.closeSync(fd);
+    lock.close();
   }
 }
 

@@ -33,7 +33,7 @@
  */
 
 import type { ErrorCode } from "./vocab.ts";
-import { diagnosticsText, freezeRateLimits, type RateLimitHeaders } from "./rate_limits.ts";
+import { captureRateLimits, diagnosticsText, freezeRateLimits, millisecondsSeconds, type RateLimitHeaders } from "./rate_limits.ts";
 export type { RateLimitHeaders } from "./rate_limits.ts";
 import type { Response } from "./types/response.ts";
 
@@ -47,6 +47,9 @@ export interface ErrorMetadata {
   readonly retryAfter?: number | null | undefined;
   readonly cause?: unknown;
   readonly rateLimitHeaders?: RateLimitHeaders | undefined;
+  readonly contentType?: string | null | undefined;
+  /** Decoded text from at most the first 200 response bytes. */
+  readonly bodyExcerpt?: string | null | undefined;
 }
 
 export class LM15Error extends Error {
@@ -81,6 +84,9 @@ export class LM15Error extends Error {
 export class TransportError extends LM15Error {
   static override readonly defaultCode: ErrorCode = "transport";
 }
+
+/** An invalid HTTP message or unsupported/malformed response content coding (INV-053). */
+export class ProtocolError extends TransportError {}
 
 export interface LockTimeoutMetadata extends ErrorMetadata {
   readonly path?: string;
@@ -259,6 +265,14 @@ export class UnsupportedFeatureError extends CapabilityError {
 
 export class ProviderError extends LM15Error {
   static override readonly defaultCode: ErrorCode = "provider";
+  readonly contentType: string | null;
+  readonly bodyExcerpt: string | null;
+
+  constructor(message = "", meta: ErrorMetadata = {}) {
+    super(message, meta);
+    this.contentType = meta.contentType ?? null;
+    this.bodyExcerpt = meta.bodyExcerpt ?? null;
+  }
 
   /** The displayed form carries provider / HTTP status / request id. `message` stays as pinned. */
   override toString(): string {
@@ -381,7 +395,48 @@ export function withCredentialHint<E extends ProviderError>(error: E, hint: stri
     requestId: error.requestId,
     retryAfter: error.retryAfter,
     rateLimitHeaders: error.rateLimitHeaders,
+    contentType: error.contentType,
+    bodyExcerpt: error.bodyExcerpt,
+    cause: error.cause,
   });
+}
+
+export interface ReplyMetadataSource {
+  readonly status: number;
+  readonly headers: ReadonlyArray<readonly [string, string]>;
+  readonly body: Uint8Array;
+}
+
+/** Header-only diagnostics, shared by malformed JSON and auxiliary endpoints. */
+export function responseErrorMetadata(response: ReplyMetadataSource, provider?: string): ErrorMetadata {
+  const header = (name: string) => response.headers.find(([k]) => k.toLowerCase() === name)?.[1];
+  let requestId: string | undefined;
+  for (const name of ["x-request-id", "request-id", "x-amzn-requestid", "x-amz-request-id", "x-ms-request-id", "apim-request-id", "x-typesafe-request-id"]) {
+    requestId = header(name);
+    if (requestId) break;
+  }
+  let retryAfter: number | undefined;
+  const raw = header("retry-after");
+  if (raw?.trim()) {
+    const n = Number(raw);
+    if (Number.isFinite(n)) { if (n >= 0) retryAfter = n; }
+    else {
+      const date = Date.parse(raw);
+      if (Number.isFinite(date)) retryAfter = Math.max(0, (date - Date.now()) / 1000);
+    }
+  }
+  retryAfter ??= millisecondsSeconds(header("retry-after-ms")) ?? millisecondsSeconds(header("x-ms-retry-after-ms"));
+  return { status: response.status, provider, requestId, retryAfter, rateLimitHeaders: captureRateLimits(response.headers), contentType: header("content-type") };
+}
+
+/** INV-054: preserve evidence without claiming a 2xx was a server error. */
+export function malformedJsonError(response: ReplyMetadataSource, cause?: unknown, provider?: string): ProviderError {
+  const meta = responseErrorMetadata(response, provider);
+  const bodyExcerpt = new TextDecoder().decode(response.body.subarray(0, 200));
+  return new ProviderError(
+    `HTTP ${response.status} reply is not valid JSON (content-type ${JSON.stringify(meta.contentType ?? "<absent>")}; first 200 bytes: ${JSON.stringify(bodyExcerpt)})`,
+    { ...meta, bodyExcerpt, cause },
+  );
 }
 
 export interface HttpErrorMetadata {
