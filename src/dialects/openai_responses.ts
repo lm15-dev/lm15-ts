@@ -479,6 +479,14 @@ export class OpenAILM extends ProviderLM {
       for (const [k, v] of Object.entries(config.extensions)) if (!reserved.has(k)) payload[k] = v;
     }
     if (this.codex) {
+      // An explicit cap or store=true is refused, never stripped: dropping a
+      // cap means unbounded spend (MAP-13 rule 4; Rust, R and Python refuse the same).
+      if (config.maxTokens !== undefined) {
+        throw new UnsupportedFeatureError(`${this.provider}: config.max_tokens: this backend has no output cap; dropping it risks unbounded paid generation`, { provider: this.provider, feature: "config.max_tokens" });
+      }
+      if (config.store === true) {
+        throw new UnsupportedFeatureError(`${this.provider}: config.store: this backend cannot store a retrievable response; the program may depend on retrieval`, { provider: this.provider, feature: "config.store" });
+      }
       if (this.access.systemPrefix && payload["instructions"] === undefined) payload["instructions"] = this.access.systemPrefix;
       payload["store"] = false;
       payload["stream"] = true;

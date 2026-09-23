@@ -9,7 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AdaptationScope, adapt, collecting, nearestEffort } from "../src/adaptation.ts";
 import { AnthropicLM } from "../src/dialects/anthropic.ts";
-import { OpenAILM } from "../src/dialects/openai_responses.ts";
+import { OpenAICodexLM, OpenAILM } from "../src/dialects/openai_responses.ts";
 import { OpenAIChatLM } from "../src/dialects/openai_chat.ts";
 import { UnsupportedFeatureError } from "../src/errors.ts";
 import { RawNumber, stringifyJson } from "../src/json.ts";
@@ -244,4 +244,13 @@ test("the chat wire under a compat that ignores a form: none and an allowlist go
   const none = await lm.build({ model: "glm-5", messages: user("hi"), tools, config: { toolChoice: { mode: "none" } } }, false);
   assert.equal("tools" in (JSON.parse(new TextDecoder().decode(none.request.body)) as object), false);
   await assert.rejects(lm.build({ model: "glm-5", messages: user("hi"), tools, config: { toolChoice: { mode: "required" } } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.tool_choice.mode");
+});
+
+test("Codex: an output cap or store=true is refused, never stripped (MAP-13 rule 4)", () => {
+  const lm = new OpenAICodexLM({ apiKey: "tok", accountId: "acct" });
+  const request = (config: Record<string, unknown>) => ({ model: "gpt-5.5", messages: [Message.user("hi")], config });
+  assert.equal(lm.payload(request({}), true)["max_output_tokens"], undefined);
+  for (const [config, feature] of [[{ maxTokens: 5 }, "config.max_tokens"], [{ store: true }, "config.store"]] as const) {
+    assert.throws(() => lm.payload(request(config), true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === feature && /openai-codex/.test(e.message));
+  }
 });
