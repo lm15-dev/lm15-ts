@@ -13,6 +13,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { AuthOperationError, ServerError } from "../src/errors.ts";
+import { Message } from "../src/types/parts.ts";
 import { authRequest, LoginContext, LoginDenied, parseManualReturn, pathRelay, runDeviceFlow, type LoginRouting } from "../src/login/engine.ts";
 import { copilotBaseUrl } from "../src/login/flows/copilot.ts";
 import { CLAUDE, CODEX, COPILOT, COPILOT_HEADERS, KIMI, META, OPENROUTER, ROUTE_DIRECTNESS, XAI, type RequestProfile } from "../src/login/profiles.ts";
@@ -89,6 +90,8 @@ test("page directness of every request is browser.json's verdict", () => {
     ["meta.device_authorization", META.deviceAuthorization], ["meta.device_token", META.deviceToken], ["meta.key_mint", META.keyMint],
   ];
   for (const [id, profile] of expect) assert.equal(profile.browser, verdict.get(id), id);
+  // A live verdict from a real page outranks the header probe (AUTHORITY.md: live behavior first).
+  for (const [id, live] of Object.entries(browserEvidence.live_verdicts ?? {})) verdict.set(id, (live as { verdict: string }).verdict);
   for (const [route, direct] of Object.entries(ROUTE_DIRECTNESS)) {
     assert.equal(direct.inference, verdict.get(`${route}.inference`), `${route}.inference`);
     if (direct.catalog !== "none") assert.equal(direct.catalog, verdict.get(`${route}.models`), `${route}.models`);
@@ -462,4 +465,14 @@ test("relay consent is per stage: agreeing to model calls does not cover model l
   assert.equal(loginAdapter(outcome, { platform: "browser", relay: inferenceOnly }).baseUrl, "https://relay.test/chatgpt.com/backend-api/codex");
   assert.throws(() => loginAdapter(outcome, { platform: "browser", relay: inferenceOnly, stage: "catalog" }), /model lists need a relay/);
   assert.equal(loginAdapter(outcome, { platform: "native" }).baseUrl, "https://chatgpt.com/backend-api/codex");
+});
+
+test("an error from a login's adapter names that login, not an api_key or another tool's CLI", async () => {
+  const outcome: LoginOutcome = { provider: "claude-code", methodId: "browser", material: { type: "oauth", access: "A", refresh: "R" }, label: "Claude subscription", renewal: "refresh_token", settings: {} };
+  const transport = { send: async () => ({ status: 401, reason: "", headers: [["content-type", "application/json"]] as Array<[string, string]>, bytes: async () => new TextEncoder().encode('{"type":"error","error":{"type":"authentication_error","message":"no"}}'), chunks: async function* () {} }) };
+  const adapter = loginAdapter(outcome, { platform: "native", transport });
+  await assert.rejects(adapter.complete({ model: "claude-sonnet-4-5", messages: [Message.user("hi")] }), (e: unknown) => {
+    const text = String((e as Error).message);
+    return /sign-in made in this program/.test(text) && !/explicit api_key/.test(text) && !/run `claude`/.test(text);
+  });
 });

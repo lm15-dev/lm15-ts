@@ -253,17 +253,23 @@ export interface LoginAdapterOptions extends LoginEnvironment {
   readonly stage?: "catalog" | "inference";
 }
 
-function build(auth: LoginRequestAuth, baseUrl: string | undefined, transport: Transport | undefined): ProviderLM {
+function build(auth: LoginRequestAuth, baseUrl: string | undefined, transport: Transport | undefined, outcome?: LoginOutcome): ProviderLM {
   const credential = auth.credential.kind === "bearer" ? new BearerToken(auth.credential.value) : new ApiKey(auth.credential.value);
   const opts = {
     apiKey: credential,
+    // AUTH-1: say where the credential came from; "an explicit api_key" would be false.
+    ...(outcome ? { credentialOrigin: `the ${outcome.provider} "${outcome.methodId}" sign-in made in this program (${outcome.label})` } : {}),
     ...(baseUrl ? { baseUrl } : {}),
     ...(auth.accountId ? { accountId: auth.accountId } : {}),
     ...(transport ? { transport } : {}),
   };
   if (auth.route === "github-copilot") return adapterForDefinition(GITHUB_COPILOT_DEFINITION, opts);
   if (auth.route === "kimi-code") return adapterForDefinition(KIMI_CODE_DEFINITION, opts);
-  return adapterFor(auth.route, opts);
+  const plain = adapterFor(auth.route, opts);
+  if (!outcome || !plain.access.loginHint) return plain;
+  // The route's hint names another tool's login (the claude/codex CLI); this credential is this program's own.
+  const access = Object.freeze({ ...plain.access, loginHint: `If this sign-in expired or was revoked, sign in again with the same method (${outcome.methodId}); lm15 used no CLI login here` });
+  return adapterFor(auth.route, { ...opts, access });
 }
 
 /** The API root model calls for this login go to, before any relay. Constructing an adapter sends nothing. */
@@ -293,5 +299,5 @@ export function loginAdapter(outcome: LoginOutcome, opts: LoginAdapterOptions = 
     }
     baseUrl = route.relay!.rewrite(new URL(baseUrl)).toString().replace(/\/$/, "");
   }
-  return build(auth, baseUrl, opts.transport);
+  return build(auth, baseUrl, opts.transport, outcome);
 }

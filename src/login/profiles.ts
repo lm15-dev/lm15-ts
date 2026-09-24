@@ -137,7 +137,9 @@ export const META = Object.freeze({
 
 export const ROUTE_DIRECTNESS: Readonly<Record<string, RouteDirectness>> = Object.freeze({
   xai: { catalog: "direct", inference: "direct" },
-  "claude-code": { catalog: "direct", inference: "direct" },
+  // CORS headers allow it, but Anthropic refuses a subscription token on any request carrying Origin
+  // ("CORS requests are not allowed for this Organization", HTTP 401; live 2026-09-24, browser.json live_verdicts).
+  "claude-code": { catalog: "relay", inference: "relay" },
   "openai-codex": { catalog: "relay", inference: "relay" },
   "github-copilot": { catalog: "direct", inference: "direct" },
   openrouter: { catalog: "direct", inference: "direct" },
