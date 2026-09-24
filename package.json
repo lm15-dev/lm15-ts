@@ -57,7 +57,7 @@
     "pretest:example": "npm run build && npm run test:example:ui",
     "test:example": "node --experimental-strip-types tools/example_smoke.ts",
     "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts",
-    "prepublishOnly": "npm run check && npm run build && npm test"
+    "prepublishOnly": "npm run build && npm run check && npm test"
   },
   "keywords": [
     "ai",

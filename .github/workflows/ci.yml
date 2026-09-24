@@ -34,9 +34,11 @@ jobs:
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
+      # Build first: the examples import the package by name (lm15/browser),
+      # which resolves to the built dist/.
+      - run: npm run build
       - name: Type-check sources, tests and examples
         run: npm run check
-      - run: npm run build
       - run: npm test
 
   contract:

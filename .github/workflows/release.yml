@@ -36,7 +36,7 @@ jobs:
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
-      - run: npm run check && npm run build && npm test
+      - run: npm run build && npm run check && npm test
       - name: Contract harness at the pin
         run: python3 ../lm15-contract/harness/check.py --shim typescript --direction all
 
