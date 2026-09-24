@@ -1,0 +1,72 @@
+name: release
+
+# Publish to npm when a GitHub Release is published, with provenance: npm
+# records which commit and workflow built the package. Uses npm trusted
+# publishing (OIDC): configure it once on npmjs.com (package lm15 → Settings →
+# Trusted publisher: GitHub Actions, lm15-dev/lm15-ts, workflow release.yml).
+# No token is stored anywhere. RELEASING.md has the whole procedure.
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Tag matches package.json
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          [ "$GITHUB_REF_NAME" = "v$VERSION" ] || { echo "::error::tag $GITHUB_REF_NAME does not match package version $VERSION"; exit 1; }
+      - name: Check out pinned contract
+        run: |
+          PIN=$(tr -d '[:space:]' < CONTRACT_PIN)
+          git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
+          git -C ../lm15-contract checkout --detach "$PIN"
+      - run: npm ci
+      - run: npm run check && npm run build && npm test
+      - name: Contract harness at the pin
+        run: python3 ../lm15-contract/harness/check.py --shim typescript --direction all
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/lm15
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+          cache: npm
+      - name: npm with trusted publishing (11.5.1 or later)
+        run: npm install -g npm@11
+      - run: npm ci
+      - name: Publish
+        # A prerelease goes to the `next` tag once a stable version holds
+        # `latest`; until then it is `latest` (the only line there is).
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG=latest
+          if [[ "$VERSION" == *-* ]]; then
+            STABLE=$(npm view lm15 dist-tags.latest 2>/dev/null || true)
+            if [[ -n "$STABLE" && "$STABLE" != *-* ]]; then TAG=next; fi
+          fi
+          npm publish --provenance --access public --tag "$TAG"

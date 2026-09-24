@@ -1,6 +1,6 @@
 {
   "name": "lm15",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0-rc.1",
   "description": "One canonical request/response model over OpenAI, Anthropic, Gemini and every OpenAI-compatible server. Zero dependencies. Built against the lm15-contract corpus.",
   "type": "module",
   "main": "./dist/cjs/index.js",
@@ -34,12 +34,9 @@
     },
     "./package.json": "./package.json"
   },
-  "bin": {
-    "lm15-vet": "./dist/vet.js"
-  },
   "files": [
     "dist",
-    "native",
+    "!dist/tls",
     "LICENSE",
     "README.md",
     "docs"
@@ -59,7 +56,8 @@
     "example:openrouter": "node --experimental-strip-types tools/serve.ts examples/openrouter-page/",
     "pretest:example": "npm run build && npm run test:example:ui",
     "test:example": "node --experimental-strip-types tools/example_smoke.ts",
-    "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts"
+    "test:example:ui": "node --experimental-strip-types --test tools/example_ui.test.ts",
+    "prepublishOnly": "npm run check && npm run build && npm test"
   },
   "keywords": [
     "ai",
@@ -75,6 +73,10 @@
   ],
   "author": "lm15-dev",
   "license": "MIT",
+  "homepage": "https://lm15.dev",
+  "bugs": {
+    "url": "https://github.com/lm15-dev/lm15-ts/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/lm15-dev/lm15-ts.git"
@@ -86,5 +88,8 @@
     "@types/node": "^22",
     "playwright-core": "^1.63.0",
     "typescript": "^5.9"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

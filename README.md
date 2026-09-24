@@ -1,83 +1,77 @@
-# lm15-ts
+# lm15 for TypeScript and JavaScript
 
-The TypeScript port of lm15: one canonical request/response model over every
-provider the [lm15-contract](https://github.com/lm15-dev/lm15-contract) names,
-byte-exact against its corpus. Async only, native HTTP on Node 22+ and Fetch in browsers, plus `WebSocket`,
-zero npm runtime dependencies. The same package has a web entry point,
-`lm15/browser` — the whole wire, none of the host — for pages, workers,
-PWAs and Electron renderers ([docs/browser.md](docs/browser.md)). Stored-credential refresh/writes use Linux
-util-linux `flock`, or the optional native kernel-lock backend on other hosts
-([packaging and limitations](docs/credential-locking.md)); explicit credentials need neither. One npm package serves TypeScript and plain
-JavaScript (ESM and CommonJS, with `.d.ts`).
+One request and response model for every model provider: OpenAI, Anthropic,
+Google Gemini, xAI, Groq, DeepSeek, OpenRouter, Z.AI, Moonshot, Meta, the
+cloud hosts (AWS Bedrock, Azure, Vertex) and any OpenAI-compatible server,
+local or remote. The same program talks to any of them; when a provider can't
+take a setting as you asked, lm15 adapts the request and tells you what it
+changed. Zero runtime dependencies. Node 22+, and a browser entry point
+(`lm15/browser`) for pages, workers, PWAs and Electron renderers.
 
-The contract commit this port is built against is in `CONTRACT_PIN`;
-`harness/check.py` refuses to grade the port against any other commit.
+Guides and reference: **[lm15.dev](https://lm15.dev)**. The same library
+exists for Python, Rust, Go, R and Julia, all written against one shared
+[contract](https://github.com/lm15-dev/lm15-contract).
+
+## Install
+
+```bash
+npm install lm15
+```
+
+This is a **release candidate** (`1.0.0-rc.1`): the API is the one intended
+for 1.0, and may still change before 1.0 if testing shows it must. Pin the
+exact version in applications.
+
+## First request
+
+```ts
+import { LMRouter, Message } from "lm15";
+
+const request = {
+  model: "anthropic:claude-haiku-4-5",
+  messages: [Message.user(
+      "What might be eating the acorns under our oak trees at night?",
+  )],
+};
+
+const router = new LMRouter();
+const response = await router.complete(request);
+console.log(response.text);
+```
+
+The key comes from `ANTHROPIC_API_KEY`; change the model string to reach
+another provider (`openai:gpt-5-mini`, `gemini:gemini-2.5-flash`, ...). See
+[Make your first request](https://lm15.dev/docs/first-request/).
+
+ESM and CommonJS, with type declarations. Stored-credential refresh uses
+Linux util-linux `flock`, or the optional native kernel-lock backend on other
+hosts ([packaging and limitations](docs/credential-locking.md)); explicit
+credentials need neither.
 
 ## Status
 
-**2026-09-20 parity implementation is unverified.** No tests, builds, typechecks,
-lint or verification programs were run for this pass. The results below describe
-the earlier baseline, not these changes. New native locking code also requires
-platform builds and interoperability testing before a release claim.
+Release candidate, checked 2026-09-24 against the pinned contract
+(`CONTRACT_PIN`): **1,440 of 1,440** contract cases pass
+(`harness/check.py --shim typescript --direction all`; 40 skips are corpus
+gaps shared with the Python reference), and the package's own 449 tests pass.
 
-**Historical baseline: passing the pinned corpus, not a claim of SDK or release completeness.**
-Every harness direction is green at the pin, with zero failures and no skips
-added; the skips are corpus gaps (`openai.computer_use` has no canonical
-request and no golden; fourteen adapted-request cases pin no reply body — the reference skips the same fifteen). The
-port is at parity with the Python reference on every direction, and
-`tools/differential.py` cross-checks 246 request builds outside the corpus
-(zero differences), including every MAP-13 adaptation cell. Runtime correctness is tested separately; see
-[the correctness review and remaining work](docs/runtime-correctness.md).
+| Direction | Pass |
+|---|---|
+| request | 389 (1 skip) |
+| response | 308 (23 skips) |
+| stream | 40 (16 skips) |
+| error | 90 |
+| serde | 129 |
+| auth, token | 43, 43 |
+| models, live, router | 36, 24, 22 |
+| files, batch, generation, video, cache | 48, 41, 20, 27, 11 |
+| ingest | 169 |
 
-| Direction | Contract surface | Result |
-|---|---|---|
-| `serde` | spec/types.md, spec/vocabularies.md, spec/invariants.md, docs/serde-rules.md; all 36 kinds | 126 / 0 |
-| `error` | ErrorCode + class hierarchy; `normalizeError` per provider | 87 / 0 |
-| `auth` | spec/auth.md AUTH-1/2/5/7/8/10 and the three cloud chains (AUTH-11) | 37 / 0 |
-| `token` | SigV4 (34 vectors), RS256 JWTs, token exchanges | 43 / 0 |
-| `request` | the five dialects, request side; MAP-5..8, MAP-10, MAP-13 (pinned adaptations and `feature` on refusals), MAP-14; hosts, presets | 378 / 0 (1 skip) |
-| `response` | the five dialects, response side; MAP-1..4, MAP-14 (`DataPart` answers) | 309 / 0 (15 skips) |
-| `stream` | SSE decoding, MAP-3/4 coalescing, MAP-9 assembly and its refusal | 40 / 0 |
-| `router` | the three rungs, precedence, `unknown_model` / `ambiguous_model` | 22 / 0 |
-| `models` | `listModels` on every provider | 36 / 0 |
-| `files`, `batch`, `cache` | the three surfaces, multipart byte for byte, MAP-11 id escaping | 48 / 0, 41 / 0, 11 / 0 |
-| `generation`, `video` | image and speech generation, video jobs (MAP-11) | 20 / 0, 27 / 0 |
-| `live` | the websocket codec (OpenAI Realtime, Gemini Live) | 24 / 0 |
-| `ingest` | MAP-12: a Chat Completions request body → `Request` under one preset's spellings; the 125 recorded chat bodies round-trip (27 pinned lossy), 42 foreign shapes (9 refusals; `functions`/`function_call` translate, `top_k` and the promoted sampling knobs read into `Config`). Provisional; module 4b | 167 / 0 |
-
-Beyond the harness: `npm test` (node:test) covers the JSON
-fidelity layer, every INV-* invariant, the coalescer and the MAP-9 assembler,
-credential secrecy, the lock and atomic writes, the doctor, the router, an
-end-to-end call through a fake transport, and a replay of the sibling corpus
-through the library directly (serde, errors, SigV4, router, every pinned
-request, body and stream with a golden, and every chat body read back
-through `requestFromOpenAIChat`). Runtime regression tests additionally cover
-generic serialization, unsafe integers, direct-provider validation, stream
-pause/drain/cancellation, real local HTTP cancellation, timeouts, websocket
-failure paths, Python/Node lock exclusion, and lock release after process death.
-The Python interoperability check skips if Python is unavailable; kernel-lock
-tests skip off Linux.
-
-Outside the corpus: `tools/differential.py` (246 request comparisons against
-the reference, zero differences — the Rust port's 30 probes, ten
-JavaScript-specific ones: integral floats, opaque-payload numbers, unicode,
-empty strings, and thirteen MAP-13/MAP-14 probes: every adaptation action,
-the record's JSON types, the refusals that survive rule 4b) and `tools/differential_surfaces.py` (177 files / batch /
-cache / generation / video / live comparisons, zero differences).
-
-Live proof, keys from the environment (`receipts/2026-09-08-live-smoke/`):
-one `complete` and one `stream` per dialect through the router (OpenAI,
-Anthropic, Gemini, Groq — token counts identical to the Rust port's receipts
-of 2026-09-07), and one text turn over Gemini Live through `LiveSession`.
-Every one worked on first contact with the real server.
-
-### Not exercised live, stated
-
-Files, batches, caches, image/video generation, the cloud credential chains
-(no AWS / Azure / GCP account on this machine), the OAuth refresh wire, the
-xAI device-code login, and OpenAI Realtime. The harness pins recorded
-lifecycles, token vectors and transcripts for all of them. Those fixtures prove
-recorded wire behavior, not working network lifecycles or release readiness.
+Not in this package yet: saved connections (`connect()`, sign-in status and
+sign-out) exist in Python only; the sign-in flows themselves are here. The
+encrypted relay tunnel is a prototype and its TLS module is not shipped.
+Provisional surfaces (files, batches, media generation, live sessions, stored
+caches) may change during 1.x, as in every lm15 language.
 
 ## Cached-prefix routing
 
@@ -93,10 +87,15 @@ Direct `lm.cache` with bare input does not invent a router destination. Explicit
 own-provider prefixes retain their route; underscore input aliases canonicalize
 to hyphens. Suffix Requests may name the wire model or the same destination, not
 another provider. Old values without `provider` keep unqualified behavior and
-unchanged canonical output (the absent field is omitted). These changes and their
-regression sources have not been execution-verified and add no conformance claim.
+unchanged canonical output (the absent field is omitted). Pinned by the contract's
+`cached_prefix.routed` serde case (passing).
 
-## Gates
+## Development
+
+The contract commit this port is built against is in `CONTRACT_PIN`;
+`harness/check.py` refuses to grade the port against any other commit.
+
+### Gates
 
 ```bash
 npm install                    # dev tooling only: typescript, @types/node

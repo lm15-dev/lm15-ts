@@ -151,14 +151,17 @@ test("Azure named CLI continues through command errors and records the winning r
     run: async (argv) => { commands.push(argv[0]!); if (argv[0] !== "azd") throw new AuthError("command failed"); return JSON.stringify({ token: SECRET, expiresOn: "2026-09-20T01:00:00Z" }); },
   });
   const provider = credentialProvider(AZURE, ctx, "cli");
-  assert.equal(provider.source, undefined);
+  // Read through a function: after assert.equal(x, undefined) TypeScript would
+  // keep `provider.source` narrowed to undefined, though calling provider() sets it.
+  const source = () => provider.source;
+  assert.equal(source(), undefined);
   await provider();
   await provider();
   assert.deepEqual(commands, ["az", "pwsh", "azd"]);
-  assert.equal(provider.source?.rung, "azd");
-  assert.equal(provider.source?.named, "cli");
-  assert.equal(provider.source?.expiresAt?.toISOString(), "2026-09-20T01:00:00.000Z");
-  assert.ok(!String(provider.source).includes(SECRET));
+  assert.equal(source()?.rung, "azd");
+  assert.equal(source()?.named, "cli");
+  assert.equal(source()?.expiresAt?.toISOString(), "2026-09-20T01:00:00.000Z");
+  assert.ok(!String(source()).includes(SECRET));
 });
 
 test("auth provenance appears exactly once and survives login guidance", () => {

@@ -7,7 +7,8 @@
     "outDir": "dist/cjs",
     "rootDir": "src",
     "declaration": false,
-    "verbatimModuleSyntax": false
+    "verbatimModuleSyntax": false,
+    "inlineSources": true
   },
   "include": [
     "src/**/*.ts"
