@@ -126,13 +126,15 @@ test("a provider error return is a denial only when its state is this attempt's"
   assert.throws(() => parseManualReturn(`${CLAUDE.redirectUri}?error=access_denied&state=OTHER`, claudeReturn, "claude-code"), (e: unknown) => e instanceof AuthOperationError && e.reason === "invalid_login_state");
 });
 
-test("a page-redirect return carries the attempt's marker, whichever way the provider appends the code", () => {
-  const ctx = { expectedState: null, allowBareCode: false, registeredUri: "https://lm15.dev/playground/", marker: "M1" };
-  assert.equal(parseManualReturn("https://lm15.dev/playground/?code=c1#lm15-return=M1", ctx, "openrouter").code, "c1");
-  assert.equal(parseManualReturn("https://lm15.dev/playground/#lm15-return=M1?code=c2", ctx, "openrouter").code, "c2");
-  for (const text of ["https://lm15.dev/playground/?code=c1", "https://lm15.dev/playground/?code=c1#lm15-return=M2", "https://lm15.dev/other/?code=c1#lm15-return=M1"]) {
+test("a page-redirect return: the registered page, trailing slash optional where the profile says so; nothing else", () => {
+  const ctx = { expectedState: null, allowBareCode: false, registeredUri: "https://lm15.dev/playground/", trailingSlashOptional: true };
+  // What OpenRouter actually sent back on 2026-09-24: no fragment, no trailing slash.
+  assert.equal(parseManualReturn("https://lm15.dev/playground?code=c1", ctx, "openrouter").code, "c1");
+  assert.equal(parseManualReturn("https://lm15.dev/playground/?code=c2", ctx, "openrouter").code, "c2");
+  for (const text of ["https://lm15.dev/other?code=c1", "https://evil.example/playground?code=c1", "http://lm15.dev/playground?code=c1", "https://lm15.dev/playground?code=c1#x", "https://lm15.dev/playground?code=a&code=b", "c1"]) {
     assert.throws(() => parseManualReturn(text, ctx, "openrouter"), (e: unknown) => e instanceof AuthOperationError && e.reason === "invalid_login_state", text);
   }
+  assert.throws(() => parseManualReturn("https://lm15.dev/playground?code=c1", { ...ctx, trailingSlashOptional: false }, "openrouter"), AuthOperationError);
 });
 
 // ─── A fake world ────────────────────────────────────────────────────
@@ -385,17 +387,16 @@ test("Codex device login goes direct in a page (auth.openai.com allows it) and e
   assert.equal(adapter.baseUrl, "https://relay.test/chatgpt.com/backend-api/codex");
 });
 
-test("OpenRouter in a page: the return must carry this attempt's marker; the key is minted direct", async () => {
-  let marker = "";
-  const ui = new ScriptedUI([(p) => {
-    marker = p.type === "manual_code" ? p.pageReturn!.marker : "";
-    return `https://lm15.dev/playground/?code=OC#lm15-return=${marker}`;
-  }]);
+test("OpenRouter in a page: the callback is the page itself; the normalized return is accepted; the key is minted direct", async () => {
+  const ui = new ScriptedUI([() => "https://lm15.dev/playground?code=OC"]);
   const { fetch, seen } = fakeFetch(() => json(200, { key: "sk-or-v1-x" }));
   const outcome = await runLogin("openrouter", "browser", { ui, fetch, platform: "browser", allowUnverified: true, pageReturnUrl: "https://lm15.dev/playground/?mode=chat" });
   const auth = ui.notices.find((n) => n.type === "auth_url");
-  assert.equal(new URL(auth && auth.type === "auth_url" ? auth.url : "x:").searchParams.get("callback_url"), `https://lm15.dev/playground/#lm15-return=${marker}`);
+  assert.equal(new URL(auth && auth.type === "auth_url" ? auth.url : "x:").searchParams.get("callback_url"), "https://lm15.dev/playground/");
   assert.equal(seen[0]!.url, OPENROUTER.keys.url);
+  const body = JSON.parse(seen[0]!.body);
+  assert.equal(body.code, "OC");
+  assert.equal(body.code_challenge_method, "S256");
   assert.deepEqual({ ...outcome.material }, { type: "api_key", key: "sk-or-v1-x", minted: true });
 });
 

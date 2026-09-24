@@ -5,8 +5,11 @@
  *
  * The result is a permanent, user-controlled key that spends the person's
  * OpenRouter credits, not a subscription (AUTH-13.7). OpenRouter echoes no
- * state: the binding is PKCE plus a one-time random marker in the return
- * (`#lm15-return=<marker>` on a page; manual paste checks the same marker).
+ * state, and it drops a fragment and a trailing `/` from the callback
+ * (observed live from the playground, 2026-09-24), so no marker survives the
+ * trip. The binding is PKCE plus the waiting attempt: a code is exchangeable
+ * only with the verifier this attempt holds, so an injected code fails at the
+ * exchange instead of signing anyone in (AUTH-18's evidenced equivalent).
  */
 
 import { pkceChallenge } from "../../auth/pkce.ts";
@@ -40,17 +43,16 @@ export const openrouterFlow: ProviderFlow = {
     base.hash = "";
     const verifier = randomBase64Url(OPENROUTER.verifierBytes);
     const challenge = await pkceChallenge(verifier);
-    const marker = randomBase64Url(24);
-    const callback = `${base.toString()}#lm15-return=${marker}`;
+    const callback = base.toString();
     const url = new URL(OPENROUTER.authorizeUrl);
     url.searchParams.set("callback_url", callback);
     url.searchParams.set("code_challenge", challenge);
     url.searchParams.set("code_challenge_method", "S256");
-    ctx.notify({ type: "auth_url", url: url.toString(), instructions: "Sign in to OpenRouter and approve the key. You are sent back here; if not, paste the address of the page you land on." });
+    ctx.notify({ type: "auth_url", url: url.toString(), instructions: "Sign in to OpenRouter and approve the key. You are sent back to this page; if not, paste the address of the page you land on." });
     const returned = await awaitReturn(ctx, {
       type: "manual_code", fieldId: "return", label: "Paste the address OpenRouter sent you back to", accepted: "the full return URL",
-      pageReturn: { url: base.toString(), marker },
-    }, { expectedState: null, allowBareCode: false, registeredUri: base.toString(), marker });
+      pageReturn: { url: callback },
+    }, { expectedState: null, allowBareCode: false, registeredUri: callback, trailingSlashOptional: true });
     ctx.notify({ type: "progress", stage: "exchange", message: "Exchanging the code for an API key…" });
     const reply = await authRequest(ctx, OPENROUTER.keys, {
       params: { code: returned.code, code_verifier: verifier, code_challenge_method: "S256" }, consumes: true, stage: "exchange",

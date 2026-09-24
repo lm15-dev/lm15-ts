@@ -82,8 +82,8 @@ export interface ManualCodePrompt {
   readonly fieldId: string;
   readonly label: string;
   readonly accepted: string;
-  /** Set for `page_redirect`: the exact return the page should watch for (origin + path + marker). Not secret. */
-  readonly pageReturn?: { readonly url: string; readonly marker: string };
+  /** Set for `page_redirect`: the page the provider sends the person back to (origin + path). Not secret. */
+  readonly pageReturn?: { readonly url: string };
 }
 export type Prompt = TextPrompt | SecretPrompt | SelectPrompt | ManualCodePrompt;
 

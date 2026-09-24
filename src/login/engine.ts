@@ -493,15 +493,19 @@ export interface ReturnContext {
   readonly allowBareCode: boolean;
   /** A full URL must match this exactly in scheme, host, effective port and path. */
   readonly registeredUri?: string;
-  /** Page redirect only: the one-time marker the return's fragment must carry (`#lm15-return=<marker>`). */
-  readonly marker?: string;
+  /**
+   * The provider is observed to drop a trailing `/` from the return path
+   * (OpenRouter, 2026-09-24), so `/app` and `/app/` are the same return.
+   * Scheme, host and port still match exactly.
+   */
+  readonly trailingSlashOptional?: boolean;
 }
 
 function invalid(message: string, provider: string): AuthOperationError {
   return new AuthOperationError(message, { reason: "invalid_login_state", stage: "interaction", recovery: "provide_input", provider });
 }
 
-function constantTimeEqual(a: string, b: string): boolean {
+export function constantTimeEqual(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -536,23 +540,13 @@ export function parseManualReturn(text: string, context: ReturnContext, provider
     if (url.username || url.password) throw invalid("the pasted URL is not this sign-in's registered return URL", provider);
     if (context.registeredUri !== undefined) {
       const expected = new URL(context.registeredUri);
-      if (url.protocol !== expected.protocol || url.hostname !== expected.hostname || effectivePort(url) !== effectivePort(expected) || url.pathname !== expected.pathname) {
+      const path = (p: string): string => (context.trailingSlashOptional ? p.replace(/\/+$/, "") || "/" : p);
+      if (url.protocol !== expected.protocol || url.hostname !== expected.hostname || effectivePort(url) !== effectivePort(expected) || path(url.pathname) !== path(expected.pathname)) {
         throw invalid("the pasted URL is not this sign-in's registered return URL", provider);
       }
     }
-    if (context.marker !== undefined) {
-      // Page redirect: `#lm15-return=<marker>`, with the code either in the query or
-      // appended after the marker by a provider that concatenates strings.
-      const fragment = url.hash.replace(/^#/, "");
-      const [markerPart, trailing] = fragment.split("?", 2) as [string, string | undefined];
-      const marker = new URLSearchParams(markerPart).get("lm15-return");
-      if (marker === null || !constantTimeEqual(marker, context.marker)) throw invalid("this return does not belong to this sign-in attempt", provider);
-      params = new URLSearchParams(url.search);
-      if (trailing !== undefined) for (const [k, v] of new URLSearchParams(trailing)) params.append(k, v);
-    } else {
-      if (url.hash) throw invalid("the pasted URL is not this sign-in's registered return URL", provider);
-      params = new URLSearchParams(url.search);
-    }
+    if (url.hash) throw invalid("the pasted URL is not this sign-in's registered return URL", provider);
+    params = new URLSearchParams(url.search);
   } else if (/^(code|state|error)=/.test(value)) {
     params = new URLSearchParams(value);
   } else if (value.includes("#")) {
