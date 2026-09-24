@@ -202,7 +202,13 @@ function hasExplicitBreakpoint(request: Request, cacheControl: string): boolean 
 /** Shared MAP-6 fields for both OpenAI dialects: off switch, key, retention. */
 export function cacheCommonPayload(request: Request, payload: JsonObject, cacheControl: string, provider: string): void {
   const cache = request.config?.cache;
-  if (!cache || (cacheControl !== "openai" && cacheControl !== "openai_implicit")) return;
+  if (!cache) return;
+  if (cacheControl !== "openai" && cacheControl !== "openai_implicit") {
+    // MAP-13: the key and the lifetime have no home on a server without OpenAI's cache fields.
+    if (cache.key !== undefined) adapt("config.cache.key", "dropped", "this server has no cache affinity field; implicit caching still applies", { asked: cache.key, provider });
+    if (cache.retention === "long") adapt("config.cache.retention", "dropped", "this server has no in-request cache lifetime knob; implicit caching still applies", { asked: "long", provider });
+    return;
+  }
   if (cacheControl === "openai_implicit") {
     if (cache.mode !== "off") {
       if (cache.key) payload["prompt_cache_key"] = cache.key;

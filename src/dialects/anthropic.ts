@@ -376,14 +376,18 @@ export class AnthropicLM extends ProviderLM {
     const longCache = cache !== undefined && cache.retention === "long" && compat.cacheControl === "anthropic";
     const messages = request.messages.map((m) => this.message(m));
 
+    if (cache !== undefined && cache.key !== undefined) {
+      // MAP-13: a best-effort routing hint by definition; no home on this wire, whether or not the server takes marks.
+      adapt("config.cache.key", "dropped", "the Messages API has no cache affinity key (OpenAI's prompt_cache_key); marks on blocks are its mechanism", {
+        asked: cache.key,
+        provider: this.provider,
+      });
+    }
+    if (cache !== undefined && cache.retention === "long" && compat.cacheControl !== "anthropic") {
+      // MAP-13: the TTL rides a cache mark, and this server takes none.
+      adapt("config.cache.retention", "dropped", "this server caches implicitly and has no cache-control TTL", { asked: "long", provider: this.provider });
+    }
     if (useCache && cache) {
-      if (cache.key !== undefined) {
-        // MAP-13: a best-effort routing hint by definition; no home here.
-        adapt("config.cache.key", "dropped", "the Messages API has no cache affinity key (OpenAI's prompt_cache_key); marks on blocks are its mechanism and were placed", {
-          asked: cache.key,
-          provider: this.provider,
-        });
-      }
       if (cache.resource !== undefined) {
         // MAP-13 rule 4(b): the program references a stored object that does not exist on this provider.
         throw new UnsupportedFeatureError("anthropic: cache.resource is not supported — the Messages API has no stored-cache tier; it caches by marks on blocks", {
