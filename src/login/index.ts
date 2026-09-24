@@ -7,7 +7,7 @@
 export { loginProviders, loginMethods, runLogin, runRenewal, renewalDue, loginRequestAuth, loginAdapter, loginBaseUrl, RENEWAL_LEAD_MS } from "./run.ts";
 export type { LoginEnvironment, RunLoginOptions, RunRenewalOptions, LoginAdapterOptions } from "./run.ts";
 export { pathRelay, parseManualReturn, failureSummary, OAUTH_ERROR_CODES } from "./engine.ts";
-export type { RelayConfig, LoginRouting, HttpReply, CallbackReturn, ReturnContext } from "./engine.ts";
+export type { RelayConfig, LoginRouting, HttpReply, CallbackReturn, ReturnContext, ExchangeRecord } from "./engine.ts";
 export { GITHUB_COPILOT_DEFINITION, KIMI_CODE_DEFINITION, DECLARED_LOGIN_PROVIDERS } from "./declared.ts";
 export { ROUTE_DIRECTNESS } from "./profiles.ts";
 export type {

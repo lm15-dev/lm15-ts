@@ -26,7 +26,7 @@ import { adapterFor, adapterForDefinition } from "../providers.ts";
 import type { Transport } from "../transport.ts";
 import { ApiKey, BearerToken } from "../types/credential.ts";
 import { GITHUB_COPILOT_DEFINITION, KIMI_CODE_DEFINITION } from "./declared.ts";
-import { LoginCancelled, LoginContext, LoginDenied, LoginExpired, relayCovers, type LoginRouting, type RelayConfig } from "./engine.ts";
+import { LoginCancelled, LoginContext, LoginDenied, LoginExpired, relayCovers, type ExchangeRecord, type LoginRouting, type RelayConfig } from "./engine.ts";
 import { claudeFlow } from "./flows/claude.ts";
 import { codexFlow } from "./flows/codex.ts";
 import { copilotFlow } from "./flows/copilot.ts";
@@ -133,6 +133,8 @@ export interface RunLoginOptions extends LoginEnvironment {
   readonly allowUnverified?: boolean;
   /** Browser page redirect: the page the provider returns the person to (origin + path). */
   readonly pageReturnUrl?: string;
+  /** Called once per auth exchange with a secret-free record. */
+  readonly onExchange?: (record: ExchangeRecord) => void;
   /** Test seams. */
   readonly fetch?: typeof fetch;
   readonly clock?: () => number;
@@ -149,6 +151,7 @@ function context(provider: string, opts: RunLoginOptions): LoginContext {
     ...(opts.clock ? { clock: opts.clock } : {}),
     ...(opts.wallClock ? { wallClock: opts.wallClock } : {}),
     ...(opts.sleep ? { sleep: opts.sleep } : {}),
+    ...(opts.onExchange ? { onExchange: opts.onExchange } : {}),
   });
 }
 
@@ -246,6 +249,8 @@ export function loginRequestAuth(outcome: LoginOutcome): LoginRequestAuth {
 
 export interface LoginAdapterOptions extends LoginEnvironment {
   readonly transport?: Transport;
+  /** What the adapter will be used for: a model list (`catalog`) or model calls (`inference`, default). Relay consent is per stage. */
+  readonly stage?: "catalog" | "inference";
 }
 
 function build(auth: LoginRequestAuth, baseUrl: string | undefined, transport: Transport | undefined): ProviderLM {
@@ -276,12 +281,13 @@ export function loginBaseUrl(outcome: LoginOutcome): string {
 export function loginAdapter(outcome: LoginOutcome, opts: LoginAdapterOptions = {}): ProviderLM {
   const auth = loginRequestAuth(outcome);
   const route = routing(opts);
+  const stage = opts.stage ?? "inference";
   let baseUrl = loginBaseUrl(outcome);
-  if (route.platform === "browser" && ROUTE_DIRECTNESS[auth.route]?.inference === "relay") {
+  if (route.platform === "browser" && ROUTE_DIRECTNESS[auth.route]?.[stage] === "relay") {
     const host = new URL(baseUrl).host;
-    if (!relayCovers(route, "inference")) {
+    if (!relayCovers(route, stage)) {
       throw new AuthOperationError(
-        `${auth.route}: ${host} does not let a web page read its replies (lm15-contract auth/managed/browser.json); model calls need a relay the person agreed to for inference`,
+        `${auth.route}: ${host} does not let a web page read its replies (lm15-contract auth/managed/browser.json); ${stage === "catalog" ? "model lists" : "model calls"} need a relay the person agreed to for ${stage}`,
         { reason: "method_unavailable", stage: "dispatch", recovery: "choose_method", provider: auth.route, delivery: "not_sent", host },
       );
     }

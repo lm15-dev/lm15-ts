@@ -442,3 +442,23 @@ test("the external Claude Code source renews with the contract's client id (was 
   const { CLAUDE_CODE_CLIENT_ID } = await import("../src/auth/stores.ts");
   assert.equal(CLAUDE_CODE_CLIENT_ID, P["claude-code"].client_id);
 });
+
+test("every exchange is reported once, secret-free: host, path, way, status, OAuth word", async () => {
+  const records: unknown[] = [];
+  const secretBody = { access_token: "SECRET-AT", refresh_token: "SECRET-RT", expires_in: 100 };
+  const outcome: LoginOutcome = { provider: "claude-code", methodId: "browser", material: { type: "oauth", access: "A", refresh: "SECRET-OLD" }, label: "", renewal: "refresh_token", settings: {} };
+  await runRenewal(outcome, { platform: "browser", relay, fetch: fakeFetch(() => json(200, secretBody)).fetch, onExchange: (r) => records.push(r) });
+  await assert.rejects(runRenewal(outcome, { platform: "browser", onExchange: (r) => records.push(r) }));
+  assert.equal(records.length, 2);
+  assert.deepEqual({ ...(records[0] as object), ms: 0 }, { provider: "claude-code", stage: "renewal", method: "POST", host: "platform.claude.com", path: "/v1/oauth/token", via: "https://relay.test", status: 200, responseFormat: "json", oauthError: null, failure: null, ms: 0 });
+  assert.equal((records[1] as { failure: string }).failure, "method_unavailable");
+  assert.ok(!JSON.stringify(records).includes("SECRET"));
+});
+
+test("relay consent is per stage: agreeing to model calls does not cover model lists", () => {
+  const outcome: LoginOutcome = { provider: "openai-codex", methodId: "device", material: { type: "oauth", access: "A", refresh: "R", accountId: "acct" }, label: "", renewal: "refresh_token", settings: {} };
+  const inferenceOnly = pathRelay("https://relay.test", { stages: ["inference"] });
+  assert.equal(loginAdapter(outcome, { platform: "browser", relay: inferenceOnly }).baseUrl, "https://relay.test/chatgpt.com/backend-api/codex");
+  assert.throws(() => loginAdapter(outcome, { platform: "browser", relay: inferenceOnly, stage: "catalog" }), /model lists need a relay/);
+  assert.equal(loginAdapter(outcome, { platform: "native" }).baseUrl, "https://chatgpt.com/backend-api/codex");
+});

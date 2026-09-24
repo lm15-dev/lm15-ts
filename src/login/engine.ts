@@ -119,8 +119,31 @@ export function relayCovers(routing: LoginRouting, stage: RelayStage): boolean {
 
 // ─── The attempt context ─────────────────────────────────────────────
 
+/**
+ * One auth exchange as a diagnostic record: where it went, which way, and what
+ * came back, in AUTH-24's words only. No URL query, no body, no header value:
+ * safe to show, log or paste into a receipt.
+ */
+export interface ExchangeRecord {
+  readonly provider: string;
+  readonly stage: "authorization" | "polling" | "exchange" | "renewal";
+  readonly method: "GET" | "POST";
+  readonly host: string;
+  readonly path: string;
+  /** `direct`, or the relay's origin. */
+  readonly via: string;
+  readonly status: number | null;
+  readonly responseFormat: AuthResponseFormat | null;
+  readonly oauthError: string | null;
+  /** Set when no readable reply came back: the AuthOperationError reason, or `server_error`. */
+  readonly failure: string | null;
+  readonly ms: number;
+}
+
 export interface LoginContextOptions {
   readonly ui: AuthUI;
+  /** Called once per auth exchange with a secret-free record (receipts, diagnostics). */
+  readonly onExchange?: (record: ExchangeRecord) => void;
   readonly provider: string;
   readonly routing: LoginRouting;
   readonly signal?: AbortSignal;
@@ -159,6 +182,7 @@ export class LoginContext {
   readonly wallClock: () => number;
   readonly #fetch: typeof fetch;
   readonly #sleep: (ms: number, signal: AbortSignal) => Promise<void>;
+  readonly onExchange: ((record: ExchangeRecord) => void) | undefined;
   deadline: number;
 
   constructor(opts: LoginContextOptions) {
@@ -170,6 +194,7 @@ export class LoginContext {
     this.wallClock = opts.wallClock ?? (() => Date.now());
     this.#fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.#sleep = opts.sleep ?? defaultSleep;
+    this.onExchange = opts.onExchange;
     this.deadline = this.clock() + (opts.lifetimeMs ?? ATTEMPT_LIFETIME_MS);
   }
 
@@ -310,6 +335,33 @@ function classify(bytes: Uint8Array, contentType: string): { body: JsonObject; f
  * whether the bytes go there directly or through the configured relay.
  */
 export async function authRequest(ctx: LoginContext, profile: RequestProfile, opts: AuthRequestOptions = {}): Promise<HttpReply> {
+  if (!ctx.onExchange) return sendAuthRequest(ctx, profile, opts);
+  const started = ctx.clock();
+  const target = new URL(profile.url);
+  const base = { provider: ctx.provider, stage: opts.stage ?? "exchange", method: profile.method, host: target.host, path: target.pathname } as const;
+  const report = (record: Omit<ExchangeRecord, keyof typeof base | "ms">): void => {
+    try {
+      ctx.onExchange!(Object.freeze({ ...base, ...record, ms: Math.round(ctx.clock() - started) }));
+    } catch {
+      // An observer's failure is not the login's.
+    }
+  };
+  const relayed = ctx.routing.platform === "browser" && profile.browser === "relay" && ctx.routing.relay ? ctx.routing.relay.origin : "direct";
+  try {
+    const reply = await sendAuthRequest(ctx, profile, opts);
+    report({ via: reply.via, status: reply.status, responseFormat: reply.responseFormat, oauthError: reply.oauthError, failure: null });
+    return reply;
+  } catch (error) {
+    if (!(error instanceof LoginCancelled)) {
+      const failure = error instanceof AuthOperationError ? error.reason : error instanceof ServerError ? "server_error" : "error";
+      const status = error instanceof AuthOperationError || error instanceof ServerError ? error.status : null;
+      report({ via: relayed, status, responseFormat: null, oauthError: null, failure });
+    }
+    throw error;
+  }
+}
+
+async function sendAuthRequest(ctx: LoginContext, profile: RequestProfile, opts: AuthRequestOptions): Promise<HttpReply> {
   ctx.check();
   const target = new URL(profile.url);
   if (target.protocol !== "https:") throw new AuthOperationError(`${ctx.provider}: refusing a non-TLS auth endpoint (${target.host})`, { reason: "method_unavailable", stage: "discovery", recovery: "operator_action", provider: ctx.provider });
