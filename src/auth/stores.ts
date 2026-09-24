@@ -21,7 +21,7 @@ import { AuthError, LockTimeoutError, NotConfiguredError, UnsupportedFeatureErro
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import { ApiKey, BearerToken, type CredentialLike, type CredentialValue } from "../types/credential.ts";
 import { decodeJwtPayload, extractChatgptAccountId } from "./jwt.ts";
-import type { LoadedCredential } from "../platform.ts";
+import type { LoadedCredential, StoredCredentialState } from "../platform.ts";
 import { CLAUDE_CODE_LOGIN_HINT, OPENAI_CODEX_LOGIN_HINT, XAI_LOGIN_HINT, type AccessPolicy } from "./policy.ts";
 
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
@@ -596,13 +596,29 @@ export function loadXaiCredential(authPath?: string): LocalOAuthCredential {
 
 /** Offline probe (files only, never the network) for the router's `oauth-unless-explicit` chain. */
 export function usableXaiCredential(authPath?: string): boolean {
-  let credential: LocalOAuthCredential;
-  try {
-    credential = loadXaiCredential(authPath);
-  } catch {
-    return false;
+  return xaiStoredState(authPath) === "usable";
+}
+
+/**
+ * The stored xAI subscription's state, offline (spec/auth.md AUTH-1, ratified R2/R3 2026-09-22):
+ * `usable` (fresh, or expired with a refresh token); `unusable` (expired, no refresh token);
+ * `logged_out` (lm15's non-secret sign-out marker); `absent` (nothing stored).
+ * `unusable` and `logged_out` BLOCK the environment key: a failed subscription is never
+ * silently replaced by a metered key.
+ */
+export function xaiStoredState(authPath?: string): StoredCredentialState {
+  const paths = authPath ? [expandHome(authPath)] : xaiStorePaths();
+  for (const file of paths) {
+    const data = readJsonFileOrUndefined(file);
+    if (!data) continue;
+    const credential = xaiEntryToCredential(data["xai"]);
+    if (credential) return !credential.expired || credential.refreshToken ? "usable" : "unusable";
+    const own = data["_lm15"];
+    const slots = isJsonObject(own) ? own["slots"] : undefined;
+    const slot = isJsonObject(slots) ? slots["xai"] : undefined;
+    if (isJsonObject(slot) && slot["logged_out"]) return "logged_out";
   }
-  return !credential.expired || Boolean(credential.refreshToken);
+  return "absent";
 }
 
 function xaiCredentialFromTokenResponse(payload: JsonObject, previousRefresh?: string): LocalOAuthCredential {
@@ -727,7 +743,7 @@ const LOADERS: Record<string, (credentialsPath?: string) => LoadedCredential> = 
   },
 };
 
-const STORED_PROBES: Record<string, () => boolean> = { xai: () => usableXaiCredential() };
+const STORED_STATES: Record<string, (credentialsPath?: string) => StoredCredentialState> = { xai: (p) => xaiStoredState(p) };
 
 function noCredential(policy: AccessPolicy): NotConfiguredError {
   return new NotConfiguredError(
@@ -751,8 +767,13 @@ export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | un
 
 /** Offline probe for the router's `oauth-unless-explicit` chain. */
 export function hasStoredCredential(policy: AccessPolicy): boolean {
-  const probe = STORED_PROBES[policy.provider];
-  return probe ? probe() : false;
+  return storedCredentialState(policy) === "usable";
+}
+
+/** `usable` | `unusable` | `logged_out` | `absent` for `policy`'s stored login (AUTH-1, R3). Reads files only. */
+export function storedCredentialState(policy: AccessPolicy, credentialsPath?: string): StoredCredentialState {
+  const probe = STORED_STATES[policy.provider];
+  return probe ? probe(credentialsPath) : "absent";
 }
 
 // ─── AUTH-9: the uniform login door ──────────────────────────────────

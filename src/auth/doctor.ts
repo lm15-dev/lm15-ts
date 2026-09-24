@@ -11,7 +11,7 @@ import { endpointFromEnv, renderBaseUrl, resolveSettings } from "../cloud/hosts.
 import { NAMED_RUNGS, namedMeaning, validateNamedCredential } from "../cloud/identity.ts";
 import { looksLikeJwt } from "./jwt.ts";
 import { NotConfiguredError } from "../errors.ts";
-import { getDefaultPlatform, type Env } from "../platform.ts";
+import { getDefaultPlatform, type Env, type StoredCredentialState } from "../platform.ts";
 import { PROVIDERS, canonicalProvider, type ProviderDefinition } from "../registry.ts";
 import { apiKeysSource, routerCanonicalProvider, routerProviderLookup } from "../router.ts";
 import { ApiKey, type CredentialLike, type NamedCredential } from "../types/credential.ts";
@@ -71,6 +71,14 @@ function storeStep(policy: AccessPolicy, opts: { env: Env; credentialsPath: stri
   return { kind: "oauth-file", source: `stored login for ${policy.provider}`, detail: `not available on the ${platform.name} platform`, state: "absent" };
 }
 
+/** The stored login's state (AUTH-1, R3); a platform without `state` falls back to its boolean probe. */
+function storedState(policy: AccessPolicy, credentialsPath: string | undefined): StoredCredentialState {
+  const stored = getDefaultPlatform().storedCredentials;
+  if (!stored) return "absent";
+  if (stored.state) return stored.state(policy, credentialsPath);
+  return stored.has(policy) ? "usable" : "absent";
+}
+
 export interface ExplainAuthOptions {
   /** The complete environment (defaults to the host platform's: `process.env` on Node, empty on the web). */
   readonly env?: Readonly<Record<string, string | undefined>>;
@@ -125,15 +133,24 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
     steps.push({ kind: "api_keys", source: entrySource(canonical, entry), detail: explicitDetail(opts.apiKeys?.[entry], policy), state: "selected" });
     selected = true;
   } else steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "not provided", state: "absent" });
+  // An unusable or signed-out subscription login BLOCKS the env keys (R3, ratified 2026-09-22):
+  // they show as shadowed, and nothing is selected.
+  let blocked = false;
   if (policy.credentialPolicy === "oauth-unless-explicit") {
-    const step = storeStep(policy, { env, credentialsPath: opts.xaiCredentialsPath, shadowed: selected });
+    let step = storeStep(policy, { env, credentialsPath: opts.xaiCredentialsPath, shadowed: selected });
+    const state = storedState(policy, opts.xaiCredentialsPath);
+    if (state === "logged_out" && !selected) {
+      step = { kind: "oauth-file", source: step.source, detail: "signed out (marker present)", state: "absent" };
+      blocked = true;
+    } else if (state === "unusable" && !selected) blocked = true;
     steps.push(step);
     selected = selected || step.state === "selected";
   }
   for (const key of policy.envKeys) {
     if (env[key]) {
-      steps.push({ kind: `env:${key}`, source: `env $${key}`, detail: "set (value never shown)", state: selected ? "shadowed" : "selected" });
-      selected = true;
+      const detail = blocked && !selected ? "set, blocked by the failed/signed-out subscription (pass it explicitly to use it)" : "set (value never shown)";
+      steps.push({ kind: `env:${key}`, source: `env $${key}`, detail, state: selected || blocked ? "shadowed" : "selected" });
+      selected = selected || !blocked;
     } else steps.push({ kind: `env:${key}`, source: `env $${key}`, detail: "not set", state: "absent" });
   }
   if (definition.placeholderKey !== undefined) {

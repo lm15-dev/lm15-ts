@@ -115,3 +115,40 @@ test("end to end through a fake transport: complete, stream (MAP-3/4), and a typ
 function pick(r: { provider: string; model: string; source: string }) {
   return { provider: r.provider, model: r.model, source: r.source };
 }
+
+test("R3: an unusable or signed-out xAI login blocks $XAI_API_KEY; a usable one wins; none leaves the env key", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const SECRET = "SECRET-SENTINEL-DO-NOT-PRINT";
+  const saved = process.env["LM15_CREDENTIALS_PATH"];
+  const savedHome = process.env["HOME"];
+  const dir = mkdtempSync(join(tmpdir(), "lm15-r3-"));
+  const file = join(dir, "credentials.json");
+  process.env["LM15_CREDENTIALS_PATH"] = file;
+  process.env["HOME"] = dir; // no Pi agent store either
+  const router = new LMRouter({ env: { XAI_API_KEY: SECRET } });
+  try {
+    writeFileSync(file, JSON.stringify({ xai: { type: "oauth", access: "a", expires: 1 } }));
+    const expired = (() => { try { router.lm("xai:grok-4"); } catch (e) { return e; } })();
+    assert.ok(expired instanceof MissingCredentialError, String(expired));
+    assert.match(String((expired as Error).message), /expired and cannot be renewed/);
+    assert.match(String((expired as Error).message), /\$XAI_API_KEY is set but is used only when passed explicitly/);
+    assert.ok(!String((expired as Error).message).includes(SECRET));
+
+    writeFileSync(file, JSON.stringify({ _lm15: { slots: { xai: { logged_out: true } } } }));
+    assert.throws(() => router.lm("xai:grok-4"), (e: unknown) => e instanceof MissingCredentialError && /was signed out/.test((e as Error).message));
+
+    // An explicit key is deliberate authority (R2): it still works.
+    assert.ok(new LMRouter({ env: { XAI_API_KEY: SECRET }, apiKeys: { xai: "explicit" } }).lm("xai:grok-4"));
+
+    writeFileSync(file, JSON.stringify({ xai: { type: "oauth", access: "a", refresh: "r", expires: 1 } }));
+    assert.ok(router.lm("xai:grok-4"), "expired with a refresh token is usable");
+
+    writeFileSync(file, JSON.stringify({}));
+    assert.ok(router.lm("xai:grok-4"), "nothing stored: the env key applies");
+  } finally {
+    if (saved === undefined) delete process.env["LM15_CREDENTIALS_PATH"]; else process.env["LM15_CREDENTIALS_PATH"] = saved;
+    if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+  }
+});

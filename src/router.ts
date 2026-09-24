@@ -421,7 +421,24 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
       apiKey = chain.credentialProvider(definition.access, named);
     }
   }
-  if (apiKey === undefined && policy === "oauth-unless-explicit" && getDefaultPlatform().storedCredentials?.has(definition.access)) return adapterForDefinition(definition, options);
+  if (apiKey === undefined && policy === "oauth-unless-explicit") {
+    // A usable stored subscription login outranks ambient env keys: it spends no money per token
+    // (AUTH-1). An unusable or signed-out one BLOCKS them (R3, ratified 2026-09-22): a failed
+    // subscription is never silently replaced by a metered key.
+    const stored = getDefaultPlatform().storedCredentials;
+    const state = stored ? (stored.state ? stored.state(definition.access) : stored.has(definition.access) ? "usable" : "absent") : "absent";
+    if (state === "usable") return adapterForDefinition(definition, options);
+    if (state === "unusable" || state === "logged_out") {
+      const present = definition.access.envKeys.find((key) => env[key]);
+      const what = state === "logged_out" ? "was signed out" : "is expired and cannot be renewed";
+      throw new MissingCredentialError(
+        `the ${JSON.stringify(res.provider)} subscription login ${what}. `
+          + (present ? `$${present} is set but is used only when passed explicitly: ` : "")
+          + `sign in again (${definition.access.loginHint ?? "sign in"}), or pass the key deliberately with { apiKeys: { ${JSON.stringify(res.provider)}: "..." } }.`,
+        { provider: res.provider, envKeys: definition.access.envKeys },
+      );
+    }
+  }
   if (apiKey === undefined) {
     for (const key of definition.access.envKeys) {
       if (env[key]) {

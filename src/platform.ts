@@ -31,12 +31,21 @@ export interface LoadedCredential {
   readonly source: "explicit" | "stored";
 }
 
+/**
+ * A stored subscription login's state for the `oauth-unless-explicit` rung (AUTH-1, R3):
+ * `usable` wins over env keys; `unusable` (expired, no refresh) and `logged_out` block them;
+ * `absent` leaves the ordinary key chain.
+ */
+export type StoredCredentialState = "usable" | "unusable" | "logged_out" | "absent";
+
 /** AUTH-8: logins a CLI stored on this host (Claude Code, Codex, lm15's own store). */
 export interface StoredCredentials {
   /** The stored login for `policy`, re-read per call so rotations are seen. Throws `NotConfiguredError` when there is none. */
   load(policy: AccessPolicy, credentialsPath?: string): LoadedCredential;
   /** Offline probe for the router's `oauth-unless-explicit` rung: is a usable login stored? */
   has(policy: AccessPolicy): boolean;
+  /** The stored login's state; a platform without it is read as `has() ? "usable" : "absent"`. */
+  state?(policy: AccessPolicy, credentialsPath?: string): StoredCredentialState;
   /** The doctor's rung for the store (AUTH-7): where it looked, what it found, never the value. */
   describe(policy: AccessPolicy, opts: { readonly env: Env; readonly credentialsPath?: string | undefined; readonly shadowed: boolean }): ChainStep;
 }

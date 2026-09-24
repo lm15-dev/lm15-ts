@@ -6,7 +6,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { expandHome, hasStoredCredential, loadStoredCredential } from "./auth/stores.ts";
+import { expandHome, hasStoredCredential, loadStoredCredential, storedCredentialState } from "./auth/stores.ts";
 import { describeStoredCredential } from "./auth/stores_doctor.ts";
 import { ChainContext, credentialProvider, explain, profileSettings } from "./cloud/chains.ts";
 import { sign } from "./cloud/sigv4.ts";
@@ -49,7 +49,7 @@ export const nodePlatform: Platform = Object.freeze({
   name: "node",
   env: () => process.env,
   readFile: (path: string) => new Uint8Array(readFileSync(path)),
-  storedCredentials: Object.freeze({ load: loadStoredCredential, has: hasStoredCredential, describe: describeStoredCredential }),
+  storedCredentials: Object.freeze({ load: loadStoredCredential, has: hasStoredCredential, state: storedCredentialState, describe: describeStoredCredential }),
   openCloudChain,
   signSigV4,
   webSocketHeaders: true,

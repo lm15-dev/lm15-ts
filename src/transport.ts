@@ -307,7 +307,8 @@ export class FetchTransport implements Transport {
           void cancelBody(controller.signal.reason).catch(() => {});
         }
         finish();
-        try { reader?.releaseLock(); } catch { /* pending custom read */ }
+        // A released reader can no longer cancel; the scheduled cancellation then goes through the body.
+        try { reader?.releaseLock(); reader = undefined; } catch { /* pending custom read: keep the lock, cancel through it */ }
       }
     }
     return {
