@@ -1,0 +1,12 @@
+# Same as lm15-rs: LLVM's wasm-ld and clang come from nix on whichever machine builds.
+[build]
+target = "wasm32v1-none"
+
+[target.wasm32v1-none]
+linker = "tools/wasm-ld"
+rustflags = ["-C", "linker-flavor=wasm-ld"]
+
+[env]
+# ring compiles a little C for wasm32; the cc crate reads these.
+CC_wasm32v1_none = { value = "tools/clang", relative = true }
+AR_wasm32v1_none = { value = "tools/llvm-ar", relative = true }

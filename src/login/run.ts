@@ -23,7 +23,7 @@ import type { ProviderLM } from "../adapter.ts";
 import { AuthOperationError, NotConfiguredError, ServerError, type AuthOperationStage } from "../errors.ts";
 import { getDefaultPlatform } from "../platform.ts";
 import { adapterFor, adapterForDefinition } from "../providers.ts";
-import type { Transport } from "../transport.ts";
+import { FetchTransport, type Transport } from "../transport.ts";
 import { ApiKey, BearerToken } from "../types/credential.ts";
 import { GITHUB_COPILOT_DEFINITION, KIMI_CODE_DEFINITION } from "./declared.ts";
 import { LoginCancelled, LoginContext, LoginDenied, LoginExpired, relayCovers, type ExchangeRecord, type LoginRouting, type RelayConfig } from "./engine.ts";
@@ -297,7 +297,21 @@ export function loginAdapter(outcome: LoginOutcome, opts: LoginAdapterOptions = 
         { reason: "method_unavailable", stage: "dispatch", recovery: "choose_method", provider: auth.route, delivery: "not_sent", host },
       );
     }
+    if (route.relay!.fetch) {
+      // Encrypted tunnel: the provider's own URL, bytes through the tunnel; the page's Fetch rules do not apply.
+      return build(auth, baseUrl, new FetchTransport({ fetch: route.relay!.fetch, platformDecodedCodings: [] }), outcome);
+    }
     baseUrl = route.relay!.rewrite(new URL(baseUrl)).toString().replace(/\/$/, "");
   }
   return build(auth, baseUrl, opts.transport, outcome);
+}
+
+/** Which way model calls for this login travel here: `direct`, or the relay's origin (and whether it is encrypted). */
+export function loginWay(outcome: LoginOutcome, stage: "catalog" | "inference", env: LoginEnvironment = {}): { via: string; encrypted: boolean } {
+  const route = routing(env);
+  const auth = loginRequestAuth(outcome);
+  if (route.platform === "browser" && ROUTE_DIRECTNESS[auth.route]?.[stage] === "relay" && relayCovers(route, stage)) {
+    return { via: route.relay!.origin, encrypted: route.relay!.encrypted === true };
+  }
+  return { via: "direct", encrypted: false };
 }

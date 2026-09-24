@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# clang without the nix cc-wrapper: the wrapper adds host flags a wasm32 build rejects.
+set -euo pipefail
+exec nix shell nixpkgs#llvmPackages.clang-unwrapped --command clang "$@"

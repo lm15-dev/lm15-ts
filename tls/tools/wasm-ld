@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+command -v wasm-ld >/dev/null 2>&1 && exec wasm-ld "$@"
+exec nix shell nixpkgs#lld --command wasm-ld "$@"

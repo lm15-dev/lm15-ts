@@ -24,6 +24,8 @@ import { AuthOperationError, ServerError, type AuthResponseFormat } from "../err
 import { isJsonObject, parseJsonStrict, type JsonObject } from "../json.ts";
 import { VERSION } from "../version.ts";
 import type { RequestProfile } from "./profiles.ts";
+import type { TlsEngine } from "../tunnel/tls.ts";
+import { tunnelFetch } from "../tunnel/tunnel.ts";
 import type { AuthUI, LoginPlatform, ManualCodePrompt, Notice, Prompt, RelayStage } from "./types.ts";
 
 export const ATTEMPT_LIFETIME_MS = 15 * 60 * 1000; // AUTH-18, R9
@@ -87,6 +89,14 @@ export interface RelayConfig {
   readonly stages: readonly RelayStage[];
   rewrite(url: URL): URL;
   /**
+   * An encrypted tunnel (`tunnelRelay`): requests keep the provider's URL and
+   * go through this fetch, which runs TLS in the page. The relay then sees
+   * only ciphertext, plus which host, when and how much.
+   */
+  readonly fetch?: typeof fetch;
+  /** True for a tunnel: the relay cannot read what it carries. */
+  readonly encrypted?: boolean;
+  /**
    * Header the relay turns into the upstream `User-Agent` (pages cannot send
    * one). Omit if the relay has no such feature; the provider then sees the
    * browser's own.
@@ -105,6 +115,23 @@ export function pathRelay(relayBase: string, options: { stages: readonly RelaySt
     rewrite(url: URL): URL {
       return new URL(`${root}/${url.host}${url.pathname}${url.search}`);
     },
+  });
+}
+
+/**
+ * An encrypted tunnel relay: TLS runs in the page (rustls in WebAssembly,
+ * `TlsEngine`), the tunnel at `url` copies ciphertext to the provider's port
+ * 443. Same stages and consent as a forwarding relay; what the relay can see
+ * differs, and the consent text must say which.
+ */
+export function tunnelRelay(url: string | URL, options: { stages: readonly RelayStage[]; tls: TlsEngine | Promise<TlsEngine>; WebSocket?: typeof WebSocket }): RelayConfig {
+  const base = new URL(String(url));
+  return Object.freeze({
+    origin: base.origin.replace(/^ws/, "http"),
+    stages: Object.freeze([...options.stages]),
+    rewrite: (u: URL) => u,
+    fetch: tunnelFetch({ url: base, tls: options.tls, ...(options.WebSocket ? { WebSocket: options.WebSocket } : {}) }),
+    encrypted: true,
   });
 }
 
@@ -394,7 +421,8 @@ async function sendAuthRequest(ctx: LoginContext, profile: RequestProfile, opts:
     }
     url = ctx.routing.relay!.rewrite(target);
     via = ctx.routing.relay!.origin;
-    if (ctx.routing.relay!.userAgentHeader) headers[ctx.routing.relay!.userAgentHeader] = userAgent;
+    if (ctx.routing.relay!.fetch) headers["User-Agent"] = userAgent; // a tunnel writes the request itself
+    else if (ctx.routing.relay!.userAgentHeader) headers[ctx.routing.relay!.userAgentHeader] = userAgent;
   } else if (!browser) {
     headers["User-Agent"] = userAgent;
   }
@@ -404,7 +432,8 @@ async function sendAuthRequest(ctx: LoginContext, profile: RequestProfile, opts:
   const signal = AbortSignal.any([ctx.signal, timeout]);
   let response: globalThis.Response;
   try {
-    response = await ctx.fetch(url.toString(), {
+    const send = via !== "direct" && ctx.routing.relay?.fetch ? ctx.routing.relay.fetch : ctx.fetch;
+    response = await send(url.toString(), {
       method: profile.method,
       headers,
       ...(body !== undefined ? { body } : {}),

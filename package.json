@@ -46,7 +46,8 @@
   ],
   "scripts": {
     "build": "npm run build:typescript",
-    "build:typescript": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && cp src/auth/native_lock.cjs dist/auth/native_lock.cjs && cp src/auth/native_lock.cjs dist/cjs/auth/native_lock.cjs && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && npm run build:examples",
+    "build:tls": "cd tls && rcargo build --release && mkdir -p ../vendor/tls && cp target/wasm32v1-none/release/lm15_tls.wasm ../vendor/tls/lm15-tls.wasm",
+    "build:typescript": "npm run surface && rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.cjs.json && cp src/auth/native_lock.cjs dist/auth/native_lock.cjs && cp src/auth/native_lock.cjs dist/cjs/auth/native_lock.cjs && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && (test ! -f vendor/tls/lm15-tls.wasm || (mkdir -p dist/tls && cp vendor/tls/lm15-tls.wasm dist/tls/lm15-tls.wasm)) && npm run build:examples",
     "check": "tsc --noEmit && tsc -p tsconfig.examples.json --noEmit",
     "test": "node --experimental-strip-types --experimental-vm-modules --test tests/*.test.ts",
     "vet": "node dist/vet.js",
