@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { gzipSync, deflateSync, deflateRawSync } from "node:zlib";
-import { FetchTransport } from "../src/transport.ts";
+import { BROWSER_NEGOTIATED_CODINGS, FetchTransport, platformNegotiatesCoding } from "../src/transport.ts";
 import { NodeTransport } from "../src/transport_node.ts";
 import { ProtocolError, ProviderError, TransportError } from "../src/errors.ts";
 import { parseProviderJson, stringifyJson } from "../src/json.ts";
@@ -87,6 +87,19 @@ test("Fetch enforces exposed coding policy but NEVER inflates already-decoded by
       assert.equal(cancelled, true);
     } finally { transport.close(); }
   }
+});
+
+test("INV-053 in a browser: br/zstd the platform negotiated itself arrive decoded and are accepted, never decoded again; other codings still refused", async () => {
+  // Node's own Request keeps Accept-Encoding, so this realm is not a browser: the default stays strict.
+  assert.equal(platformNegotiatesCoding(), false);
+  for (const coding of ["br", "zstd", "gzip, br"]) {
+    const transport = new FetchTransport({ platformDecodedCodings: BROWSER_NEGOTIATED_CODINGS, fetch: async () => new Response(body, { headers: { "Content-Encoding": coding } }) });
+    try { assert.deepEqual(Buffer.from(await (await transport.send(wire("https://example.invalid/"))).bytes()), body, coding); }
+    finally { transport.close(); }
+  }
+  const strict = new FetchTransport({ platformDecodedCodings: BROWSER_NEGOTIATED_CODINGS, fetch: async () => new Response(body, { headers: { "Content-Encoding": "snappy" } }) });
+  try { await assert.rejects(strict.send(wire("https://example.invalid/")), ProtocolError); }
+  finally { strict.close(); }
 });
 
 test("Node decodes gzip/x-gzip/wrapped and raw deflate and reversed stacked coding exactly once", async () => {

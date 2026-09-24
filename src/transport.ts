@@ -114,13 +114,36 @@ export class TransportSlots {
   }
 }
 
-/** Validate before a parser sees any body. Decode in reverse order on raw transports. */
-export function contentCodings(headers: ReadonlyArray<readonly [string, string]>): string[] {
+/**
+ * Validate before a parser sees any body. Decode in reverse order on raw transports.
+ * `platformDecoded` names codings the platform itself negotiated and already
+ * decoded (INV-053 amendment 2026-09-24: a browser's Fetch); they are accepted
+ * and never decoded again.
+ */
+export function contentCodings(headers: ReadonlyArray<readonly [string, string]>, platformDecoded: readonly string[] = []): string[] {
   const codings = headers.filter(([k]) => k.toLowerCase() === "content-encoding").flatMap(([, v]) => v.split(",").map(s => s.trim().toLowerCase())).filter(Boolean);
   for (const coding of codings) {
-    if (!["identity", "gzip", "x-gzip", "deflate"].includes(coding)) throw new ProtocolError(`unsupported Content-Encoding: ${JSON.stringify(coding)}`);
+    if (!["identity", "gzip", "x-gzip", "deflate", ...platformDecoded].includes(coding)) throw new ProtocolError(`unsupported Content-Encoding: ${JSON.stringify(coding)}`);
   }
   return codings.filter(c => c !== "identity");
+}
+
+/** The codings a browser's Fetch negotiates on its own and decodes (Fetch Standard, "handle content codings"). */
+export const BROWSER_NEGOTIATED_CODINGS: readonly string[] = Object.freeze(["br", "zstd"]);
+
+/**
+ * Whether this platform's Fetch refuses to let a caller set Accept-Encoding
+ * (a forbidden request header in browsers). Where it does, the platform
+ * advertises its own codings and decodes what it negotiated; `identity`
+ * cannot be asked for. A feature test, not a guess from the realm's name:
+ * Node's fetch keeps the header, a browser's drops it.
+ */
+export function platformNegotiatesCoding(): boolean {
+  try {
+    return !new Request("https://lm15.invalid/", { headers: { "accept-encoding": "identity" } }).headers.has("accept-encoding");
+  } catch {
+    return false;
+  }
 }
 
 export interface FetchTransportOptions extends TransportBudgetOptions {
@@ -134,13 +157,21 @@ export interface FetchTransportOptions extends TransportBudgetOptions {
   readonly readTimeoutMs?: number;
   /** LOCAL admission wait only, NOT the browser's hidden socket-pool timeout. */
   readonly poolTimeoutMs?: number;
+  /**
+   * Codings the platform negotiates and decodes itself, accepted on a reply
+   * (INV-053 amendment 2026-09-24). Default: `br` and `zstd` where the platform
+   * forbids setting Accept-Encoding (every browser), none elsewhere.
+   */
+  readonly platformDecodedCodings?: readonly string[];
 }
 
 /**
  * Fetch already inflates response bodies: never decompress them a second time.
- * Exposed Content-Encoding headers are checked, including br/zstd refusal.
- * CORS can hide that header; the browser may alter Accept-Encoding or reject
- * corrupt compression before exposing a response. Those runtime limitations
+ * Exposed Content-Encoding headers are checked: br/zstd are refused where the
+ * transport could ask for identity (Node's fetch), and accepted where the
+ * platform forbids that and decodes them itself (a browser; INV-053 amendment
+ * 2026-09-24). CORS can hide that header; the browser may reject corrupt
+ * compression before exposing a response. Those runtime limitations
  * cannot be repaired by decoding already-decoded bytes. Native NodeTransport
  * provides raw HTTP coding and independent phase control instead.
  *
@@ -154,6 +185,7 @@ export class FetchTransport implements Transport {
   private readonly readTimeoutMs: number;
   private readonly poolTimeoutMs: number;
   private readonly slots: TransportSlots;
+  private readonly platformDecoded: readonly string[];
   private readonly controllers = new Set<AbortController>();
   private closed = false;
 
@@ -170,6 +202,7 @@ export class FetchTransport implements Transport {
     this.readTimeoutMs = positiveTimeout(opts.readTimeoutMs, "readTimeoutMs") ?? timeouts.read * 1000;
     this.poolTimeoutMs = positiveTimeout(opts.poolTimeoutMs, "poolTimeoutMs") ?? timeouts.pool * 1000;
     this.slots = new TransportSlots(opts.maxConnections);
+    this.platformDecoded = Object.freeze([...(opts.platformDecodedCodings ?? (platformNegotiatesCoding() ? BROWSER_NEGOTIATED_CODINGS : []))]);
   }
 
   close(): void {
@@ -228,7 +261,7 @@ export class FetchTransport implements Transport {
     const pairs: Array<[string, string]> = [];
     res.headers.forEach((v, k) => pairs.push([k, v]));
     try {
-      if (request.method.toUpperCase() !== "HEAD" && res.status !== 204 && res.status !== 304) contentCodings(pairs);
+      if (request.method.toUpperCase() !== "HEAD" && res.status !== 204 && res.status !== 304) contentCodings(pairs, this.platformDecoded);
     }
     catch (cause) {
       controller.abort(cause);

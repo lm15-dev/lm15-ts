@@ -244,7 +244,7 @@ export { explainAuth, describeReport } from "./auth/doctor.ts";
 export type { AuthReport, AuthStep, ExplainAuthOptions } from "./auth/doctor.ts";
 
 // Transport
-export { FetchTransport, Timeouts, createTransport } from "./transport.ts";
+export { FetchTransport, Timeouts, createTransport, BROWSER_NEGOTIATED_CODINGS, platformNegotiatesCoding } from "./transport.ts";
 export type { Transport, TransportResponse, FetchTransportOptions, TransportBudgetOptions, TimeoutValues } from "./transport.ts";
 export { HttpResponse } from "./wire.ts";
 export type { TransportRequest } from "./wire.ts";
