@@ -233,6 +233,31 @@ export function checkToolResultMedia(provider: string, part: ToolResultPart, pol
   }
 }
 
+// MAP-10 for message parts: the cells where a dialect has no slot at all. Found 2026-09-24
+// (lm15-contract changes/2026-09-24-message-media.md): the builders turned such a part into an
+// empty text block or dropped it, silently. lm15-rs refused; this is the same preflight.
+const NO_MESSAGE_SLOT: Readonly<Record<string, (role: string, kind: string) => boolean>> = Object.freeze({
+  // The Messages API has image and document blocks only, in either role.
+  anthropic: (_role: string, kind: string) => kind === "audio" || kind === "video" || kind === "binary",
+  // Assistant content is output text (and refusals) on both OpenAI wires.
+  openai: (role: string) => role === "assistant",
+  openai_chat: (role: string) => role === "assistant",
+});
+
+/** Raise before any wire when a message holds a media part this dialect has no slot for in that role (MAP-10). */
+export function checkMessageMedia(messages: readonly Message[], dialect: string, provider: string): void {
+  const gap = NO_MESSAGE_SLOT[dialect];
+  if (!gap) return;
+  messages.forEach((message, i) => message.parts.forEach((part, j) => {
+    if (MEDIA_KINDS.has(part.type) && gap(message.role, part.type)) {
+      throw new UnsupportedFeatureError(
+        `${provider}: messages[${i}].parts[${j}]: the program depends on this ${message.role} ${part.type} part; no native ${dialect} content slot carries it (MAP-10)`,
+        { provider, feature: `messages[${i}].parts[${j}]` },
+      );
+    }
+  }));
+}
+
 /** MAP-10 rule 5 on wires with no error flag: the text carries it. */
 export function toolResultErrorText(part: ToolResultPart, text: string): string {
   return part.isError ? `[error] ${text}` : text;

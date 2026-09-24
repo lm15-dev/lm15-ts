@@ -74,6 +74,7 @@ import {
   unnamedToolCallError,
   readFileBytes,
   type TransportRequest,
+  checkMessageMedia,
 } from "../wire.ts";
 import { decodeBase64 } from "../types/validate.ts";
 import {
@@ -344,6 +345,7 @@ export class OpenAILM extends ProviderLM {
   }
 
   payload(request: Request, stream: boolean): JsonObject {
+    checkMessageMedia(request.messages, "openai", this.provider);
     const compat = this.compat(request);
     const config = request.config ?? {};
     const input = this.buildInput(request.messages, compat, cacheBreakpointIndex(request, compat.cacheControl));

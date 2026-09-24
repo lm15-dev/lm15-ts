@@ -204,6 +204,11 @@ export function cacheCommonPayload(request: Request, payload: JsonObject, cacheC
   const cache = request.config?.cache;
   if (!cache) return;
   if (cacheControl !== "openai" && cacheControl !== "openai_implicit") {
+    // MAP-6 rule 7: a stored-cache resource where there is no such tier RAISES; dropping it would
+    // send the request without the prompt prefix it holds (MAP-13: refuse when a guess could hurt).
+    if (cache.resource !== undefined) {
+      throw new UnsupportedFeatureError(`${provider}: cache.resource is not supported — this provider has no stored-cache tier; sending without it would drop the prompt prefix the resource holds`, { provider, feature: "config.cache.resource" });
+    }
     // MAP-13: the key and the lifetime have no home on a server without OpenAI's cache fields.
     if (cache.key !== undefined) adapt("config.cache.key", "dropped", "this server has no cache affinity field; implicit caching still applies", { asked: cache.key, provider });
     if (cache.retention === "long") adapt("config.cache.retention", "dropped", "this server has no in-request cache lifetime knob; implicit caching still applies", { asked: "long", provider });

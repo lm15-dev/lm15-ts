@@ -55,6 +55,7 @@ import {
   readFileBytes,
   unnamedToolCallError,
   type TransportRequest,
+  checkMessageMedia,
 } from "../wire.ts";
 import { batchEntryRequest, optionalWireFloat, wireFloat } from "./openai_responses.ts";
 import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, type Unmapped } from "./openai_shared.ts";
@@ -363,6 +364,7 @@ export class AnthropicLM extends ProviderLM {
   }
 
   payload(request: Request, stream: boolean): JsonObject {
+    checkMessageMedia(request.messages, "anthropic", this.provider);
     const compat = this.resolvedCompat;
     const config = request.config ?? {};
     if (compat.modelPrefixes && !compat.modelPrefixes.some((p) => request.model.startsWith(p))) {
@@ -386,6 +388,10 @@ export class AnthropicLM extends ProviderLM {
     if (cache !== undefined && cache.retention === "long" && compat.cacheControl !== "anthropic") {
       // MAP-13: the TTL rides a cache mark, and this server takes none.
       adapt("config.cache.retention", "dropped", "this server caches implicitly and has no cache-control TTL", { asked: "long", provider: this.provider });
+    }
+    if (!useCache && cache?.resource !== undefined) {
+      // MAP-6 rule 7 on a server without marks (e.g. meta-anthropic): the same refusal; dropping it would lose the prefix it holds.
+      throw new UnsupportedFeatureError(`${this.provider}: cache.resource is not supported — this server has no stored-cache tier and no cache marks; sending without it would drop the prompt prefix the resource holds`, { provider: this.provider, feature: "config.cache.resource" });
     }
     if (useCache && cache) {
       if (cache.resource !== undefined) {

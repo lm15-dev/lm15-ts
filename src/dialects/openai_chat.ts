@@ -91,6 +91,7 @@ import {
   toolResultErrorText,
   unnamedToolCallError,
   type TransportRequest,
+  checkMessageMedia,
 } from "../wire.ts";
 import { wireFloat } from "./openai_responses.ts";
 import {
@@ -360,6 +361,7 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   payload(request: Request, stream: boolean): JsonObject {
+    checkMessageMedia(request.messages, "openai_chat", this.provider);
     const compat = this.compatFor(request.model);
     const config = request.config ?? {};
     // Streaming uses generated JSON, never the non-streamable trie driver.
