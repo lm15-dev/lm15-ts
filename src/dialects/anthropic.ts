@@ -30,6 +30,7 @@ import {
   UnsupportedModelError,
   canonicalErrorCode,
   mapHttpError,
+  isPinnedModelNotFound,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
@@ -225,7 +226,7 @@ export class AnthropicLM extends ProviderLM {
   protected errorDetail(providerCode: string, message: string): ErrorDetail {
     let cls: typeof ProviderError = ERROR_TYPE_MAP[providerCode] ?? ProviderError;
     if (isContextLengthMessage(message)) cls = ContextLengthError;
-    else if (providerCode === "not_found_error" && isModelError(message)) cls = UnsupportedModelError;
+    else if ((providerCode === "not_found_error" && isModelError(message)) || isPinnedModelNotFound(providerCode, message)) cls = UnsupportedModelError; // MAP-15
     return ErrorDetail.create({ code: canonicalErrorCode(cls), message: message || providerCode || "provider error", providerCode: providerCode || "provider" });
   }
 
@@ -242,7 +243,7 @@ export class AnthropicLM extends ProviderLM {
       requestId = isJsonObject(data) ? str(data["request_id"]) : "";
       const meta = { status, providerCode: errType || null, requestId: requestId || null };
       if (isContextLengthMessage(msg)) return this.providerError(ContextLengthError, msg, meta);
-      if (errType === "DeploymentNotFound" || ((errType === "not_found_error" || errType === "resource_not_found_error") && isModelError(msg))) {
+      if (errType === "DeploymentNotFound" || ((errType === "not_found_error" || errType === "resource_not_found_error") && isModelError(msg)) || isPinnedModelNotFound(errType, msg)) { // MAP-15
         return this.providerError(UnsupportedModelError, msg, { ...meta, providerCode: errType });
       }
       const cls = ERROR_TYPE_MAP[errType];

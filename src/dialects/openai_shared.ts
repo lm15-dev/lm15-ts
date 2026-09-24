@@ -18,6 +18,7 @@ import {
   UnsupportedFeatureError,
   UnsupportedModelError,
   canonicalErrorCode,
+  isPinnedModelNotFound,
 } from "../errors.ts";
 import type { Request, ResponseFormat } from "../types/config.ts";
 import type { Message, Part, ToolResultPart } from "../types/parts.ts";
@@ -76,7 +77,7 @@ export function isModelError(message: string, ...codes: string[]): boolean {
 }
 
 export function errorDetail(providerCode: string, message: string): ErrorDetail {
-  const cls = STREAM_ERROR_CODE_MAP[providerCode] ?? ProviderError;
+  const cls = isPinnedModelNotFound(providerCode, message) ? UnsupportedModelError : STREAM_ERROR_CODE_MAP[providerCode] ?? ProviderError; // MAP-15
   return ErrorDetail.create({
     code: canonicalErrorCode(cls),
     message: message || providerCode || "provider error",

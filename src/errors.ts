@@ -588,3 +588,29 @@ export function errorClassForCode(code: string): typeof LM15Error {
   for (const [cls, c] of CLASS_TO_CODE) if (c === code) return cls;
   return ProviderError;
 }
+
+/**
+ * MAP-15: the pinned forms of a provider's "no such model" answer that carry no
+ * model-specific code and no not-found class (lm15-contract
+ * spec/model-not-found.json, carried verbatim; each form has a live receipt).
+ */
+export const MODEL_NOT_FOUND_FORMS: readonly { code: string; prefix?: string; contains?: string; suffix?: string }[] = Object.freeze([
+  { code: "not_found_error", prefix: "model: " }, // Anthropic, Claude Code
+  { code: "invalid_request_error", contains: "The supported API model names are " }, // DeepSeek
+  { code: "1211" }, // Z.AI: Unknown Model
+  { code: "1214", prefix: "modelCode: " }, // Z.AI: the model field is invalid
+  { code: "400", suffix: " is not a valid model ID" }, // OpenRouter
+  { code: "invalid-argument", prefix: "Model not found: " }, // xAI (2026-09-01)
+  { code: "validation_error", contains: "The provided model identifier is invalid" }, // Bedrock Chat
+]);
+
+/** True when the error is one of the pinned MAP-15 forms: exact code, and every text test the form gives. */
+export function isPinnedModelNotFound(providerCode: string | null | undefined, message: string | null | undefined): boolean {
+  if (!providerCode) return false;
+  const text = message ?? "";
+  return MODEL_NOT_FOUND_FORMS.some((f) =>
+    f.code === providerCode &&
+    (f.prefix === undefined || text.startsWith(f.prefix)) &&
+    (f.contains === undefined || text.includes(f.contains)) &&
+    (f.suffix === undefined || text.endsWith(f.suffix)));
+}

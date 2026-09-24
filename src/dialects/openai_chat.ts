@@ -29,6 +29,7 @@ import {
   UnsupportedFeatureError,
   UnsupportedModelError,
   mapHttpError,
+  isPinnedModelNotFound,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import { materializeResponseAsync, type SSEEvent } from "../stream.ts";
@@ -218,7 +219,7 @@ export class OpenAIChatLM extends ProviderLM {
       const errType = isJsonObject(err) ? str(e["type"]) : "";
       providerCode = code || errType || null;
       if (code === "context_length_exceeded") return this.providerError(ContextLengthError, msg, { status, providerCode });
-      if (MODEL_ERROR_CODES.has(code) || (status === 404 && isModelError(msg, code, errType))) {
+      if (MODEL_ERROR_CODES.has(code) || (status === 404 && isModelError(msg, code, errType)) || isPinnedModelNotFound(providerCode, msg)) { // MAP-15
         return this.providerError(UnsupportedModelError, msg, { status, providerCode });
       }
       if (code === "insufficient_quota" || code === "1113" || errType === "insufficient_quota" || errType === "exceeded_current_quota_error") {
