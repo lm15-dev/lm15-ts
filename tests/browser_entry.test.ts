@@ -69,7 +69,8 @@ function auditRuntimeGraph(entry: string): { files: string[]; findings: Finding[
     };
     visit(source);
   }
-  return { files: [...seen].map((f) => f.slice(root.length + 1)).sort(), findings };
+  // Repository-relative, with "/" on every OS (Windows paths use "\\").
+  return { files: [...seen].map((f) => f.slice(root.length + 1).replaceAll("\\", "/")).sort(), findings };
 }
 
 /** An identifier that reads a global: not a property name, a declaration, a type, or a `typeof x` guard. */

@@ -138,7 +138,17 @@ test("Windows prefix/case/separator aliases share a missing leaf lock before and
   const unicodeFile = path.join(real, "ΟΣ.json");
   fs.writeFileSync(unicodeFile, "{}");
   assert.equal(key(path.join(real, "οσ.json")), key(unicodeFile));
-  assert.equal(key(path.join(real, "ος.json")), key(unicodeFile));
+  // Final sigma: whether the volume's upcase table folds "ς" to "Σ" varies (the
+  // GitHub Windows runner's NTFS does not: "ος.json" is another, missing file
+  // there). The safety property is never a DIFFERENT lock for what may be the
+  // same file: the same lock, or a refusal (a missing non-ASCII name).
+  let other: string | undefined;
+  try {
+    other = key(path.join(real, "ος.json"));
+  } catch (error) {
+    assert.ok(error instanceof TypeError, String(error));
+  }
+  if (other !== undefined) assert.equal(other, key(unicodeFile));
 });
 
 test("Windows ambiguous missing names and unsupported namespaces fail closed", { skip: process.platform !== "win32" }, (t) => {

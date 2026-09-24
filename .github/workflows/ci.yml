@@ -34,6 +34,34 @@ jobs:
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
+      # macOS and Windows lock stored credentials through the native addon
+      # (docs/credential-locking.md); the portable-lock tests deliberately do
+      # not skip without it, so build it here, from the Node headers of the
+      # running Node.
+      - name: Build the native kernel-lock addon (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          V=$(node -p process.version); ARCH=$(node -p process.arch)
+          curl -fsSL "https://nodejs.org/dist/$V/node-$V-headers.tar.gz" | tar xz -C "$RUNNER_TEMP"
+          cc -std=c11 -O2 -Wall -Wextra -bundle -undefined dynamic_lookup -I "$RUNNER_TEMP/node-$V/include/node" \
+            native/credential_lock.c -o "native/credential_lock-darwin-$ARCH.node"
+      - name: Build the native kernel-lock addon (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $v = node -p process.version; $arch = node -p process.arch
+          Invoke-WebRequest "https://nodejs.org/dist/$v/node-$v-headers.tar.gz" -OutFile "$env:RUNNER_TEMP\headers.tgz"
+          tar -xzf "$env:RUNNER_TEMP\headers.tgz" -C "$env:RUNNER_TEMP"
+          Invoke-WebRequest "https://nodejs.org/dist/$v/win-$arch/node.lib" -OutFile "$env:RUNNER_TEMP\node.lib"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $bat = "$env:RUNNER_TEMP\build-lock.bat"
+          Set-Content $bat @(
+            "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`"",
+            "cl /nologo /LD /MD /std:c11 /O2 /W4 /I `"$env:RUNNER_TEMP\node-$v\include\node`" native\credential_lock.c `"$env:RUNNER_TEMP\node.lib`" /link /OUT:native\credential_lock-win32-$arch.node"
+          )
+          cmd /c $bat
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "native\credential_lock-win32-$arch.node")) { exit 1 }
       # Build first: the examples import the package by name (lm15/browser),
       # which resolves to the built dist/.
       - run: npm run build
