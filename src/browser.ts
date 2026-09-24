@@ -186,8 +186,19 @@ export {
   canonicalErrorCode,
   errorClassForCode,
   mapHttpError,
+  AuthOperationError,
+  AUTH_OPERATION_REASONS,
+  AUTH_OPERATION_STAGES,
+  AUTH_OPERATION_RECOVERIES,
+  AUTH_COMMIT_STATES,
 } from "./errors.ts";
-export type { ErrorMetadata, CapabilityMetadata, CollectionLimitMetadata, RateLimitHeaders } from "./errors.ts";
+export type {
+  ErrorMetadata, CapabilityMetadata, CollectionLimitMetadata, RateLimitHeaders,
+  AuthOperationMetadata, AuthOperationReason, AuthOperationStage, AuthOperationRecovery, AuthCommitState, AuthResponseFormat,
+} from "./errors.ts";
+
+// Managed login, the mechanics (AUTH-12–26); browser-safe
+export * from "./login/index.ts";
 
 // Providers, direct
 export { OpenAILM, OpenAICodexLM } from "./dialects/openai_responses.ts";

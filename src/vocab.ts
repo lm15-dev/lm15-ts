@@ -47,6 +47,7 @@ export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
 
 export const ERROR_CODES = [
   "auth",
+  "auth_operation",
   "billing",
   "rate_limit",
   "invalid_request",

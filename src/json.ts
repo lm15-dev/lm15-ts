@@ -154,6 +154,16 @@ export function parseJson(text: string): JsonValue {
   return new Parser(text).parseDocument();
 }
 
+/**
+ * Parse JSON the strict way AUTH-25 asks of private-store and auth-response
+ * JSON: a duplicate member name is an error (JSON.parse silently keeps the
+ * last one, which a later check can no longer see). Numbers keep their
+ * lexemes as in `parseJson`; JSON has no non-finite numbers to refuse.
+ */
+export function parseJsonStrict(text: string): JsonValue {
+  return new Parser(text, true).parseDocument();
+}
+
 /** Parse JSON text that must be an object. */
 export function parseJsonObject(text: string): JsonObject {
   const value = parseJson(text);
@@ -213,8 +223,11 @@ class Parser {
 
   private readonly text: string;
 
-  constructor(text: string) {
+  private readonly rejectDuplicates: boolean;
+
+  constructor(text: string, rejectDuplicates = false) {
     this.text = text;
+    this.rejectDuplicates = rejectDuplicates;
   }
 
   parseDocument(): JsonValue {
@@ -331,6 +344,7 @@ class Parser {
       if (this.text[this.pos++] !== ":") this.fail("expected :");
       this.skipWs();
       const value = this.parseValue();
+      if (this.rejectDuplicates && Object.prototype.hasOwnProperty.call(out, key)) this.fail("duplicate member name");
       if (key === "__proto__") {
         Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
       } else {

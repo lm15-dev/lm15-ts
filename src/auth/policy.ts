@@ -352,6 +352,31 @@ export const OPENROUTER = policy({
   baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["openrouter"],
 });
 
+/**
+ * Routes that exist only for a managed login (lm15-contract auth/managed/profiles.json
+ * `route_status`: declared provider, no contract wire receipt). Key-based policies
+ * so a declaration can bind them; the credential is the login's token.
+ */
+export const KIMI_CODE = policy({
+  provider: "kimi-code",
+  authModes: ["bearer"],
+  authScheme: ["bearer"],
+  baseUrl: "https://api.kimi.com/coding",
+});
+
+export const GITHUB_COPILOT = policy({
+  provider: "github-copilot",
+  supports: supports({ models: true }),
+  authModes: ["bearer"],
+  headers: [
+    ["User-Agent", "GitHubCopilotChat/0.35.0"],
+    ["Editor-Version", "vscode/1.107.0"],
+    ["Editor-Plugin-Version", "copilot-chat/0.35.0"],
+    ["Copilot-Integration-Id", "vscode-chat"],
+  ],
+  baseUrl: "https://api.individual.githubcopilot.com",
+});
+
 export const DEEPSEEK = policy({
   provider: "deepseek",
   supports: supports({ models: true }),

@@ -26,7 +26,7 @@ import { CLAUDE_CODE_LOGIN_HINT, OPENAI_CODEX_LOGIN_HINT, XAI_LOGIN_HINT, type A
 
 const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
-export const CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d5-88ed-5944d1962f5e";
+export const CLAUDE_CODE_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 export const CLAUDE_CODE_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
 export const OPENAI_CODEX_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const OPENAI_CODEX_TOKEN_URL = "https://auth.openai.com/oauth/token";

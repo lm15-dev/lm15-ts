@@ -106,6 +106,95 @@ export class LockTimeoutError extends LM15Error {
   }
 }
 
+// ─── Managed authentication (AUTH-24) ───────────────────────────────
+
+/** The closed reasons a managed-auth lifecycle operation fails with (AUTH-24). None is a provider 401; none is automatically retryable. */
+export const AUTH_OPERATION_REASONS = [
+  "interaction_required", "method_unavailable", "connection_exists", "login_in_progress", "login_required",
+  "connection_changed", "login_denied", "login_expired", "invalid_login_state", "attempt_unavailable",
+  "indeterminate", "storage_unavailable", "unsupported_store_version", "selection_mismatch", "credential_rejected",
+] as const;
+export type AuthOperationReason = (typeof AUTH_OPERATION_REASONS)[number];
+
+export const AUTH_OPERATION_STAGES = [
+  "discovery", "reservation", "interaction", "authorization", "polling", "exchange",
+  "persistence", "resolution", "renewal", "verification", "catalog", "dispatch",
+] as const;
+export type AuthOperationStage = (typeof AUTH_OPERATION_STAGES)[number];
+
+export const AUTH_OPERATION_RECOVERIES = [
+  "provide_input", "choose_method", "resume_attempt", "inspect_attempt", "restart_login",
+  "select_connection", "repair_storage", "operator_action", "none",
+] as const;
+export type AuthOperationRecovery = (typeof AUTH_OPERATION_RECOVERIES)[number];
+
+export const AUTH_COMMIT_STATES = ["not_committed", "committed", "unknown"] as const;
+export type AuthCommitState = (typeof AUTH_COMMIT_STATES)[number];
+
+/** AUTH-24 diagnostics: the response-format category of a failed auth exchange; never its text. */
+export type AuthResponseFormat = "json" | "invalid_json" | "html" | "text_or_binary" | "empty" | "unknown";
+
+export interface AuthOperationMetadata extends ErrorMetadata {
+  readonly reason: AuthOperationReason;
+  readonly stage?: AuthOperationStage;
+  readonly commitState?: AuthCommitState;
+  readonly recovery?: AuthOperationRecovery;
+  readonly operation?: string | null;
+  readonly connectionId?: string | null;
+  readonly attemptId?: string | null;
+  readonly methodId?: string | null;
+  readonly responseFormat?: AuthResponseFormat | null;
+  readonly securityChallenge?: boolean;
+  /**
+   * Whether the failed request reached the provider: `not_sent` only when the
+   * SDK refused before sending; `unknown` when a network failure hid it (a
+   * page cannot tell a CORS refusal from a dropped connection).
+   */
+  readonly delivery?: "not_sent" | "unknown" | null;
+  /** The host a transport failure was addressed to; never a URL with a query. */
+  readonly host?: string | null;
+}
+
+/**
+ * A managed-auth lifecycle operation failed locally (AUTH-24). Root-level,
+ * beside TransportError: nothing here is a provider HTTP reply, and nothing
+ * here is safe to retry blindly. Programs match on `reason`; `commitState`
+ * says whether the store changed; `recovery` is guidance, never an
+ * instruction to retry. Provider text is never copied into it (AUTH-21).
+ */
+export class AuthOperationError extends LM15Error {
+  static override readonly defaultCode: ErrorCode = "auth_operation";
+  readonly reason: AuthOperationReason;
+  readonly stage: AuthOperationStage;
+  readonly commitState: AuthCommitState;
+  readonly recovery: AuthOperationRecovery;
+  readonly operation: string | null;
+  readonly connectionId: string | null;
+  readonly attemptId: string | null;
+  readonly methodId: string | null;
+  readonly responseFormat: AuthResponseFormat | null;
+  readonly securityChallenge: boolean;
+  readonly delivery: "not_sent" | "unknown" | null;
+  readonly host: string | null;
+
+  constructor(message: string, meta: AuthOperationMetadata) {
+    if (!(AUTH_OPERATION_REASONS as readonly string[]).includes(meta.reason)) throw new TypeError(`AuthOperationError: unknown reason ${JSON.stringify(meta.reason)}`);
+    super(message, meta);
+    this.reason = meta.reason;
+    this.stage = meta.stage ?? "resolution";
+    this.commitState = meta.commitState ?? "not_committed";
+    this.recovery = meta.recovery ?? "none";
+    this.operation = meta.operation ?? null;
+    this.connectionId = meta.connectionId ?? null;
+    this.attemptId = meta.attemptId ?? null;
+    this.methodId = meta.methodId ?? null;
+    this.responseFormat = meta.responseFormat ?? null;
+    this.securityChallenge = meta.securityChallenge ?? false;
+    this.delivery = meta.delivery ?? null;
+    this.host = meta.host ?? null;
+  }
+}
+
 export interface StreamAssemblyMetadata extends ErrorMetadata {
   readonly partial?: Response | null;
   readonly partIndex?: number | null;
@@ -481,6 +570,7 @@ const CLASS_TO_CODE: ReadonlyArray<readonly [typeof LM15Error, ErrorCode]> = [
   [AmbiguousModelError, "ambiguous_model"],
   [TransportError, "transport"],
   [LockTimeoutError, "lock_timeout"],
+  [AuthOperationError, "auth_operation"],
   [StreamAssemblyError, "stream_assembly"],
   [CollectionLimitError, "collection_limit"],
   [ProviderError, "provider"],
