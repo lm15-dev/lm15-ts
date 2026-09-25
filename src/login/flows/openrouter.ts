@@ -13,7 +13,7 @@
  */
 
 import { pkceChallenge } from "../../auth/pkce.ts";
-import { authRequest, awaitReturn, LoginDenied, randomBase64Url, type LoginContext } from "../engine.ts";
+import { authRequest, awaitReturn, LoginDenied, openListener, randomBase64Url, type LoginContext } from "../engine.ts";
 import { OPENROUTER } from "../profiles.ts";
 import type { LoginMaterial } from "../types.ts";
 import { str, type FlowDescriptor, type FlowResult, type LoginInputs, type ProviderFlow } from "./base.ts";
@@ -28,6 +28,14 @@ const DESCRIPTOR: FlowDescriptor = {
   }],
 };
 
+function authorizeUrl(callback: string, challenge: string): string {
+  const url = new URL(OPENROUTER.authorizeUrl);
+  url.searchParams.set("callback_url", callback);
+  url.searchParams.set("code_challenge", challenge);
+  url.searchParams.set("code_challenge_method", "S256");
+  return url.toString();
+}
+
 export const openrouterFlow: ProviderFlow = {
   descriptor: DESCRIPTOR,
 
@@ -35,24 +43,34 @@ export const openrouterFlow: ProviderFlow = {
 
   async login(ctx: LoginContext, methodId: string, inputs: LoginInputs): Promise<FlowResult> {
     if (methodId !== "browser") throw new TypeError(methodId);
-    if (!inputs.pageReturnUrl) {
-      throw new LoginDenied("OpenRouter sign-in in this build needs a page to return to (pageReturnUrl); the native listener comes with the managed Auth port");
-    }
-    const base = new URL(inputs.pageReturnUrl);
-    base.search = "";
-    base.hash = "";
     const verifier = randomBase64Url(OPENROUTER.verifierBytes);
     const challenge = await pkceChallenge(verifier);
-    const callback = base.toString();
-    const url = new URL(OPENROUTER.authorizeUrl);
-    url.searchParams.set("callback_url", callback);
-    url.searchParams.set("code_challenge", challenge);
-    url.searchParams.set("code_challenge_method", "S256");
-    ctx.notify({ type: "auth_url", url: url.toString(), instructions: "Sign in to OpenRouter and approve the key. You are sent back to this page; if not, paste the address of the page you land on." });
-    const returned = await awaitReturn(ctx, {
-      type: "manual_code", fieldId: "return", label: "Paste the address OpenRouter sent you back to", accepted: "the full return URL",
-      pageReturn: { url: callback },
-    }, { expectedState: null, allowBareCode: false, registeredUri: callback, trailingSlashOptional: true });
+    let returned;
+    if (inputs.pageReturnUrl) {
+      // A web page is the redirect target itself.
+      const base = new URL(inputs.pageReturnUrl);
+      base.search = "";
+      base.hash = "";
+      const callback = base.toString();
+      ctx.notify({ type: "auth_url", url: authorizeUrl(callback, challenge), instructions: "Sign in to OpenRouter and approve the key. You are sent back to this page; if not, paste the address of the page you land on." });
+      returned = await awaitReturn(ctx, {
+        type: "manual_code", fieldId: "return", label: "Paste the address OpenRouter sent you back to", accepted: "the full return URL",
+        pageReturn: { url: callback },
+      }, { expectedState: null, allowBareCode: false, registeredUri: callback, trailingSlashOptional: true });
+    } else {
+      // Native: a one-shot listener on an ephemeral port with a random path. No state in OpenRouter's
+      // protocol: the one-time random path plus PKCE is the evidenced equivalent binding (AUTH-18).
+      const path = `/oauth/callback/${randomBase64Url(24)}`;
+      const listener = await openListener(ctx, { path, expectedState: null, port: 0 }, true);
+      try {
+        ctx.notify({ type: "auth_url", url: authorizeUrl(listener!.redirectUri, challenge), instructions: "Sign in to OpenRouter in your browser and approve the key. If the browser is on another machine, paste the final redirect URL back here." });
+        returned = await awaitReturn(ctx, {
+          type: "manual_code", fieldId: "return", label: "Paste the redirect URL or code here (or wait for the browser)", accepted: "the full redirect URL, or the code",
+        }, { expectedState: null, allowBareCode: true, registeredUri: listener!.redirectUri, trailingSlashOptional: true }, listener);
+      } finally {
+        listener?.stop();
+      }
+    }
     ctx.notify({ type: "progress", stage: "exchange", message: "Exchanging the code for an API key…" });
     const reply = await authRequest(ctx, OPENROUTER.keys, {
       params: { code: returned.code, code_verifier: verifier, code_challenge_method: "S256" }, consumes: true, stage: "exchange",

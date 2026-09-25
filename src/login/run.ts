@@ -26,7 +26,7 @@ import { adapterFor, adapterForDefinition } from "../providers.ts";
 import { FetchTransport, type Transport } from "../transport.ts";
 import { ApiKey, BearerToken } from "../types/credential.ts";
 import { GITHUB_COPILOT_DEFINITION, KIMI_CODE_DEFINITION } from "./declared.ts";
-import { LoginCancelled, LoginContext, LoginDenied, LoginExpired, relayCovers, type ExchangeRecord, type LoginRouting, type RelayConfig } from "./engine.ts";
+import { exchangeUncertain, LoginCancelled, LoginContext, LoginDenied, LoginExpired, relayCovers, type ExchangeRecord, type LoginRouting, type RelayConfig } from "./engine.ts";
 import { claudeFlow } from "./flows/claude.ts";
 import { codexFlow } from "./flows/codex.ts";
 import { copilotFlow } from "./flows/copilot.ts";
@@ -63,9 +63,10 @@ function routing(env: LoginEnvironment = {}): LoginRouting {
   return env.relay ? { platform, relay: env.relay } : { platform };
 }
 
-/** Deliveries this build can run on this platform. The native loopback listener arrives with the managed-Auth port. */
+/** Deliveries this build can run on this platform: a loopback return needs the host's listener (Node has one; a page is the redirect target itself). */
 function runnable(platform: LoginPlatform, delivery: readonly Delivery[]): Delivery[] {
-  return delivery.filter((d) => d !== "loopback" && (platform === "browser" || d !== "page_redirect"));
+  const listener = platform === "native" && getDefaultPlatform().openCallbackListener !== undefined;
+  return delivery.filter((d) => (d !== "loopback" || listener) && (platform === "browser" || d !== "page_redirect"));
 }
 
 function methodFor(flow: ProviderFlow, def: MethodDefinition, route: LoginRouting, settings: Readonly<Record<string, string>> = {}): LoginMethod {
@@ -84,7 +85,7 @@ function methodFor(flow: ProviderFlow, def: MethodDefinition, route: LoginRoutin
       availability = "unavailable";
       reason = route.platform === "browser"
         ? "needs a local callback listener, which a web page cannot open"
-        : "needs a callback this build does not provide yet (native listener: managed-Auth port)";
+        : "needs a local callback listener, which this host does not provide";
     } else if (needsRelay.includes("auth") && !relayCovers(route, "auth")) {
       availability = "unavailable";
       const hosts = [...new Set(flow.requests(def.id, settings).filter((r) => r.browser === "relay").map((r) => new URL(r.url).host))];
@@ -163,6 +164,12 @@ function abortError(signal: AbortSignal | undefined): Error {
 
 function mapFailure(error: unknown, provider: string, methodId: string, operation: "login" | "renewal", signal?: AbortSignal): unknown {
   if (error instanceof LoginCancelled) return abortError(signal);
+  if (exchangeUncertain(error)) {
+    // AUTH-20.6: sent, no readable reply; a one-use value may be spent. Never retried blind.
+    return new AuthOperationError(`${provider}: the exchange may have reached the provider before the network failed; sign in again rather than retry`, {
+      reason: "indeterminate", stage: operation === "login" ? "exchange" : "renewal", recovery: "restart_login", commitState: "not_committed", provider, methodId, operation, delivery: "unknown",
+    });
+  }
   if (error instanceof LoginExpired) {
     return new AuthOperationError(`${provider}: ${error.message}`, { reason: "login_expired", stage: operation === "login" ? "polling" : "renewal", recovery: "restart_login", provider, methodId, operation });
   }

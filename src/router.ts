@@ -14,7 +14,9 @@ import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.
 import { endpointFromEnv, resolveSettings } from "./cloud/hosts.ts";
 import { validateNamedCredential } from "./cloud/identity.ts";
 import { explainAuth, type AuthReport } from "./auth/doctor.ts";
-import { AmbiguousModelError, NotConfiguredError, UnknownModelError } from "./errors.ts";
+import { AmbiguousModelError, AuthOperationError, NotConfiguredError, UnknownModelError } from "./errors.ts";
+import { DECLARED_LOGIN_PROVIDERS } from "./login/declared.ts";
+import type { Auth } from "./login/manager.ts";
 import { adapterForDefinition } from "./providers.ts";
 import { getDefaultPlatform, noCloudChain } from "./platform.ts";
 import { canonicalProvider, providerTable, type ProviderDefinition } from "./registry.ts";
@@ -122,6 +124,17 @@ export interface RouterConfig extends TransportBudgetOptions {
   readonly transport?: Transport;
   /** MAP-13: `"note"` (default: adapt and record on the response), `"silent"` (adapt, record nothing), `"refuse"` (every deviation refuses before the wire). */
   readonly adaptations?: AdaptationPolicy;
+  /**
+   * Managed authentication (AUTH-15 mode B): an `Auth` whose saved
+   * connections supply the credential when no explicit `apiKeys` /
+   * `credentials` entry does. With it, environment keys, other tools' login
+   * files and the machine's cloud identity are never consulted: a missing,
+   * expired, rejected or signed-out connection is a typed
+   * `AuthOperationError`, never a silent switch to a metered key. Keyless
+   * local servers still work without a connection. It also routes the
+   * connection-only providers (`kimi-code`, `github-copilot`).
+   */
+  readonly auth?: Auth;
 }
 
 type DefinitionConfig = { readonly providers?: readonly ProviderDefinition[] | undefined };
@@ -400,6 +413,7 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
   };
+  if (config.auth !== undefined) return buildManagedLm(res, config, definition, shared);
   if (policy === "oauth") return adapterForDefinition(definition, options);
   const entry = apiKeysSource(config, res.provider);
   let apiKey = entry === undefined ? undefined : config.apiKeys![entry];
@@ -460,6 +474,88 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
     );
   }
   const lm = adapterForDefinition(definition, { apiKey, ...options, ...(settings !== undefined ? { settings } : {}) });
+  if (origin !== undefined) lm.setCredentialOrigin(origin);
+  return lm;
+}
+
+/**
+ * AUTH-15 mode B. Order: an explicit `apiKeys` entry; an explicit named
+ * cloud identity; the scope's saved connection (its credential resolved and
+ * renewed per request); a keyless local server's placeholder. Never an
+ * environment key, another tool's login file or the machine's cloud chain.
+ */
+function buildManagedLm(res: Resolution, config: RouterConfig, definition: ProviderDefinition, shared: Transport): ProviderLM {
+  const auth = config.auth!;
+  const provider = res.provider;
+  const env = envOf(config);
+  let baseUrl = baseUrlEntry(config, provider) ?? (definition.hosted ? endpointFromEnv(definition.access.host, env) : undefined);
+  const entry = apiKeysSource(config, provider);
+  let apiKey: CredentialLike | undefined = entry === undefined ? undefined : config.apiKeys![entry];
+  let named = providerEntry(config.credentials, provider, config) as string | undefined;
+  let origin: string | undefined = entry !== undefined && typeof apiKey !== "function" ? `an explicit apiKeys entry (${JSON.stringify(entry)})` : undefined;
+  let accountId: string | undefined;
+  let access = definition.access;
+  if (entry === undefined && named === undefined) {
+    let selection: ReturnType<Auth["selectionSync"]>;
+    try {
+      selection = auth.selectionSync(provider);
+    } catch (error) {
+      const loginRequired = error instanceof AuthOperationError && error.reason === "login_required";
+      if (loginRequired && definition.placeholderKey !== undefined && !auth.statusSync(provider)?.loggedOut) {
+        apiKey = definition.placeholderKey;
+        origin = "the local server's placeholder key";
+      } else if (loginRequired && definition.hosted) {
+        throw new AuthOperationError(
+          `${provider}: no saved connection in this scope; the machine's cloud identity is not used under a managed Auth — save a named identity (auth.configure(${JSON.stringify(provider)}, { method: "cloud", ... })) or pass { credentials: ... } explicitly`,
+          { reason: "login_required", stage: "resolution", recovery: "select_connection", provider },
+        );
+      } else throw error;
+    }
+    if (selection) {
+      if (selection.named) named = selection.named;
+      else {
+        apiKey = auth.credentialProvider(provider);
+        if (selection.accountId) accountId = selection.accountId;
+        if (selection.baseUrl && baseUrl === undefined) baseUrl = selection.baseUrl;
+        const lowered = new Set(access.headers.map(([k]) => k.toLowerCase()));
+        const extra = Object.entries(selection.headers).filter(([k]) => !lowered.has(k.toLowerCase()) && k.toLowerCase() !== "chatgpt-account-id");
+        if (extra.length > 0 && !definition.hosted) access = Object.freeze({ ...access, headers: Object.freeze([...access.headers, ...extra]) });
+      }
+      origin = `managed connection ${selection.connection.id} (${selection.connection.label})`;
+    } else if (apiKey === undefined) {
+      // A store that cannot read synchronously: the connection is resolved at the first request.
+      apiKey = auth.credentialProvider(provider);
+      origin = "managed connection";
+    }
+  }
+  const options = {
+    transport: shared,
+    ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(accountId !== undefined ? { accountId } : {}),
+    ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
+  };
+  const bound = access === definition.access ? definition : Object.freeze({ ...definition, access }) as ProviderDefinition;
+  if (definition.hosted) {
+    const chain = getDefaultPlatform().openCloudChain?.({ env, online: true });
+    const profile = chain?.profile(definition.access);
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) if (value !== undefined) values[key] = value;
+    const settings = resolveSettings(definition.access.host, providerEntry(config.settings, provider, config), values, {
+      provider, ...(profile ? { profile } : {}), ...(baseUrl !== undefined ? { endpoint: baseUrl } : {}),
+    });
+    if (chain) chain.settings = settings;
+    if (apiKey === undefined && named !== undefined) {
+      if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access, named as NamedCredential);
+      apiKey = chain.credentialProvider(definition.access, named as NamedCredential);
+    }
+    if (apiKey === undefined) {
+      throw new AuthOperationError(`${provider}: no credential for this cloud door under a managed Auth`, { reason: "login_required", stage: "resolution", recovery: "select_connection", provider });
+    }
+    const lm = adapterForDefinition(bound, { apiKey, ...options, settings });
+    if (origin !== undefined) lm.setCredentialOrigin(origin);
+    return lm;
+  }
+  const lm = adapterForDefinition(bound, { ...(apiKey !== undefined ? { apiKey } : {}), ...options });
   if (origin !== undefined) lm.setCredentialOrigin(origin);
   return lm;
 }
@@ -587,6 +683,14 @@ export class LMRouter {
     if (config.timeouts !== undefined) new Timeouts(config.timeouts);
     if (config.maxConnections !== undefined && (!Number.isSafeInteger(config.maxConnections) || config.maxConnections < 1)) throw new NotConfiguredError("maxConnections must be a positive safe integer");
     if (config.adaptations !== undefined) checkPolicy(config.adaptations);
+    if (config.auth !== undefined) {
+      // A managed router also routes the connection-only doors: declared
+      // providers, added only here because only a managed Auth can hold
+      // their credential.
+      const taken = new Set((config.providers ?? []).map((d) => d.id));
+      const declared = DECLARED_LOGIN_PROVIDERS.filter((d) => !taken.has(d.id));
+      if (declared.length > 0) config = { ...config, providers: [...(config.providers ?? []), ...declared] };
+    }
     const table = providerTable(config.providers);
     for (const r of config.rules ?? []) {
       if (!r || typeof r.prefix !== "string" || typeof r.provider !== "string" || !table.has(canonicalProvider(r.provider))) throw new NotConfiguredError("RouterConfig rules must name a declared or built-in provider");
@@ -629,6 +733,8 @@ export class LMRouter {
     const settings = providerEntry(this.config.settings, res.provider, this.config);
     const baseUrl = baseUrlEntry(this.config, res.provider);
     return explainAuth(res.provider, {
+      ...(this.config.auth !== undefined ? { auth: this.config.auth } : {}),
+      ...(this.config.credentials !== undefined ? { credentials: this.config.credentials } : {}),
       ...(this.config.providers !== undefined ? { providers: this.config.providers } : {}),
       ...(this.config.env !== undefined ? { env: this.config.env } : {}),
       ...(this.config.apiKeys !== undefined ? { apiKeys: this.config.apiKeys } : {}),

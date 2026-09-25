@@ -50,14 +50,14 @@ credentials need neither.
 
 ## Status
 
-Release candidate, checked 2026-09-24 against the pinned contract
-(`CONTRACT_PIN`): **1,440 of 1,440** contract cases pass
+Release candidate, checked 2026-09-25 against the pinned contract
+(`CONTRACT_PIN`): **1,491 of 1,491** contract cases pass
 (`harness/check.py --shim typescript --direction all`; 40 skips are corpus
-gaps shared with the Python reference), and the package's own 449 tests pass.
+gaps shared with the Python reference), and the package's own 456 tests pass (3 skipped).
 
 | Direction | Pass |
 |---|---|
-| request | 389 (1 skip) |
+| request | 398 (1 skip) |
 | response | 308 (23 skips) |
 | stream | 40 (16 skips) |
 | error | 90 |
@@ -66,10 +66,12 @@ gaps shared with the Python reference), and the package's own 449 tests pass.
 | models, live, router | 36, 24, 22 |
 | files, batch, generation, video, cache | 48, 41, 20, 27, 11 |
 | ingest | 169 |
+| managed (sign-in) | 42 |
 
-Not in this package yet: saved connections (`connect()`, sign-in status and
-sign-out) exist in Python only; the sign-in flows themselves are here. The
-encrypted relay tunnel is a prototype and its TLS module is not shipped.
+Sign in once, use everywhere: `Auth`, `connect()` and `BoundClient` are the
+managed authentication lm15-python has, on the same store file, graded by the
+same contract runs ([managed login](docs/managed-login.md)). The encrypted
+relay tunnel is a prototype and its TLS module is not shipped.
 Provisional surfaces (files, batches, media generation, live sessions, stored
 caches) may change during 1.x, as in every lm15 language.
 

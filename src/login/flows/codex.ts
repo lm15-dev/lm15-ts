@@ -11,7 +11,7 @@
 
 import { decodeJwtPayload, extractChatgptAccountId } from "../../auth/jwt.ts";
 import { pkceChallenge } from "../../auth/pkce.ts";
-import { authRequest, awaitReturn, LoginDenied, randomBase64Url, randomHex, runDeviceFlow, type LoginContext } from "../engine.ts";
+import { authRequest, awaitReturn, openListener, LoginDenied, randomBase64Url, randomHex, runDeviceFlow, type LoginContext } from "../engine.ts";
 import { CODEX } from "../profiles.ts";
 import type { LoginMaterial } from "../types.ts";
 import { oauth, oauthMaterial, str, type FlowDescriptor, type FlowResult, type LoginInputs, type ProviderFlow } from "./base.ts";
@@ -61,7 +61,8 @@ async function exchange(ctx: LoginContext, code: string, verifier: string, redir
     consumes: true, stage: "exchange",
   });
   if (!reply.ok) throw new LoginDenied("ChatGPT authorization-code exchange failed", { reply, stage: "exchange" });
-  return { material: tokens(reply.body, ctx.wallClock()), label: "ChatGPT subscription", renewal: "refresh_token" };
+  const material = tokens(reply.body, ctx.wallClock());
+  return { material, label: "ChatGPT subscription", renewal: "refresh_token", ...(material.accountId ? { accountLabel: material.accountId } : {}) };
 }
 
 export const codexFlow: ProviderFlow = {
@@ -81,14 +82,22 @@ export const codexFlow: ProviderFlow = {
       code_challenge: challenge, code_challenge_method: "S256", state,
       id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "lm15",
     })) url.searchParams.set(k, v);
-    ctx.notify({
-      type: "auth_url", url: url.toString(),
-      instructions: "Sign in to ChatGPT. The browser then tries to open localhost:1455 and shows an error page; copy that page's full address and paste it here.",
-    });
-    const returned = await awaitReturn(ctx, {
-      type: "manual_code", fieldId: "return", label: "Paste the full return URL (http://localhost:1455/auth/callback?code=…)",
-      accepted: "the full return URL",
-    }, { expectedState: state, allowBareCode: false, registeredUri: CODEX.redirectUri });
+    const listener = await openListener(ctx, { path: "/auth/callback", expectedState: state, port: 1455, redirectHost: "localhost" });
+    let returned;
+    try {
+      ctx.notify({
+        type: "auth_url", url: url.toString(),
+        instructions: listener
+          ? "Sign in to ChatGPT in your browser. If the browser is on another machine, paste the final redirect URL back here."
+          : "Sign in to ChatGPT. The browser then tries to open localhost:1455 and shows an error page; copy that page's full address and paste it here.",
+      });
+      returned = await awaitReturn(ctx, {
+        type: "manual_code", fieldId: "return", label: listener ? "Paste the redirect URL here (or wait for the browser)" : "Paste the full return URL (http://localhost:1455/auth/callback?code=…)",
+        accepted: "the full return URL",
+      }, { expectedState: state, allowBareCode: false, registeredUri: CODEX.redirectUri }, listener);
+    } finally {
+      listener?.stop();
+    }
     return exchange(ctx, returned.code, verifier, CODEX.redirectUri);
   },
 
@@ -101,7 +110,8 @@ export const codexFlow: ProviderFlow = {
     if (!reply.ok) throw new LoginDenied("ChatGPT token renewal failed", { reply, stage: "renewal" });
     const body: Record<string, unknown> = { ...reply.body };
     if (!str(body["refresh_token"])) body["refresh_token"] = material.refresh; // OpenAI may omit it when it does not rotate
-    return { material: tokens(body, ctx.wallClock()), label: "ChatGPT subscription", renewal: "refresh_token" };
+    const renewed = tokens(body, ctx.wallClock());
+    return { material: renewed, label: "ChatGPT subscription", renewal: "refresh_token", ...(renewed.accountId ? { accountLabel: renewed.accountId } : {}) };
   },
 
   requestAuth(saved: LoginMaterial) {

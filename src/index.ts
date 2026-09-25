@@ -26,3 +26,6 @@ export { nodePlatform } from "./platform_node.ts";
 export { NodeTransport } from "./transport_node.ts";
 export { login, loginXai, LocalOAuthCredential, CredentialFileStore, defaultCredentialsPath, withFileLock } from "./auth/stores.ts";
 export { ChainContext, explain as explainChain, credentialProvider } from "./cloud/chains.ts";
+export { FileStore, defaultStorePath } from "./login/file_store.ts";
+export { TerminalUI } from "./login/terminal.ts";
+export type { TerminalUIOptions } from "./login/terminal.ts";

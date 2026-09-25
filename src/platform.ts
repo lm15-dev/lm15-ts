@@ -91,6 +91,42 @@ export interface SigV4Input {
   readonly now: Date;
 }
 
+/**
+ * Logins other tools own on this host (Claude Code CLI, Codex CLI, the Pi
+ * agent's xAI store), used in place by a managed `external:` connection
+ * (AUTH-15, R1): read, renewed under that tool's lock, never copied.
+ */
+export interface ExternalLogins {
+  /** Throw a typed error now if that tool has no login here. No network. */
+  probe(source: string): void;
+  /** The current token (renewed in place when due), extra headers and the account id. Secret: `token`. */
+  requestAuth(source: string): Promise<{ readonly token: string; readonly headers: Readonly<Record<string, string>>; readonly accountId?: string | undefined }>;
+  /** The login's non-secret request shape, read without renewal (a router's synchronous `lm()`). */
+  peek?(source: string): { readonly headers: Readonly<Record<string, string>>; readonly accountId?: string | undefined };
+}
+
+/** A one-shot loopback listener for an authorization-code return (AUTH-18); see `login/listener_node.ts`. */
+export interface CallbackListener {
+  /** The registered return URI the provider was told (it may say `localhost`). */
+  readonly redirectUri: string;
+  /** Resolves with the validated return, or `null` once stopped; rejects on a validated provider error. */
+  wait(): Promise<{ readonly code: string; readonly state: string | null } | null>;
+  /** True once a return arrived (or the listener was stopped). */
+  readonly done: boolean;
+  stop(): void;
+}
+
+export interface CallbackListenerOptions {
+  readonly path: string;
+  readonly expectedState: string | null;
+  /** 0 = ephemeral. A fixed registered port that is busy is `method_unavailable`. */
+  readonly port: number;
+  /** Loopback only: `127.0.0.1` (default) or `::1`. */
+  readonly bindHost?: "127.0.0.1" | "::1";
+  /** The host in the registered redirect URI (`localhost` for some providers); never rewritten. */
+  readonly redirectHost?: string;
+}
+
 export interface Platform {
   /** `"node"`, `"web"`, or an application's own name. Appears in errors so a report says which host refused. */
   readonly name: string;
@@ -106,6 +142,14 @@ export interface Platform {
   readonly signSigV4?: (input: SigV4Input) => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>;
   /** Whether the host's `WebSocket` constructor accepts `{ headers }` (Node's does; a browser's does not). */
   readonly webSocketHeaders: boolean;
+  /** The managed store for `Auth.local()` (AUTH-8 private file). Absent where there is no filesystem. */
+  readonly openCredentialStore?: (path?: string) => import("./login/store.ts").Store;
+  /** Other tools' logins, used in place by `external:` connections. Absent where no CLI could have stored one. */
+  readonly externalLogins?: ExternalLogins;
+  /** Loopback return listener for authorization-code logins. Absent in a page (it is the redirect target itself). */
+  readonly openCallbackListener?: (opts: CallbackListenerOptions) => Promise<CallbackListener>;
+  /** An interactive terminal for `connect()` when no UI is given; `undefined` when stdin/stderr are not a TTY. */
+  readonly terminalUI?: (opts: { readonly openBrowser?: boolean }) => import("./login/types.ts").AuthUI | undefined;
 }
 
 /**

@@ -10,7 +10,7 @@
  */
 
 import { pkceChallenge } from "../../auth/pkce.ts";
-import { authRequest, awaitReturn, LoginDenied, randomBase64Url, type LoginContext } from "../engine.ts";
+import { authRequest, awaitReturn, LoginDenied, openListener, randomBase64Url, type LoginContext } from "../engine.ts";
 import { CLAUDE } from "../profiles.ts";
 import type { LoginMaterial } from "../types.ts";
 import { oauth, oauthMaterial, str, type FlowDescriptor, type FlowResult, type LoginInputs, type ProviderFlow } from "./base.ts";
@@ -60,16 +60,24 @@ export const claudeFlow: ProviderFlow = {
       code: "true", client_id: CLAUDE.clientId, response_type: "code", redirect_uri: redirectUri, scope: CLAUDE.scope,
       code_challenge: challenge, code_challenge_method: "S256", state,
     })) url.searchParams.set(k, v);
-    ctx.notify({
-      type: "auth_url", url: url.toString(),
-      instructions: hosted
-        ? "Sign in to Claude. On the Authentication code page, copy the whole displayed code (including the part after #) and paste it here. The full return URL also works."
-        : "Sign in to Claude. The browser then tries to open localhost:53692, which fails without a local listener; copy that page's full address and paste it here.",
-    });
-    const returned = await awaitReturn(ctx, {
-      type: "manual_code", fieldId: "return", label: "Paste the full code#state or return URL",
-      accepted: "the full return URL, or code#state (a bare code without state is not accepted)",
-    }, { expectedState: state, allowBareCode: false, registeredUri: redirectUri });
+    const listener = hosted ? null : await openListener(ctx, { path: "/callback", expectedState: state, port: 53692, redirectHost: "localhost" });
+    let returned;
+    try {
+      ctx.notify({
+        type: "auth_url", url: url.toString(),
+        instructions: hosted
+          ? "Sign in to Claude. On the Authentication code page, copy the whole displayed code (including the part after #) and paste it here. The full return URL also works."
+          : listener
+            ? "Sign in to Claude in your browser. If the local callback cannot be reached, paste the full redirect URL (or code#state) here."
+            : "Sign in to Claude. The browser then tries to open localhost:53692, which fails without a local listener; copy that page's full address and paste it here.",
+      });
+      returned = await awaitReturn(ctx, {
+        type: "manual_code", fieldId: "return", label: "Paste the full code#state or return URL",
+        accepted: "the full return URL, or code#state (a bare code without state is not accepted)",
+      }, { expectedState: state, allowBareCode: false, registeredUri: redirectUri }, listener);
+    } finally {
+      listener?.stop();
+    }
     ctx.notify({ type: "progress", stage: "exchange", message: "Exchanging the authorization code…" });
     const reply = await authRequest(ctx, CLAUDE.token, {
       params: { grant_type: "authorization_code", code: returned.code, redirect_uri: redirectUri, client_id: CLAUDE.clientId, code_verifier: verifier, state },

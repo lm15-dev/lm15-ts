@@ -22,11 +22,15 @@ export type LoginPlatform = "native" | "browser";
  */
 export type RelayStage = "auth" | "catalog" | "inference";
 
+export interface SelectOption { readonly id: string; readonly label: string; readonly description?: string }
+
 export interface MethodField {
   readonly id: string;
   readonly label: string;
   readonly type: "text" | "secret" | "select";
   readonly required: boolean;
+  /** The choices of a `select` field. */
+  readonly options?: readonly SelectOption[];
   readonly help?: string;
 }
 
@@ -44,6 +48,8 @@ export interface LoginMethod {
   /** Backed by a provider subscription, per provider docs; never an entitlement promise. */
   readonly subscription: boolean;
   readonly billingNote?: string;
+  /** Where to get what the method needs (a console URL); display only. */
+  readonly guidance?: string;
   /**
    * Browser only: which request stages this method's endpoints cannot reach
    * directly from a page (browser.json evidence), so need a relay the
@@ -70,7 +76,7 @@ export interface SelectPrompt {
   readonly type: "select";
   readonly fieldId: string;
   readonly label: string;
-  readonly options: ReadonlyArray<{ readonly id: string; readonly label: string; readonly description?: string }>;
+  readonly options: readonly SelectOption[];
 }
 /**
  * Paste the return: a URL, `code#state`, or a code. A page that receives the
@@ -98,7 +104,7 @@ export interface DeviceCodeNotice {
   readonly intervalS: number;
 }
 export interface ProgressNotice { readonly type: "progress"; readonly stage: string; readonly message: string }
-export interface InfoNotice { readonly type: "info"; readonly message: string }
+export interface InfoNotice { readonly type: "info"; readonly message: string; readonly links?: ReadonlyArray<readonly [label: string, url: string]> }
 export type Notice = AuthUrlNotice | DeviceCodeNotice | ProgressNotice | InfoNotice;
 
 /**

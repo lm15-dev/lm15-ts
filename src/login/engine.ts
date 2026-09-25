@@ -20,13 +20,15 @@
  */
 
 import { base64UrlEncode } from "../bytes.ts";
-import { AuthOperationError, ServerError, type AuthResponseFormat } from "../errors.ts";
-import { isJsonObject, parseJsonStrict, type JsonObject } from "../json.ts";
+import { AuthOperationError, ServerError, TransportError, type AuthResponseFormat } from "../errors.ts";
+import { isJsonObject, parseJsonStrict, RawNumber, type JsonObject } from "../json.ts";
 import { VERSION } from "../version.ts";
+import { getDefaultPlatform } from "../platform.ts";
 import type { RequestProfile } from "./profiles.ts";
 import type { TlsEngine } from "../tunnel/tls.ts";
 import { tunnelFetch } from "../tunnel/tunnel.ts";
 import type { AuthUI, LoginPlatform, ManualCodePrompt, Notice, Prompt, RelayStage } from "./types.ts";
+import type { CallbackListener } from "../platform.ts";
 
 export const ATTEMPT_LIFETIME_MS = 15 * 60 * 1000; // AUTH-18, R9
 export const EXCHANGE_TIMEOUT_MS = 30_000; // AUTH-20.5, R9
@@ -251,12 +253,13 @@ export class LoginContext {
   }
 
   /** Ask the person; the prompt is abandoned when the attempt is cancelled or its deadline passes. */
-  async prompt(prompt: Prompt): Promise<string> {
+  async prompt(prompt: Prompt, opts: { readonly signal?: AbortSignal } = {}): Promise<string> {
     this.check();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(this.remainingMs(), 0));
     const onAbort = (): void => controller.abort();
     this.signal.addEventListener("abort", onAbort, { once: true });
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     try {
       const answer = await this.ui.prompt(prompt, { signal: controller.signal });
       if (typeof answer !== "string") throw new TypeError("AuthUI.prompt must resolve with a string");
@@ -269,6 +272,7 @@ export class LoginContext {
     } finally {
       clearTimeout(timer);
       this.signal.removeEventListener("abort", onAbort);
+      opts.signal?.removeEventListener("abort", onAbort);
       this.ui.dismiss?.(prompt);
     }
   }
@@ -444,6 +448,19 @@ async function sendAuthRequest(ctx: LoginContext, profile: RequestProfile, opts:
   } catch (cause) {
     ctx.check();
     const timedOut = timeout.aborted;
+    if (!browser) {
+      // AUTH-20.6, as the reference: a refused connection or a failed name
+      // lookup never reached the provider (safe, the credential is kept); a
+      // timeout or a connection lost after sending may have (uncertain: a
+      // one-use value may be spent). Only the error's class is named.
+      const code = networkErrorCode(cause);
+      const error = new TransportError(
+        `${ctx.provider || "auth"}: network failure during an authentication exchange (${timedOut ? "TimeoutError" : code ?? (cause instanceof Error ? cause.name : "Error")}) to ${url.origin}${url.pathname}`,
+        { provider: ctx.provider || null },
+      ) as TransportError & { exchangeUncertain: boolean };
+      error.exchangeUncertain = timedOut || code === undefined || !NOT_SENT_CODES.has(code);
+      throw error;
+    }
     // A page cannot tell a refused CORS exchange from a connection dropped after
     // sending, and a form POST is sent before its reply is checked. So delivery
     // is unknown, and a request that may spend a one-use value is indeterminate.
@@ -479,6 +496,23 @@ async function sendAuthRequest(ctx: LoginContext, profile: RequestProfile, opts:
     throw new ServerError(`${ctx.provider}: the authentication server answered HTTP ${response.status}`, { provider: ctx.provider, status: response.status });
   }
   return Object.freeze({ status: response.status, body: parsed, ok: response.status >= 200 && response.status < 300, responseFormat: format, oauthError, securityChallenge, via });
+}
+
+/** Node network error codes that prove nothing reached the server. */
+const NOT_SENT_CODES: ReadonlySet<string> = new Set(["ECONNREFUSED", "ENOTFOUND", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH", "EADDRNOTAVAIL"]);
+
+function networkErrorCode(cause: unknown): string | undefined {
+  for (let e: unknown = cause, depth = 0; e && depth < 4; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+/** True when a failed auth exchange may have reached the provider (AUTH-20.6). */
+export function exchangeUncertain(error: unknown): boolean {
+  return error instanceof TransportError && (error as TransportError & { exchangeUncertain?: boolean }).exchangeUncertain === true;
 }
 
 // ─── Device flow (RFC 8628) ──────────────────────────────────────────
@@ -614,9 +648,24 @@ export function parseManualReturn(text: string, context: ReturnContext, provider
  * state, wrong URL) is reported to the person and the legitimate wait goes
  * on (AUTH-18); cancellation and the deadline still end it.
  */
-export async function awaitReturn(ctx: LoginContext, prompt: ManualCodePrompt, context: ReturnContext): Promise<CallbackReturn> {
+export async function awaitReturn(ctx: LoginContext, prompt: ManualCodePrompt, context: ReturnContext, listener?: CallbackListener | null): Promise<CallbackReturn> {
   for (;;) {
-    const answer = await ctx.prompt(prompt);
+    let answer: string;
+    if (listener && !listener.done) {
+      // The loopback return raced against a paste (AUTH-16): the loser is dismissed.
+      const stop = new AbortController();
+      const person = ctx.prompt(prompt, { signal: stop.signal }).then((text) => ({ text }));
+      person.catch(() => undefined);
+      const winner = await Promise.race([listener.wait().then((returned) => ({ returned })), person]).finally(() => undefined);
+      if ("returned" in winner) {
+        stop.abort();
+        if (winner.returned) return winner.returned;
+        continue; // stopped from outside: ask for a paste
+      }
+      answer = winner.text;
+    } else {
+      answer = await ctx.prompt(prompt);
+    }
     try {
       return parseManualReturn(answer, context, ctx.provider);
     } catch (error) {
@@ -626,6 +675,27 @@ export async function awaitReturn(ctx: LoginContext, prompt: ManualCodePrompt, c
       }
       throw error;
     }
+  }
+}
+
+/**
+ * Open the host's loopback listener for a registered return, when this is a
+ * native host that has one. A busy registered port is reported to the person
+ * and the flow falls back to a paste (AUTH-18: never a wider bind or another
+ * redirect); `required` flows (the return URI is the listener's own) fail.
+ */
+export async function openListener(ctx: LoginContext, opts: import("../platform.ts").CallbackListenerOptions, required = false): Promise<CallbackListener | null> {
+  const open = ctx.routing.platform === "native" ? getDefaultPlatform().openCallbackListener : undefined;
+  if (!open) {
+    if (required) throw new AuthOperationError(`${ctx.provider}: this sign-in needs a local callback listener, which this host does not provide`, { reason: "method_unavailable", stage: "reservation", recovery: "choose_method", provider: ctx.provider });
+    return null;
+  }
+  try {
+    return await open(opts);
+  } catch (error) {
+    if (required || !(error instanceof AuthOperationError) || error.reason !== "method_unavailable") throw error;
+    ctx.notify({ type: "info", message: `Could not listen on port ${opts.port}; paste the full redirect URL when the browser finishes.` });
+    return null;
   }
 }
 
@@ -640,7 +710,8 @@ export function randomHex(bytes: number): string {
 }
 
 export function positiveNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
+  const n = value instanceof RawNumber ? Number(value.raw) : value;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 export function httpsUrl(value: unknown, provider: string, allowHttp = false): string {

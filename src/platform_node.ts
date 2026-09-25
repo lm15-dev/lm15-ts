@@ -11,6 +11,10 @@ import { describeStoredCredential } from "./auth/stores_doctor.ts";
 import { ChainContext, credentialProvider, explain, profileSettings } from "./cloud/chains.ts";
 import { sign } from "./cloud/sigv4.ts";
 import { setDefaultPlatform, type CloudChain, type CloudChainOptions, type Platform, type SigV4Input } from "./platform.ts";
+import { FileStore } from "./login/file_store.ts";
+import { nodeExternalLogins } from "./login/host_node.ts";
+import { openCallbackListener } from "./login/listener_node.ts";
+import { terminalUI } from "./login/terminal.ts";
 
 function openCloudChain(opts: CloudChainOptions): CloudChain {
   const values: Record<string, string> = {};
@@ -53,6 +57,10 @@ export const nodePlatform: Platform = Object.freeze({
   openCloudChain,
   signSigV4,
   webSocketHeaders: true,
+  openCredentialStore: (path?: string) => new FileStore(path),
+  externalLogins: nodeExternalLogins,
+  openCallbackListener,
+  terminalUI,
 });
 
 /** Make Node's services the process default. Idempotent; the Node entry point calls it on import. */

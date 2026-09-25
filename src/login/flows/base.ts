@@ -44,6 +44,8 @@ export interface FlowResult {
   readonly label: string;
   readonly renewal: RenewalKind;
   readonly settings?: Readonly<Record<string, string>>;
+  /** Untrusted display text for the account (AUTH-12), e.g. a ChatGPT account id. */
+  readonly accountLabel?: string;
 }
 
 /** What `login` is given besides the context. */

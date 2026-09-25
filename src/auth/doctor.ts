@@ -93,6 +93,10 @@ export interface ExplainAuthOptions {
   readonly files?: Readonly<Record<string, string>>;
   readonly home?: string;
   readonly settings?: Readonly<Record<string, string>>;
+  /** A managed `Auth` (AUTH-15 mode B): the walk is the managed router's, store reads only, no renewal. */
+  readonly auth?: import("../login/manager.ts").Auth;
+  /** Named cloud identities per provider (a router's `credentials`). */
+  readonly credentials?: Readonly<Record<string, NamedCredential>>;
 }
 
 /** AUTH-7: the source configuration key is shown when it differs from the target; the kind stays `api_keys`. */
@@ -118,6 +122,7 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
   const env = opts.env ?? getDefaultPlatform().env();
   const policy = definition.access;
   const entry = apiKeysSource(opts, canonical);
+  if (opts.auth !== undefined) return explainManaged(canonical, definition, opts.auth, opts, env, entry);
   validateNamedCredential(policy, opts.credential, entry !== undefined);
 
   if (isCloudChain(policy) || definition.hosted) return explainCloud(canonical, opts, env);
@@ -209,4 +214,44 @@ function explainCloud(canonical: string, opts: ExplainAuthOptions, env: Readonly
   const shown: Array<[string, string]> = Object.entries(resolved).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   if (settingError) shown.push(["error", settingError]);
   return { provider: canonical, steps, configured, settings: shown, named: opts.credential, namedMeaning: opts.credential ? namedMeaning(policy, opts.credential) : undefined, baseUrl, baseUrlSource: baseUrl ? endpointSource : undefined };
+}
+
+/**
+ * AUTH-15 mode B, rung by rung: the explicit entry, the named cloud
+ * identity, the scope's saved connection; environment keys are shown and
+ * marked not consulted. Store reads only, no renewal (AUTH-7).
+ */
+function explainManaged(provider: string, definition: ProviderDefinition, auth: import("../login/manager.ts").Auth, opts: ExplainAuthOptions,
+  env: Readonly<Record<string, string | undefined>>, entry: string | undefined): AuthReport {
+  const steps: AuthStep[] = [];
+  let selected = false;
+  if (entry !== undefined) {
+    steps.push({ kind: "api_keys", source: entrySource(provider, entry), detail: "provided (value never shown)", state: "selected" });
+    selected = true;
+  } else steps.push({ kind: "api_keys", source: "explicit api_keys entry", detail: "not provided", state: "absent" });
+  const named = opts.credential ?? opts.credentials?.[provider];
+  if (named !== undefined) {
+    steps.push({ kind: "named_cloud", source: `named credential "${named}"`, detail: "explicit", state: selected ? "shadowed" : "selected" });
+    selected = true;
+  }
+  const status = auth.statusSync(provider);
+  if (status?.connection) {
+    const detail = `${status.connection.label} (${status.usability}${status.expiresAt ? `, expires ${status.expiresAt}` : ""})`;
+    const state = selected ? "shadowed" : status.ready ? "selected" : "absent";
+    steps.push({ kind: "connection", source: `saved connection ${status.connection.id}`, detail, state });
+    selected = selected || state === "selected";
+  } else {
+    const detail = status === undefined ? "this store cannot be read offline" : status.loggedOut ? "signed out (marker present)" : "none saved in this scope";
+    steps.push({ kind: "connection", source: `saved connection in ${auth.store.description}`, detail, state: "absent" });
+  }
+  for (const key of definition.access.envKeys) {
+    steps.push(env[key]
+      ? { kind: `env:${key}`, source: `env $${key}`, detail: "set, not consulted under a managed Auth (pass it explicitly to use it)", state: "shadowed" }
+      : { kind: `env:${key}`, source: `env $${key}`, detail: "not set", state: "absent" });
+  }
+  if (definition.placeholderKey !== undefined && !status?.loggedOut) {
+    steps.push({ kind: "placeholder", source: "local-server placeholder key", detail: `preset default for keyless ${provider} servers`, state: selected ? "shadowed" : "selected" });
+    selected = true;
+  }
+  return { provider, steps, configured: selected, settings: [] };
 }
