@@ -51,7 +51,7 @@ credentials need neither.
 ## Status
 
 Release candidate, checked 2026-09-25 against the pinned contract
-(`CONTRACT_PIN`): **1,491 of 1,491** contract cases pass
+(`CONTRACT_PIN`): **1,492 of 1,492** contract cases pass
 (`harness/check.py --shim typescript --direction all`; 40 skips are corpus
 gaps shared with the Python reference), and the package's own 456 tests pass (3 skipped).
 
@@ -66,7 +66,7 @@ gaps shared with the Python reference), and the package's own 456 tests pass (3 
 | models, live, router | 36, 24, 22 |
 | files, batch, generation, video, cache | 48, 41, 20, 27, 11 |
 | ingest | 169 |
-| managed (sign-in) | 42 |
+| managed (sign-in) | 43 |
 
 Sign in once, use everywhere: `Auth`, `connect()` and `BoundClient` are the
 managed authentication lm15-python has, on the same store file, graded by the
