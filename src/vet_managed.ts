@@ -104,6 +104,7 @@ async function managedRun(msg: JsonObject): Promise<JsonValue> {
     const contentType = contentTypeOf(init);
     events.push({ http: { method: init?.method ?? "GET", url: String(input), content_type: contentType, headers: headersOf(init), body: bodyOf(init, contentType) } });
     const reply = script.shift();
+    if (isJsonObject(reply) && reply["delay_ms"]) await new Promise((r) => setTimeout(r, Number(reply["delay_ms"]))); // real time: another process may race this exchange
     if (!isJsonObject(reply)) throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });
     if (reply["network"] === "timeout") throw new TypeError("fetch failed", { cause: Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }) });
     if (reply["network"] === "refused") throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) });

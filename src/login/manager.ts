@@ -888,6 +888,11 @@ export class Auth {
     provider = this.descriptor(provider).id;
     const pinned = this.pin ?? opts.pinned;
     const [slot, material] = view(await this.store.read(), provider);
+    // A sibling may be renewing right now (it holds the lock), or may have died
+    // mid-exchange. Only the lock can tell: wait for it, re-read, reuse the
+    // sibling's result; a marker still there once we hold the lock is an
+    // interrupted renewal (AUTH-20.4).
+    if (slot.renewalInFlight && slot.state !== "indeterminate") return this.#renew(provider, pinned);
     this.#checkSelected(provider, slot, material, pinned);
     const expiry = expiryOf(provider, material!);
     if (expiry === "never" || expiry === null || this.#clock() < expiry - leadMs(material!)) return this.#authFrom(provider, material!, slot);
