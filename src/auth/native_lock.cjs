@@ -9,7 +9,7 @@ function credentialLockAddonPath() {
     return override;
   }
   // Package self-reference, not a lookup relative to the caller's working directory.
-  const root = path.dirname(require.resolve("lm15/package.json"));
+  const root = path.dirname(require.resolve("@lm15/lm15/package.json"));
   return path.join(root, "native", `credential_lock-${process.platform}-${process.arch}.node`);
 }
 

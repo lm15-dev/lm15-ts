@@ -4,7 +4,7 @@
  * environment, a cloud credential chain, SigV4 over the platform's crypto —
  * is a *host service*, reached only through this interface. The core never
  * imports `node:*`; the Node entry point (`lm15`) installs `nodePlatform`,
- * and the web entry point (`lm15/browser`) runs on `webPlatform`, which
+ * and the web entry point (`@lm15/lm15/browser`) runs on `webPlatform`, which
  * offers none of those services and says so in every error it raises.
  *
  * The boundary is the essence of lm15 stated as code: faithful

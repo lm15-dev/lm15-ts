@@ -105,8 +105,8 @@ jobs:
           npm pack --pack-destination "$RUNNER_TEMP"
           mkdir "$RUNNER_TEMP/user" && cd "$RUNNER_TEMP/user"
           npm init -y > /dev/null
-          npm install "$RUNNER_TEMP"/lm15-*.tgz
-          test ! -e node_modules/lm15/dist/tls
+          npm install "$RUNNER_TEMP"/lm15-lm15-*.tgz
+          test ! -e node_modules/@lm15/lm15/dist/tls
           test -z "$(ls node_modules/.bin 2>/dev/null | grep lm15 || true)"
-          node -e "const l = require('lm15'); if (typeof l.LMRouter !== 'function') process.exit(1)"
-          node --input-type=module -e "import { LMRouter } from 'lm15'; import 'lm15/browser'; import 'lm15/testing'; if (typeof LMRouter !== 'function') process.exit(1)"
+          node -e "const l = require('@lm15/lm15'); if (typeof l.LMRouter !== 'function') process.exit(1)"
+          node --input-type=module -e "import { LMRouter } from '@lm15/lm15'; import '@lm15/lm15/browser'; import '@lm15/lm15/testing'; if (typeof LMRouter !== 'function') process.exit(1)"

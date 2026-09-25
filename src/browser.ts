@@ -1,5 +1,5 @@
 /**
- * lm15/browser — the universal entry point: the whole wire — canonical
+ * @lm15/lm15/browser — the universal entry point: the whole wire — canonical
  * types, serde, every dialect and compat preset, the router, streaming,
  * live sessions, the fetch transport, the test doubles — with no host
  * service behind it. It imports nothing from `node:*`; it runs in a page,
@@ -13,7 +13,7 @@
  * preload bridge, a host extension) installs a `Platform` of its own.
  *
  * ```ts
- * import { OpenAIChatLM, Message } from "lm15/browser";
+ * import { OpenAIChatLM, Message } from "@lm15/lm15/browser";
  *
  * const lm = new OpenAIChatLM({ apiKey: userKey, baseUrl: "http://localhost:1234/v1", compat: "lmstudio" });
  * const response = await lm.complete({ model: "your-model-id", messages: [Message.user("hi")] });

@@ -4,7 +4,7 @@ The endpoint selects where a request goes; the credential selects who pays.
 Neither changes the selected door's protocol, auth scheme or error mapping.
 
 ```ts
-import { LMRouter } from "lm15";
+import { LMRouter } from "@lm15/lm15";
 
 // Laptop: default cloud chain, with its concrete source available for diagnosis.
 const laptop = new LMRouter();
@@ -74,7 +74,7 @@ the `scope` setting can select the cognitive-services scope instead.
 
 ## Browsers
 
-Use `lm15/browser` with explicit credentials and endpoint roots. Named cloud
+Use `@lm15/lm15/browser` with explicit credentials and endpoint roots. Named cloud
 chains are unavailable without a custom `Platform.openCloudChain`; browsers
 have no CLI profiles or metadata identity discovery. Never bundle server
 credentials into a page. CORS still governs which requests and diagnostic

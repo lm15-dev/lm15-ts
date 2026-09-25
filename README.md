@@ -6,7 +6,7 @@ cloud hosts (AWS Bedrock, Azure, Vertex) and any OpenAI-compatible server,
 local or remote. The same program talks to any of them; when a provider can't
 take a setting as you asked, lm15 adapts the request and tells you what it
 changed. Zero runtime dependencies. Node 22+, and a browser entry point
-(`lm15/browser`) for pages, workers, PWAs and Electron renderers.
+(`@lm15/lm15/browser`) for pages, workers, PWAs and Electron renderers.
 
 Guides and reference: **[lm15.dev](https://lm15.dev)**. The same library
 exists for Python, Rust, Go, R and Julia, all written against one shared
@@ -15,7 +15,7 @@ exists for Python, Rust, Go, R and Julia, all written against one shared
 ## Install
 
 ```bash
-npm install lm15
+npm install @lm15/lm15
 ```
 
 This is a **release candidate** (`1.0.0-rc.1`): the API is the one intended
@@ -25,7 +25,7 @@ exact version in applications.
 ## First request
 
 ```ts
-import { LMRouter, Message } from "lm15";
+import { LMRouter, Message } from "@lm15/lm15";
 
 const request = {
   model: "anthropic:claude-haiku-4-5",
@@ -119,7 +119,7 @@ in that repository. This SDK no longer builds or deploys the website.
 ## Quick start
 
 ```ts
-import { LMRouter, Message, ResponseStream, tool } from "lm15";
+import { LMRouter, Message, ResponseStream, tool } from "@lm15/lm15";
 
 const router = new LMRouter(); // keys from the environment (AUTH-1)
 const request = {
@@ -162,12 +162,12 @@ const configured = new LMRouter({
 });
 
 // Providers, direct.
-import { OpenAILM, AnthropicLM, GeminiLM, OpenAIChatLM, XaiLM, ClaudeCodeLM, OpenAICodexLM } from "lm15";
+import { OpenAILM, AnthropicLM, GeminiLM, OpenAIChatLM, XaiLM, ClaudeCodeLM, OpenAICodexLM } from "@lm15/lm15";
 const lm = new AnthropicLM({ apiKey: process.env.ANTHROPIC_API_KEY! });
 await lm.listModels();
 
 // Why is my key (not) being used? No secrets are printed.
-import { explainAuth, describeReport } from "lm15";
+import { explainAuth, describeReport } from "@lm15/lm15";
 console.log(describeReport(explainAuth("groq")));
 
 // MAP-13: change the model and the program keeps working; what the wire
@@ -180,7 +180,7 @@ await router.plan(request); // the same record with no network and no credential
 new LMRouter({ adaptations: "refuse" }); // the old strictness: every deviation throws before the wire, with `error.feature`
 
 // MAP-14: judgments — declared keys in, a distribution out.
-import { judgments, choice, yesNo, score } from "lm15";
+import { judgments, choice, yesNo, score } from "@lm15/lm15";
 const verdict = await router.complete({
   model: "typesafe:jev-latest", // or any chat model: the pick without the numbers
   messages: [Message.user("Ripe blackberry, firm tannins, long finish.")],
@@ -195,7 +195,7 @@ Plain JavaScript users import the same package; the types are optional.
 ## In a browser
 
 ```ts
-import { OpenAIChatLM, Message, ResponseStream } from "lm15/browser";
+import { OpenAIChatLM, Message, ResponseStream } from "@lm15/lm15/browser";
 
 const lm = new OpenAIChatLM({ apiKey: userKey, baseUrl: "http://localhost:1234/v1", compat: "lmstudio" });
 const request = { model: "your-model-id", messages: [Message.user("hi")] };
@@ -326,7 +326,7 @@ See [Rate and capacity errors](docs/error-diagnostics.md).
 | `src/types/` | every canonical type: interface, validating constructor, `fromJSON`/`toJSON` |
 | `src/vocab.ts`, `src/errors.ts` | the closed vocabularies; the error hierarchy |
 | `src/platform.ts`, `src/platform_node.ts` | the host boundary: the `Platform` interface and the web default; Node's services, installed by the `lm15` entry |
-| `src/browser.ts`, `src/bytes.ts` | the web entry point (`lm15/browser`); base64/UTF-8 without `Buffer` |
+| `src/browser.ts`, `src/bytes.ts` | the web entry point (`@lm15/lm15/browser`); base64/UTF-8 without `Buffer` |
 | `src/auth/` | access policies (AUTH-10), stored credentials and the lock (AUTH-3/4/8/9), the doctor (AUTH-7), JWT claims (`jwt.ts`) |
 | `src/cloud/` | the three cloud chains (AUTH-1/11), SigV4, RS256, host rewrites |
 | `src/compat.ts`, `src/registry.ts` | compat presets and the provider table, copied as data |
@@ -335,7 +335,7 @@ See [Rate and capacity errors](docs/error-diagnostics.md).
 | `src/judgments.ts` | MAP-14: the judgment convention read off a schema and emitted by `choice` / `yesNo` / `score` / `judgments`; the two wire rewrites; the `DataPart` fold |
 | `src/stream.ts`, `src/stop.ts` | SSE, the MAP-3/4 coalescer, the MAP-9 accumulator, `ResponseStream`; the client-side stop with score preservation |
 | `src/router.ts`, `src/live.ts` | `LMRouter`; `LiveSession` over the platform WebSocket |
-| `src/testing.ts` | `lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
+| `src/testing.ts` | `@lm15/lm15/testing`: `FakeLM`, `FakeTransport`, `FakeResponse` |
 | `src/canonical.ts` | Out-of-band type identity for generic serialization |
 | `src/vet.ts`, `src/vet_*.ts` | the vet shim (`node dist/vet.js`) |
 | `examples/openrouter-page/` | the browser example: PKCE sign-in, models, streaming, cancel; its README lists what building it surfaced |

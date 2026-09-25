@@ -39,7 +39,7 @@ native/credential_lock-<process.platform>-<process.arch>.node
 Examples: `credential_lock-darwin-arm64.node`,
 `credential_lock-darwin-x64.node`, `credential_lock-win32-x64.node`,
 `credential_lock-win32-arm64.node`. The CommonJS bridge resolves the package's
-own `lm15/package.json` export, not the application's working directory.
+own `@lm15/lm15/package.json` export, not the application's working directory.
 Bundlers must retain this Node-only bridge and binary asset or use an explicit
 absolute override. The browser entry must never import them.
 

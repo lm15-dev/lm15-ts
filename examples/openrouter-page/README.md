@@ -1,7 +1,7 @@
 # lm15 in a page: OpenRouter, no backend
 
 A static page that signs a user in to OpenRouter with PKCE, lists the
-models their key can use, streams replies through `lm15/browser`, and can
+models their key can use, streams replies through `@lm15/lm15/browser`, and can
 stop a reply mid-stream. Three files of application logic, one of DOM glue,
 one HTML page, one stylesheet. No framework, no bundler, no server of ours.
 

@@ -21,7 +21,7 @@ import {
   type ModelInfo,
   type Request,
   type Response,
-} from "lm15/browser";
+} from "@lm15/lm15/browser";
 
 export interface ChatOptions {
   readonly key: string;

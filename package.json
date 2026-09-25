@@ -1,5 +1,5 @@
 {
-  "name": "lm15",
+  "name": "@lm15/lm15",
   "version": "1.0.0-rc.1",
   "description": "One canonical request/response model over OpenAI, Anthropic, Gemini and every OpenAI-compatible server. Zero dependencies. Built against the lm15-contract corpus.",
   "type": "module",

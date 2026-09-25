@@ -5,7 +5,7 @@ returned that error through both supported addresses; the headers revealed
 rate limiting, and longer gaps restored success.
 
 ```ts
-import { RateLimitError } from "lm15";
+import { RateLimitError } from "@lm15/lm15";
 
 try {
   const response = await router.complete(request);

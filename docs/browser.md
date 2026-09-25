@@ -1,12 +1,12 @@
 # lm15 in the browser
 
-`lm15/browser` is the web entry point of the same package: the whole wire,
+`@lm15/lm15/browser` is the web entry point of the same package: the whole wire,
 none of the host. It runs in a page, a module worker, a PWA, an Electron
 renderer, and in Node itself. A bundler that resolves the `browser`
 condition gets it from `import "lm15"` without being asked.
 
 ```ts
-import { OpenAIChatLM, Message, ResponseStream } from "lm15/browser";
+import { OpenAIChatLM, Message, ResponseStream } from "@lm15/lm15/browser";
 
 const lm = new OpenAIChatLM({ apiKey: userKey, baseUrl: "http://localhost:1234/v1", compat: "lmstudio" });
 const request = { model: "your-model-id", messages: [Message.user("hi")] };
@@ -45,7 +45,7 @@ Everything the Node entry has that is about communication:
   allows a browser to open one.
 - The other surfaces a door carries — files, batches, caches, image and
   speech generation, video jobs — from bytes you supply.
-- The fetch transport, and `lm15/testing` (`FakeTransport`, `FakeLM`).
+- The fetch transport, and `@lm15/lm15/testing` (`FakeTransport`, `FakeLM`).
 
 The earlier baseline exercised these surfaces with the shared corpus and a
 real-browser run (below). The 2026-09-20 parity additions have **not** been run,

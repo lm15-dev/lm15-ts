@@ -9,10 +9,10 @@ first. The maintainer publishes `1.0.0-rc.1` from a clean checkout:
 git status --short          # nothing
 npm login                   # opens the browser
 npm publish                 # prepublishOnly runs check, build and every test first
-npm view lm15 dist-tags     # latest: 1.0.0-rc.1
+npm view @lm15/lm15 dist-tags     # latest: 1.0.0-rc.1
 ```
 
-It becomes `latest` as the only version, so `npm install lm15` installs it;
+It becomes `latest` as the only version, so `npm install @lm15/lm15` installs it;
 the README says it is a release candidate.
 
 Then, on npmjs.com: package **lm15** → Settings → Trusted publisher →

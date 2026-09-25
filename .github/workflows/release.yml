@@ -2,7 +2,7 @@ name: release
 
 # Publish to npm when a GitHub Release is published, with provenance: npm
 # records which commit and workflow built the package. Uses npm trusted
-# publishing (OIDC): configure it once on npmjs.com (package lm15 → Settings →
+# publishing (OIDC): configure it once on npmjs.com (package @lm15/lm15 → Settings →
 # Trusted publisher: GitHub Actions, lm15-dev/lm15-ts, workflow release.yml).
 # No token is stored anywhere. RELEASING.md has the whole procedure.
 
@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: npm
-      url: https://www.npmjs.com/package/lm15
+      url: https://www.npmjs.com/package/@lm15/lm15
     permissions:
       contents: read
       id-token: write # npm trusted publishing and provenance
@@ -66,7 +66,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           TAG=latest
           if [[ "$VERSION" == *-* ]]; then
-            STABLE=$(npm view lm15 dist-tags.latest 2>/dev/null || true)
+            STABLE=$(npm view @lm15/lm15 dist-tags.latest 2>/dev/null || true)
             if [[ -n "$STABLE" && "$STABLE" != *-* ]]; then TAG=next; fi
           fi
           npm publish --provenance --access public --tag "$TAG"

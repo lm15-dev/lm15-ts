@@ -3,7 +3,7 @@
  * lm15-contract names, byte-exact against its corpus.
  *
  * ```ts
- * import { LMRouter, Message } from "lm15";
+ * import { LMRouter, Message } from "@lm15/lm15";
  *
  * const router = new LMRouter(); // keys from the environment (AUTH-1)
  * const response = await router.complete({ model: "claude-haiku-4-5", messages: [Message.user("hi")] });
@@ -13,7 +13,7 @@
 
 // The Node host's services (process env, files, CLI login stores, cloud
 // chains, SigV4) become the process default the moment this entry loads.
-// `lm15/browser` is the same surface minus these, and never installs them.
+// `@lm15/lm15/browser` is the same surface minus these, and never installs them.
 import { installNodePlatform } from "./platform_node.ts";
 import { NodeTransport } from "./transport_node.ts";
 import { installTransportFactory } from "./transport.ts";

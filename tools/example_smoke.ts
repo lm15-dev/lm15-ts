@@ -35,7 +35,7 @@ const LIVE_KEY = LIVE ? process.env["OPENROUTER_API_KEY"] : undefined;
 const LIVE_MODEL = process.env["LM15_SMOKE_MODEL"] ?? "openai/gpt-4.1-mini";
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>lm15 example smoke</title>
-<script type="importmap">{"imports":{"lm15/browser":"/src/browser.ts"}}</script>
+<script type="importmap">{"imports":{"@lm15/lm15/browser":"/src/browser.ts"}}</script>
 <body><script type="module" src="/tools/example_page_test.ts"></script>`;
 
 interface FakeState {

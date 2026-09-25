@@ -1,11 +1,11 @@
 # Connection budgets and response faults
 
-Node's `lm15` entry installs `NodeTransport`; `lm15/browser` defaults to
+Node's `lm15` entry installs `NodeTransport`; `@lm15/lm15/browser` defaults to
 `FetchTransport`. No Node transport or native locking module is imported by the
 browser entry.
 
 ```ts
-import { LMRouter, Timeouts } from "lm15";
+import { LMRouter, Timeouts } from "@lm15/lm15";
 const router = new LMRouter({
   timeouts: new Timeouts({ connect: 10, read: 600, write: 600, pool: 600 }),
   maxConnections: 100,

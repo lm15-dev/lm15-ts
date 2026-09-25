@@ -14,7 +14,7 @@
  * binds the returned code to the tab that started the sign-in.
  */
 
-import { generatePkce, utf8Encode } from "lm15/browser";
+import { generatePkce, utf8Encode } from "@lm15/lm15/browser";
 
 export interface LoginEndpoints {
   /** The authorization page the user is sent to. */
