@@ -58,6 +58,14 @@ jobs:
           cache: npm
       - name: npm with trusted publishing (11.5.1 or later)
         run: npm install -g npm@11
+      - name: Check out pinned contract
+        # `npm publish` runs prepublishOnly (build, check, every test), and
+        # some tests read the contract; without it they fail here although
+        # `verify` passed (found on the first release from GitHub, 1.0.0-rc.2).
+        run: |
+          PIN=$(tr -d '[:space:]' < CONTRACT_PIN)
+          git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
+          git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
       - name: Publish
         # A prerelease goes to the `next` tag once a stable version holds
