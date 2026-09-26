@@ -602,6 +602,7 @@ export const MODEL_NOT_FOUND_FORMS: readonly { code: string; prefix?: string; co
   { code: "400", suffix: " is not a valid model ID" }, // OpenRouter
   { code: "invalid-argument", prefix: "Model not found: " }, // xAI (2026-09-01)
   { code: "validation_error", contains: "The provided model identifier is invalid" }, // Bedrock Chat
+  { code: "invalid_request_error", prefix: "Deployment ", suffix: " doesn't exist or isn't accessible." }, // Parasail
 ]);
 
 /** True when the error is one of the pinned MAP-15 forms: exact code, and every text test the form gives. */

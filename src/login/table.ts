@@ -44,7 +44,8 @@ const SERVICE_LABELS: Readonly<Record<string, string>> = Object.freeze({
   "moonshotai-responses": "Moonshot AI", "kimi-code": "Moonshot AI", deepseek: "DeepSeek",
   "deepseek-anthropic": "DeepSeek", groq: "Groq", openrouter: "OpenRouter", xai: "xAI",
   zai: "Z.AI", typesafe: "TypeSafe", ollama: "Local", vllm: "Local", sglang: "Local",
-  "github-copilot": "GitHub",
+  "github-copilot": "GitHub", deepinfra: "DeepInfra", together: "Together AI", fireworks: "Fireworks AI",
+  parasail: "Parasail",
 });
 
 function recipeMethods(provider: string): LoginMethod[] {

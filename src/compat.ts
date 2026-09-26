@@ -160,6 +160,14 @@ export interface OpenAIChatCompat {
   readonly tokenScoring?: Auto<"none" | "logprob_token_ids">;
   /** The server's native effort words when it does NOT refuse the others (MAP-13: a word with no level is clamped to the nearest and recorded). */
   readonly reasoningEfforts?: readonly string[];
+  /**
+   * What an explicit reasoning-off becomes. "send" puts the dial's off word on
+   * the wire (MAP-5). "lowest" is for a model that cannot stop reasoning on a
+   * server that accepts the off word and reasons anyway: the lowest level
+   * (`reasoningEfforts[0]`, else "low") is sent and the substitution recorded
+   * (MAP-13 §4.2). Ratified 2026-09-26 (changes/2026-09-26-inference-hosts-live.md).
+   */
+  readonly reasoningOff?: Auto<"send" | "lowest">;
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
   /** `(model-id prefix, knobs)`; the first matching prefix wins. */
@@ -183,6 +191,7 @@ export interface ResolvedOpenAIChatCompat {
   readonly forcedToolChoice: "send" | "reject";
   readonly jsonSchema: "send" | "reject";
   readonly tokenScoring: "none" | "logprob_token_ids";
+  readonly reasoningOff: "send" | "lowest";
   readonly reasoningEfforts?: readonly string[];
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
@@ -194,6 +203,32 @@ const CHAT_BASE = {
   toolResultName: "omit",
   strictTools: "omit",
 } as const;
+
+const INFERENCE_HOST = {
+  ...CHAT_BASE,
+  maxTokensField: "max_completion_tokens",
+  thinkingFormat: "reasoning_effort",
+  thinkingReplay: "native",
+  cacheControl: "none",
+} as const;
+
+/** DeepInfra models measured to honour a forced tool choice (survey, 2026-09-26). */
+const DEEPINFRA_FORCED_TOOL_CHOICE = [
+  "deepseek-ai/DeepSeek-V3.2",
+  "deepseek-ai/DeepSeek-V4-Flash",
+  "deepseek-ai/DeepSeek-V4.1-Flash",
+  "zai-org/GLM-5.3-Flash",
+  "moonshotai/Kimi-K2.6",
+  "meta-llama/Llama-4-Scout-17B-16E-Instruct",
+  "Qwen/Qwen3.6-27B",
+  "Qwen/Qwen3-Next-80B-A3B-Instruct",
+  "nvidia/NVIDIA-Nemotron-3.5-Lightning",
+  "ibm-granite/granite-4.2-8b",
+  "XiaomiMiMo/MiMo-V2.6-Flash",
+  "tencent/Hy3",
+  "google/gemini-3.1-flash-lite",
+  "anthropic/claude-haiku-4-5",
+] as const;
 
 export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = Object.freeze({
   openai: { ...CHAT_BASE, maxTokensField: "max_completion_tokens", thinkingFormat: "reasoning_effort", cacheControl: "openai", toolResultMedia: "reject" },
@@ -290,6 +325,40 @@ export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = O
     reasoningEfforts: ["low", "high", "max"],
     toolResultMedia: "images",
   },
+  // ─── Open-model inference hosts (lm15-contract changes/2026-09-26-inference-hosts-live.md) ───
+  // One policy for the four, each knob receipted live 2026-09-26: the
+  // reasoning_effort dial (Fireworks refuses the `reasoning` object);
+  // reasoning replayed as reasoning_content (a planted code word was
+  // recalled through it; Fireworks refuses `reasoning`); max_completion_tokens
+  // and stream usage honoured; caching automatic, so a key or long retention
+  // is dropped with a record. Per-model rules below, each pinned by a case.
+  deepinfra: {
+    ...INFERENCE_HOST,
+    toolResultMedia: "reject", // MAP-10: 422 "Input should be a valid string" on the tool row
+    // Forced tool choice depends on the model: a survey of 24 (research/
+    // providers/deepinfra/tool_choice_survey.py) found these 14 honour
+    // required, a named function and none; others ignore them silently.
+    // MAP-8: refused by default, sent to the receipted models. Ratified 2026-09-26.
+    forcedToolChoice: "reject",
+    modelOverrides: [
+      ["openai/gpt-oss", { reasoningOff: "lowest" }],
+      ...DEEPINFRA_FORCED_TOOL_CHOICE.map((model) => [model, { forcedToolChoice: "send" }] as const),
+    ],
+  },
+  together: {
+    ...INFERENCE_HOST,
+    toolResultMedia: "reject", // open cell: no receipt yet
+    // gpt-oss: a forced tool choice answers 500 (retryable, so refused before
+    // the wire); xhigh/max/unknown words run at medium (clamped, recorded);
+    // `none` is accepted and reasoning still billed (lowest level instead).
+    // GLM-5.3 ignores `none` (lowest level instead).
+    modelOverrides: [
+      ["openai/gpt-oss", { forcedToolChoice: "reject", reasoningEfforts: ["low", "medium", "high"], reasoningOff: "lowest" }],
+      ["zai-org/GLM-5.3", { reasoningOff: "lowest" }],
+    ],
+  },
+  fireworks: { ...INFERENCE_HOST, toolResultMedia: "images" }, // MAP-10: image read (GLM-5.3-Flash)
+  parasail: { ...INFERENCE_HOST, toolResultMedia: "images" }, // MAP-10: image read (Qwen3-VL-8B)
 });
 
 export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): ResolvedOpenAIChatCompat {
@@ -310,6 +379,7 @@ export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): Resolve
     forcedToolChoice: pick(partial.forcedToolChoice, "send"),
     jsonSchema: pick(partial.jsonSchema, "send"),
     tokenScoring: pick(partial.tokenScoring, "none"),
+    reasoningOff: pick(partial.reasoningOff, "send"),
     ...(partial.reasoningEfforts ? { reasoningEfforts: partial.reasoningEfforts } : {}),
     ...(partial.routing ? { routing: partial.routing } : {}),
     ...(partial.extensions ? { extensions: partial.extensions } : {}),
@@ -503,7 +573,7 @@ export function validateCompat(dialect: string, compat: unknown): void {
       thinkingReplay: ["native", "as_text", "omit"], assistantReasoningContent: ["include_empty", "omit"],
       strictTools: ["include", "omit"], builtinTools: ["reject", "groq"], cacheControl: ["none", "openai", "openai_implicit", "anthropic"],
       userField: ["user", "user_id", "safety_identifier"], forcedToolChoice: ["send", "reject"], jsonSchema: ["send", "reject"],
-      tokenScoring: ["none", "logprob_token_ids"],
+      tokenScoring: ["none", "logprob_token_ids"], reasoningOff: ["send", "lowest"],
     },
     "openai-responses": {
       developerRole: ["developer", "system"], maxOutputTokensField: ["max_output_tokens", "max_completion_tokens", "max_tokens"],

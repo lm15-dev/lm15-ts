@@ -619,6 +619,10 @@ export const LITELLM_PROVIDER_PREFIXES: Readonly<Record<string, string>> = Objec
   hosted_vllm: "vllm",
   moonshot: "moonshotai",
   azure: "azure-chat",
+  deepinfra: "deepinfra",
+  together_ai: "together",
+  fireworks_ai: "fireworks",
+  parasail: "parasail",
 });
 
 /** Keyword arguments of `create()` / `completion()` that configure the CLIENT, not the request: refused with the lm15 place they belong. */

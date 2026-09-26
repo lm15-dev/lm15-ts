@@ -243,8 +243,19 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   override modelsFromBody(body: string): ModelInfo[] {
-    const data = obj(parseJson(body));
-    return modelInfosFromEntries(data["data"], { provider: this.provider, apiFamily: "openai_chat", idOf: (e) => e["id"] });
+    // Two catalog shapes are in the wild: OpenAI's {"object": "list", "data":
+    // [...]} and a bare JSON array (Together, live 2026-09-26: 272 entries, no
+    // envelope). Anything else is a malformed reply, never an empty catalog:
+    // reading it as zero models would lose every entry silently.
+    const data = parseJson(body);
+    const entries = Array.isArray(data) ? data : isJsonObject(data) && Array.isArray(data["data"]) ? data["data"] : undefined;
+    if (entries === undefined) {
+      throw new ProviderError(
+        `malformed provider reply: a model catalog is {"data": [...]} or a JSON array of entries. Body starts: ${JSON.stringify(body.slice(0, 200))}`,
+        { provider: this.provider },
+      );
+    }
+    return modelInfosFromEntries(entries, { provider: this.provider, apiFamily: "openai_chat", idOf: (e) => e["id"] });
   }
 
   // ─── Request ─────────────────────────────────────────────────────
@@ -478,6 +489,19 @@ export class OpenAIChatLM extends ProviderLM {
           { asked: { effort: reasoning.effort }, provider: this.provider },
         );
         reasoning = undefined;
+      }
+      if (reasoning !== undefined && reasoning.effort === "off" && compat.reasoningOff === "lowest") {
+        // The model cannot stop reasoning and this server accepts the off word
+        // and reasons anyway (compat reasoningOff): send the lowest level and
+        // say so (MAP-13 §4.2, xAI's rule).
+        const lowest = (compat.reasoningEfforts?.[0] ?? "low") as ReasoningEffort;
+        adapt(
+          "config.reasoning.effort",
+          "substituted",
+          "this model cannot stop reasoning and the server accepts 'none' and reasons anyway (a paid no-op); the lowest level was sent",
+          { asked: "off", applied: lowest, provider: this.provider },
+        );
+        reasoning = { ...reasoning, effort: lowest };
       }
       if (reasoning !== undefined && reasoning.effort !== "off") {
         // MAP-7: verbatim effort; no budget on this wire; summary is a

@@ -213,7 +213,7 @@ sign-in.
 ## Conformance
 
 Graded by [lm15-contract](https://github.com/lm15-dev/lm15-contract) at the
-commit in `CONTRACT_PIN`: every check passes (1,583 of 1,583 on
+commit in `CONTRACT_PIN`: every check passes (1,788 of 1,788 on
 2026-09-26), the same as Python, Rust and Go at theirs. The checks compare
 the exact requests lm15 builds and the responses it reads against recorded
 provider traffic. The package's own tests also replay the corpus through

@@ -38,6 +38,7 @@ const present = existsSync(join(root, "AUTHORITY.md"));
 const read = (p: string) => parseJson(readFileSync(join(root, p), "utf-8")) as JsonObject;
 const API_KEY = "test-key-123";
 const AUTH_HEADERS = new Set(["authorization", "x-api-key", "x-goog-api-key", "api-key"]);
+const AUTH_PARAMS = new Set(["key"]);
 const DROP_HEADERS = new Set(["user-agent", "accept", "accept-encoding", "content-length", "host"]);
 
 test("corpus: serde/canonical.json round-trips exactly", { skip: !present }, () => {
@@ -209,7 +210,7 @@ test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinne
     }
     compare(want, got, ["canonical_request"], new Set(), id);
   }
-  assert.deepEqual([roundTrips, lossy, foreign, refusals], [127, 29, 33, 9], "case counts moved; move CONTRACT_PIN and these constants together");
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [174, 37, 33, 9], "case counts moved; move CONTRACT_PIN and these constants together");
 });
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {
@@ -237,8 +238,12 @@ test("corpus: every canonical request builds the pinned wire request", { skip: !
     const [expUrl, expParams] = splitUrl(String(wire["url"]));
     assert.equal(built.method, wire["method"], id);
     assert.equal(url, expUrl, id);
-    assert.deepEqual(params, { ...expParams, ...(isJsonObject(wire["params"]) ? Object.fromEntries(Object.entries(wire["params"]).map(([k, v]) => [k, String(v)])) : {}) }, id);
     const pinnedString = isJsonObject(c["credential"]) && ["api_key", "bearer_token"].includes(String(c["credential"]["kind"]));
+    // The `query-key` scheme's parameter is rewritten like an auth header
+    // (harness/check.py AUTH_PARAMS, 2026-09-26: vertex-express).
+    const expected: Record<string, string> = { ...expParams, ...(isJsonObject(wire["params"]) ? Object.fromEntries(Object.entries(wire["params"]).map(([k, v]) => [k, String(v)])) : {}) };
+    if (!pinnedString) for (const k of Object.keys(expected)) if (AUTH_PARAMS.has(k.toLowerCase())) expected[k] = API_KEY;
+    assert.deepEqual(params, expected, id);
     const signs = credential instanceof AwsCredentials;
     const actualHeaders: Record<string, string> = {};
     for (const [k, v] of built.headers) if (!DROP_HEADERS.has(k.toLowerCase())) actualHeaders[k.toLowerCase()] = v;

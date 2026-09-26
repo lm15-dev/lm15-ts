@@ -178,6 +178,12 @@ export const OPENAI_CHAT_PRESET_BASE_URLS: Readonly<Record<string, string>> = Ob
   zai: "https://api.z.ai/api/paas/v4",
   meta: "https://api.meta.ai/v1",
   moonshotai: "https://api.moonshot.ai/v1",
+  // The open-model inference hosts, each its documented OpenAI-compatible root
+  // (DeepInfra: the /v1/openai root, not /v1).
+  deepinfra: "https://api.deepinfra.com/v1/openai",
+  together: "https://api.together.ai/v1",
+  fireworks: "https://api.fireworks.ai/inference/v1",
+  parasail: "https://api.parasail.io/v1",
 });
 
 // A server's OpenAI root is one address whichever OpenAI-shaped path is used;
@@ -391,6 +397,41 @@ export const ZAI = policy({
   authModes: ["bearer"],
   envKeys: ["ZAI_API_KEY"],
   baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["zai"],
+});
+
+// ─── Open-model inference hosts (changes/2026-09-26-inference-hosts-live.md) ───
+// A bearer key each, the provider's own documented variable; batch, files and
+// media endpoints they also sell are not registered.
+export const DEEPINFRA = policy({
+  provider: "deepinfra",
+  supports: supports({ models: true }),
+  authModes: ["bearer"],
+  envKeys: ["DEEPINFRA_API_KEY"],
+  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["deepinfra"],
+});
+
+export const TOGETHER = policy({
+  provider: "together",
+  supports: supports({ models: true }),
+  authModes: ["bearer"],
+  envKeys: ["TOGETHER_API_KEY"],
+  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["together"],
+});
+
+export const FIREWORKS = policy({
+  provider: "fireworks",
+  supports: supports({ models: true }),
+  authModes: ["bearer"],
+  envKeys: ["FIREWORKS_API_KEY"],
+  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["fireworks"],
+});
+
+export const PARASAIL = policy({
+  provider: "parasail",
+  supports: supports({ models: true }),
+  authModes: ["bearer"],
+  envKeys: ["PARASAIL_API_KEY"],
+  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["parasail"],
 });
 
 export const MOONSHOTAI_ENV_KEYS = ["MOONSHOTAI_API_KEY", "MOONSHOT_API_KEY"] as const;

@@ -223,6 +223,22 @@ const DEFINITIONS: readonly ProviderDefinition[] = [
     "Moonshot AI Kimi over the Anthropic Messages wire (same key as `moonshotai`, bearer token; kimi-k3 only)",
     "https://platform.kimi.ai/console/api-keys",
   ),
+  chatBound(access.DEEPINFRA, "DeepInfra open-model inference (Chat Completions dialect; models are vendor/name ids)", {
+    consoleUrl: "https://deepinfra.com/dash/api_keys",
+  }),
+  chatBound(
+    access.TOGETHER,
+    "Together AI open-model inference (Chat Completions dialect; gpt-oss refuses a forced tool choice client-side — Together answers it with HTTP 500)",
+    { consoleUrl: "https://api.together.ai/settings/projects/~current/api-keys" },
+  ),
+  chatBound(
+    access.FIREWORKS,
+    "Fireworks AI open-model inference (Chat Completions dialect; models are accounts/fireworks/models/<name> ids)",
+    { consoleUrl: "https://app.fireworks.ai/settings/users/api-keys" },
+  ),
+  chatBound(access.PARASAIL, "Parasail open-model inference (Chat Completions dialect; serverless models)", {
+    consoleUrl: "https://www.saas.parasail.io/keys",
+  }),
   responsesBound(
     access.META,
     "meta",

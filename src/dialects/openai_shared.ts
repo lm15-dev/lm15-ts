@@ -356,7 +356,10 @@ export function usageFromChat(usageData: unknown): Usage {
     outputTokens: u["completion_tokens"],
     totalTokens: u["total_tokens"],
     reasoningTokens: completion["reasoning_tokens"],
-    cacheReadTokens: prompt["cached_tokens"],
+    // Nested (OpenAI) first; some servers report the count flat on usage
+    // instead (Together's non-reasoning models: `usage.cached_tokens`, live
+    // 2026-09-26). Reading one place only turns a reported 0 into "not reported".
+    cacheReadTokens: prompt["cached_tokens"] ?? u["cached_tokens"],
     cacheWriteTokens: prompt["cache_write_tokens"],
     inputAudioTokens: prompt["audio_tokens"],
     outputAudioTokens: completion["audio_tokens"],
