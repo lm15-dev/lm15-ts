@@ -28,6 +28,11 @@ const BINDINGS: Array<[string, string]> = [
   ["anthropic", "claude-haiku-4-5"],
   ["gemini", "gemini-2.5-flash"],
   ["groq", "openai/gpt-oss-20b"],
+  // Open-model inference hosts (lm15-contract changes/2026-09-26-inference-hosts-live.md).
+  ["deepinfra", "deepseek-ai/DeepSeek-V4.1-Flash"],
+  ["together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"],
+  ["fireworks", "accounts/fireworks/models/deepseek-v4p1-flash"],
+  ["parasail", "meta-llama/Llama-3.3-70B-Instruct"],
 ];
 
 /** Records every exchange, redacting the credential header to `$ENV_KEY`. */
