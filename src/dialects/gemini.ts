@@ -25,7 +25,7 @@ import {
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
-import { Request, type BuiltinTool, type ResponseFormat } from "../types/config.ts";
+import { Request, type BuiltinTool, type ResponseFormat, type Tool } from "../types/config.ts";
 import {
   BatchEntry,
   BatchJobInfo,
@@ -145,15 +145,50 @@ function geminiTokenLogprobs(result: unknown): TokenLogprob[] {
   return out;
 }
 
-function containsKey(value: JsonValue, key: string): boolean {
-  if (isJsonObject(value)) return key in value || Object.values(value).some((v) => containsKey(v, key));
-  if (Array.isArray(value)) return value.some((v) => containsKey(v, key));
-  return false;
+/** The keys of Gemini's Schema object (generate-content#v1beta.Schema): what its OpenAPI fields parse. */
+const GEMINI_SCHEMA_FIELDS = new Set([
+  "type", "format", "title", "description", "nullable", "enum", "maxItems", "minItems",
+  "properties", "required", "minProperties", "maxProperties", "minLength", "maxLength",
+  "pattern", "example", "anyOf", "propertyOrdering", "default", "items", "minimum", "maximum",
+]);
+
+/**
+ * MAP-16: can Gemini's OpenAPI field carry `schema`? No, when a schema node
+ * — the root, a value of `properties`, `items`, an element of `anyOf` (or
+ * `anyOf` itself when it is one object) — is a boolean, has a key that is
+ * not a Schema field, has a list `type`, or has an `enum` list with an
+ * element that is not a string: the OpenAPI field answers 400 there and the
+ * JSON Schema field accepts it (live 2026-09-26). Anything else stays on the
+ * OpenAPI field; `example` and `default` are values, never walked.
+ */
+export function geminiOpenApiSchema(schema: JsonValue | undefined): boolean {
+  const stack: (JsonValue | undefined)[] = [schema];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node === "boolean") return false;
+    if (!isJsonObject(node)) continue;
+    for (const [key, value] of Object.entries(node)) {
+      if (!GEMINI_SCHEMA_FIELDS.has(key)) return false;
+      if (key === "type" && Array.isArray(value)) return false;
+      if (key === "enum" && Array.isArray(value) && value.some((v) => typeof v !== "string")) return false;
+      if (key === "properties" && isJsonObject(value)) stack.push(...Object.values(value));
+      else if (key === "items") stack.push(value);
+      else if (key === "anyOf") stack.push(...(Array.isArray(value) ? value : [value]));
+    }
+  }
+  return true;
+}
+
+/** MAP-16: `parameters` or `parametersJsonSchema`; the schema verbatim either way (INV-002). */
+function geminiFunctionDeclaration(tool: Tool): JsonObject {
+  const parameters = tool.type === "function" ? (tool.parameters ?? { type: "object", properties: {} }) : {};
+  const field = geminiOpenApiSchema(parameters) ? "parameters" : "parametersJsonSchema";
+  return { name: tool.name, description: tool.type === "function" ? (tool.description ?? null) : null, [field]: parameters };
 }
 
 function responseFormatToGeminiConfig(format: ResponseFormat): JsonObject {
   if (format.type === "json_object") return { responseMimeType: "application/json" };
-  const field = containsKey(format.schema, "additionalProperties") ? "responseJsonSchema" : "responseSchema";
+  const field = geminiOpenApiSchema(format.schema) ? "responseSchema" : "responseJsonSchema";
   return { responseMimeType: "application/json", [field]: format.schema };
 }
 
@@ -535,7 +570,7 @@ export class GeminiLM extends ProviderLM {
     if (request.tools && request.tools.length > 0 && resource === undefined) {
       const declarations = request.tools
         .filter((t) => t.type === "function")
-        .map((t) => ({ name: t.name, description: t.type === "function" ? (t.description ?? null) : null, parameters: t.type === "function" ? (t.parameters ?? { type: "object", properties: {} }) : {} }));
+        .map(geminiFunctionDeclaration);
       const tools: JsonObject[] = [];
       if (declarations.length > 0) tools.push({ functionDeclarations: declarations });
       for (const tool of request.tools) if (tool.type === "builtin") tools.push(builtinToGemini(tool));
@@ -732,7 +767,7 @@ export class GeminiLM extends ProviderLM {
     if (config.system) setup["systemInstruction"] = { parts: [{ text: typeof config.system === "string" ? config.system : partsToText(config.system) }] };
     const functionTools = (config.tools ?? [])
       .filter((t) => t.type === "function")
-      .map((t) => ({ name: t.name, description: t.type === "function" ? (t.description ?? null) : null, parameters: t.type === "function" ? (t.parameters ?? { type: "object", properties: {} }) : {} }));
+      .map(geminiFunctionDeclaration);
     if (functionTools.length > 0) setup["tools"] = [{ functionDeclarations: functionTools }];
     const gen: JsonObject = {};
     if (config.outputFormat !== undefined || GeminiLM.isAudioNativeLiveModel(config.model)) gen["responseModalities"] = ["AUDIO"];
@@ -937,7 +972,7 @@ export class GeminiLM extends ProviderLM {
     if (prefix.tools && prefix.tools.length > 0) {
       const declarations = prefix.tools
         .filter((t) => t.type === "function")
-        .map((t) => ({ name: t.name, description: t.type === "function" ? (t.description ?? null) : null, parameters: t.type === "function" ? (t.parameters ?? { type: "object", properties: {} }) : {} }));
+        .map(geminiFunctionDeclaration);
       const tools: JsonObject[] = [];
       if (declarations.length > 0) tools.push({ functionDeclarations: declarations });
       for (const t of prefix.tools) if (t.type === "builtin") tools.push(builtinToGemini(t));
