@@ -60,8 +60,15 @@ export interface ChainStep {
 
 /** AUTH-11: a cloud SDK's credential chain (AWS, Azure, Google Cloud), opened over one environment. */
 export interface CloudChain {
-  /** Settings the host's cloud profile supplies (AWS config region, gcloud project), consulted after explicit and env values. */
-  profile(policy: AccessPolicy): (name: string) => string | undefined;
+  /**
+   * Settings the cloud's own configuration supplies (AWS profile region; the
+   * Google project from the credential file, gcloud, the ADC file), as
+   * `[value, from]`, after explicit and env values. `[undefined, "metadata"]`
+   * means only the metadata server could answer: see `deferredSetting`.
+   */
+  profile(policy: AccessPolicy): (name: string) => readonly [string | undefined, string] | undefined;
+  /** Ask a network source for a setting before the first request (the Google project from the metadata server). */
+  deferredSetting?(policy: AccessPolicy, name: string): () => Promise<string | undefined>;
   /** The resolved host settings, handed back once known; the chain's rungs read them. */
   settings: Readonly<Record<string, string>>;
   /** The chain's credential provider: resolved once, cached until the skew window, re-resolved after. */

@@ -9,7 +9,7 @@
 
 import { endpointFromEnv, renderBaseUrl, resolveSettings } from "../cloud/hosts.ts";
 import { NAMED_RUNGS, namedMeaning, validateNamedCredential } from "../cloud/identity.ts";
-import { looksLikeJwt } from "./jwt.ts";
+import { looksLikeAccessToken } from "./jwt.ts";
 import { NotConfiguredError } from "../errors.ts";
 import { getDefaultPlatform, type Env, type StoredCredentialState } from "../platform.ts";
 import { PROVIDERS, canonicalProvider, type ProviderDefinition } from "../registry.ts";
@@ -37,6 +37,28 @@ export interface AuthReport {
   readonly namedMeaning?: string | undefined;
   readonly baseUrl?: string | undefined;
   readonly baseUrlSource?: string | undefined;
+  /**
+   * Where each setting came from (AUTH-10 `from`, amended 2026-09-26):
+   * `explicit`, `env:<VAR>`, `adc-env`, `gcloud-config`, `adc-file`,
+   * `metadata`, `aws-profile`, `default`; `unprobed:metadata` when only the
+   * metadata server could answer; `missing`.
+   */
+  readonly settingSources?: ReadonlyArray<readonly [string, string]>;
+}
+
+const SETTING_FROM: Record<string, string> = {
+  explicit: "settings",
+  "adc-env": "the GOOGLE_APPLICATION_CREDENTIALS file",
+  "gcloud-config": "gcloud's active configuration",
+  "adc-file": "the gcloud application default credentials file",
+  metadata: "the Google Cloud metadata server",
+  "unprobed:metadata": "the Google Cloud metadata server",
+  "aws-profile": "the active AWS profile",
+  default: "default",
+};
+
+function settingFrom(origin: string): string {
+  return origin.startsWith("env:") ? `env $${origin.slice(4)}` : SETTING_FROM[origin] ?? origin;
 }
 
 const MARKERS: Record<AuthStepState, string> = { selected: "=> ", shadowed: " ~ ", absent: " - ", unprobed: " ? " };
@@ -60,7 +82,14 @@ export function describeReport(report: AuthReport): string {
     if (unprobed.length > 0) lines.push(`  note: ${unprobed.map((s) => s.source).join(", ")} run first at request time and may win`);
   } else if (report.configured) lines.push(`  configured: probably — ${unprobed.map((s) => s.source).join(", ")} (unprobed offline)`);
   else lines.push("  configured: no");
-  for (const [name, value] of report.settings) lines.push(`  setting ${name}: ${value}`);
+  const origins = new Map(report.settingSources ?? []);
+  for (const [name, value] of report.settings) {
+    const origin = origins.get(name);
+    lines.push(`  setting ${name}: ${value}${origin && origin !== "missing" ? ` (from ${settingFrom(origin)})` : ""}`);
+  }
+  for (const [name, origin] of report.settingSources ?? []) {
+    if (origin.startsWith("unprobed:")) lines.push(`  setting ${name}: not found offline; ${settingFrom(origin)} is asked at request time`);
+  }
   return lines.join("\n");
 }
 
@@ -110,8 +139,8 @@ function explicitDetail(value: CredentialLike | undefined, policy: AccessPolicy)
   if (typeof value === "function") return "an application-supplied callable (identity not inspected by lm15)";
   const text = typeof value === "string" ? value : value instanceof ApiKey ? value.value : undefined;
   const keyScheme = policy.authScheme.find((s) => ["bearer", "x-api-key", "api-key", "query-key"].includes(s));
-  const jwt = text !== undefined && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text) && looksLikeJwt(text) && (keyScheme === "api-key" || keyScheme === "x-api-key") && policy.authScheme.includes("bearer");
-  return `provided (value never shown)${jwt ? "; sent as bearer (JWT)" : ""}`;
+  const shape = text !== undefined && (keyScheme === "api-key" || keyScheme === "x-api-key") && policy.authScheme.includes("bearer") ? looksLikeAccessToken(text) : undefined;
+  return `provided (value never shown)${shape ? `; sent as bearer (${shape})` : ""}`;
 }
 
 /** Explain, rung by rung, how `provider`'s credential resolves. Never returns secret values; performs no network I/O. */
@@ -180,9 +209,13 @@ function explainCloud(canonical: string, opts: ExplainAuthOptions, env: Readonly
   let resolved: Record<string, string> = {};
   let settingError: string | undefined;
   let baseUrl: string | undefined;
+  const sources: Record<string, string> = {};
   try {
-    resolved = resolveSettings(policy.host, opts.settings, values, { provider: canonical, endpoint, ...(profile ? { profile } : {}) });
-    if (policy.host) baseUrl = renderBaseUrl(policy.host, resolved, endpoint, canonical);
+    const problems: NotConfiguredError[] = [];
+    const deferred = new Set<string>();
+    resolved = resolveSettings(policy.host, opts.settings, values, { provider: canonical, endpoint, ...(profile ? { profile } : {}), sources, problems, deferred });
+    if (problems.length > 0) settingError = String(problems[0]!.message).split("\n")[0]!;
+    else if (policy.host && deferred.size === 0) baseUrl = renderBaseUrl(policy.host, resolved, endpoint, canonical);
   } catch (e) {
     if (!(e instanceof NotConfiguredError)) throw e;
     settingError = String(e.message).split("\n")[0]!;
@@ -213,7 +246,8 @@ function explainCloud(canonical: string, opts: ExplainAuthOptions, env: Readonly
   steps = steps.map((step) => step.kind === "api_keys" ? { ...step, source: entrySource(canonical, entry), detail: entry === undefined ? step.detail : explicitDetail(opts.apiKeys?.[entry], policy) } : step);
   const shown: Array<[string, string]> = Object.entries(resolved).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   if (settingError) shown.push(["error", settingError]);
-  return { provider: canonical, steps, configured, settings: shown, named: opts.credential, namedMeaning: opts.credential ? namedMeaning(policy, opts.credential) : undefined, baseUrl, baseUrlSource: baseUrl ? endpointSource : undefined };
+  const settingSources = Object.entries(sources).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return { provider: canonical, steps, configured, settings: shown, named: opts.credential, namedMeaning: opts.credential ? namedMeaning(policy, opts.credential) : undefined, baseUrl, baseUrlSource: baseUrl ? endpointSource : undefined, settingSources };
 }
 
 /**

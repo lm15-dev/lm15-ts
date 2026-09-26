@@ -19,45 +19,96 @@ export function utcNow(): Date {
   return new Date();
 }
 
-/** Explicit values, then `env` (when given), then the cloud profile, then defaults. Required settings raise. */
+/**
+ * A setting the cloud's own configuration supplies, with its origin in the
+ * AUTH-10 `from` vocabulary. `[undefined, "metadata"]`: only the metadata
+ * server could answer, and that is network I/O (asked later, or unprobed).
+ */
+export type SettingFound = readonly [string | undefined, string];
+
+export interface ResolveSettingsOptions {
+  provider?: string;
+  profile?: (name: string) => SettingFound | string | undefined;
+  endpoint?: string | undefined;
+  /** Receives each setting's origin: `explicit`, `env:<VAR>`, `adc-env`, `gcloud-config`, `adc-file`, `metadata`, `aws-profile`, `default`, `missing`, `unprobed:<from>`. */
+  sources?: Record<string, string>;
+  /** Receives the names only a network source can supply; they are left out instead of raising (the caller asks later). */
+  deferred?: Set<string>;
+  /** Names the caller will supply later (a router that deferred them); not required now. */
+  pending?: ReadonlySet<string>;
+  /** The doctor: missing settings are collected here instead of raising, and the rest still resolve. */
+  problems?: NotConfiguredError[];
+}
+
+/** Explicit values, then `env` (when given), then the cloud's own configuration, then defaults (AUTH-10). */
 export function resolveSettings(
   hostSpec: HostSpec | undefined,
   given: Readonly<Record<string, string>> | undefined,
   env?: Readonly<Record<string, string>>,
-  opts: { provider?: string; profile?: (name: string) => string | undefined; endpoint?: string | undefined } = {},
+  opts: ResolveSettingsOptions = {},
 ): Record<string, string> {
   const out: Record<string, string> = {};
   if (!hostSpec) return { ...(given ?? {}) };
   const remaining = { ...(given ?? {}) };
   const relaxed = opts.endpoint !== undefined ? urlOnlySettings(hostSpec) : new Set<string>();
   if (opts.endpoint !== undefined) joinEndpoint(opts.endpoint, "", opts.provider);
+  const record = opts.sources ?? {};
+  let missing: NotConfiguredError | undefined;
   for (const setting of hostSpec.settings) {
     let value: string | undefined = remaining[setting.name];
     delete remaining[setting.name];
+    let origin = value ? "explicit" : "";
     if (!value && env) {
       for (const v of setting.env) {
         const candidate = env[v];
         if (candidate) {
           value = candidate;
+          origin = `env:${v}`;
           break;
         }
       }
     }
-    if (!value && opts.profile) value = opts.profile(setting.name);
-    if (!value) value = setting.default;
+    let unprobed = "";
+    if (!value && opts.profile) {
+      const found = opts.profile(setting.name);
+      if (Array.isArray(found)) {
+        if (found[0]) [value, origin] = [found[0], found[1]];
+        else unprobed = found[1];
+      } else if (typeof found === "string" && found) [value, origin] = [found, "profile"];
+    }
+    if (!value && setting.default) [value, origin] = [setting.default, "default"];
+    if (!value && opts.pending?.has(setting.name)) {
+      record[setting.name] = "unprobed:metadata";
+      continue;
+    }
     if (!value) {
       if (relaxed.has(setting.name)) continue;
-      const hint = setting.env.length > 0 ? `set ${setting.env.join(" or ")}` : `pass settings={'${setting.name}': ...}`;
-      throw new NotConfiguredError(`${opts.provider ?? "host"}: setting '${setting.name}' is required and has no default; ${hint}`, {
+      if (unprobed && opts.deferred) {
+        opts.deferred.add(setting.name);
+        record[setting.name] = `unprobed:${unprobed}`;
+        continue;
+      }
+      let hint = setting.env.length > 0 ? `set ${setting.env.join(" or ")}` : `pass settings={'${setting.name}': ...}`;
+      // The Google project also comes from gcloud and the credential file;
+      // those were read and said nothing (AUTH-10, amended 2026-09-26).
+      if (setting.name === "project") hint += ", run `gcloud config set project <id>`, or pass settings={'project': ...}";
+      record[setting.name] = "missing";
+      missing ??= new NotConfiguredError(`${opts.provider ?? "host"}: setting '${setting.name}' is required and has no default; ${hint}`, {
         provider: opts.provider ?? null,
         credentialHint: hint,
       });
+      continue;
     }
     out[setting.name] = value;
+    record[setting.name] = origin;
   }
   const unknown = Object.keys(remaining).sort();
   if (unknown.length > 0) {
     throw new ValueError(`${opts.provider ?? "host"}: unknown host setting(s) ${JSON.stringify(unknown)}; known: ${JSON.stringify(hostSpec.settings.map((s) => s.name))}`);
+  }
+  if (missing) {
+    if (!opts.problems) throw missing;
+    opts.problems.push(missing);
   }
   return out;
 }

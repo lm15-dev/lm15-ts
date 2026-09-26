@@ -4,7 +4,7 @@
  * rule 2) and consulted at the same named points.
  */
 
-import { looksLikeJwt } from "./jwt.ts";
+import { looksLikeAccessToken } from "./jwt.ts";
 import { NotConfiguredError } from "../errors.ts";
 import { ApiKey, AwsCredentials, BearerToken, coerceCredential, type CredentialValue } from "../types/credential.ts";
 import type { AuthScheme, CredentialPolicy, ModelPlacement, StreamFraming } from "../vocab.ts";
@@ -546,13 +546,17 @@ export const AZURE_ANTHROPIC = policy({
 
 const VERTEX_BASE = "https://{location_host}/v1/projects/{project}/locations/{location}";
 
+// API keys (amended 2026-09-26): a Vertex API key in `x-goog-api-key` on the
+// project-scoped hosts; key first, a token-shaped string still bearer
+// (`authHeader`). No env key: GOOGLE_API_KEY belongs to the Gemini API and
+// vertex-express, and reading it here would silently replace the ADC identity.
 export const VERTEX = policy({
   provider: "vertex",
   supports: supports(),
   credentialPolicy: "gcp-chain",
-  authModes: ["google-oauth"],
+  authModes: ["x-goog-api-key", "google-oauth"],
   envKeys: [],
-  authScheme: ["bearer"],
+  authScheme: ["x-api-key", "bearer"],
   backend: "vertex",
   host: host({ baseUrl: VERTEX_BASE + "/publishers/google", settings: [GCP_PROJECT, GCP_LOCATION] }),
 });
@@ -645,7 +649,9 @@ export function authHeader(
   const value = coerceCredential(credential);
   const scheme = selectScheme(p, value);
   if (value instanceof AwsCredentials) return undefined;
-  if ((scheme === "api-key" || scheme === "x-api-key") && p.authScheme.includes("bearer") && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(value.value) && looksLikeJwt(value.value)) {
+  // A token-shaped string (a JWT, or a Google `ya29.` access token) is never a
+  // key on any door lm15 has; sent in a key header it is a certain 401.
+  if ((scheme === "api-key" || scheme === "x-api-key") && p.authScheme.includes("bearer") && looksLikeAccessToken(value.value) !== undefined) {
     return ["Authorization", `Bearer ${value.value}`];
   }
   if (scheme === "bearer") return ["Authorization", `Bearer ${value.value}`];

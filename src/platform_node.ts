@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { expandHome, hasStoredCredential, loadStoredCredential, storedCredentialState } from "./auth/stores.ts";
 import { describeStoredCredential } from "./auth/stores_doctor.ts";
-import { ChainContext, credentialProvider, explain, profileSettings } from "./cloud/chains.ts";
+import { ChainContext, credentialProvider, explain, metadataProject, profileSettings } from "./cloud/chains.ts";
 import { sign } from "./cloud/sigv4.ts";
 import { setDefaultPlatform, type CloudChain, type CloudChainOptions, type Platform, type SigV4Input } from "./platform.ts";
 import { FileStore } from "./login/file_store.ts";
@@ -25,6 +25,8 @@ function openCloudChain(opts: CloudChainOptions): CloudChain {
     : new ChainContext({ env: values, home: home ?? (values["HOME"] || undefined), files: opts.files ? { ...opts.files } : undefined });
   return {
     profile: (policy) => profileSettings(policy, ctx),
+    deferredSetting: (policy, name) => async () =>
+      policy.credentialPolicy === "gcp-chain" && name === "project" ? metadataProject(ctx) : undefined,
     get settings() {
       return ctx.settings;
     },

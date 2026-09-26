@@ -22,7 +22,9 @@ import { lookup } from "./registry.ts";
 import { applyClientSideStop, truncateStreamAtStopAsync } from "./stop.ts";
 import { coalesceStreamAsync, materializeResponseAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
-import { AwsCredentials, CredentialSource, coerceCredential, type CredentialLike, type CredentialValue, type NamedCredential, type SourcedCredentialProvider } from "./types/credential.ts";
+import { looksLikeAccessToken } from "./auth/jwt.ts";
+import { wireAuthHint } from "./cloud/hints.ts";
+import { ApiKey, AwsCredentials, BearerToken, CredentialSource, coerceCredential, type CredentialLike, type CredentialValue, type NamedCredential, type SourcedCredentialProvider } from "./types/credential.ts";
 import { isDefaultConfig, normalizeRequest, type Request } from "./types/config.ts";
 import type {
   BatchEntry,
@@ -66,6 +68,13 @@ export interface LMOptions {
   readonly access?: AccessPolicy;
   /** Host settings (AUTH-10): region, resource, project, location, … */
   readonly settings?: Readonly<Record<string, string>>;
+  /**
+   * Settings only a network source can supply (the Google project from the
+   * metadata server, AUTH-10): each is asked once, before the first request.
+   * A router passes these when it deferred them; a door that opens its own
+   * cloud chain finds them itself.
+   */
+  readonly deferredSettings?: Readonly<Record<string, () => Promise<string | undefined>>>;
   /** The clock every time-dependent byte reads from (tests, the harness). */
   readonly clock?: Clock;
   readonly transport?: Transport;
@@ -136,7 +145,11 @@ export abstract class ProviderLM {
   readonly access: AccessPolicy;
   readonly provider: string;
   baseUrl: string;
-  readonly hostSettings: Readonly<Record<string, string>>;
+  hostSettings: Readonly<Record<string, string>>;
+  /** Settings asked before the first request, and the placeholder base URL built while they are unknown. */
+  private pendingHost: { resolvers: Record<string, () => Promise<string | undefined>>; endpoint: string | undefined; base: string } | undefined;
+  private pendingResolution: Promise<void> | undefined;
+  private placeholderBase: string | undefined;
   readonly clock: Clock | undefined;
   transport: Transport;
   accountId: string | undefined;
@@ -169,7 +182,14 @@ export abstract class ProviderLM {
     const chain = needsChain ? platform.openCloudChain?.({ env: values, online: true }) : undefined;
     if (needsChain && !chain) throw noCloudChain(platform, policy, opts.credential);
     const profile = chain?.profile(policy);
-    this.hostSettings = resolveSettings(policy.host, opts.settings, values, { provider: policy.provider, endpoint, ...(profile ? { profile } : {}) });
+    const deferred = new Set<string>();
+    const resolvers: Record<string, () => Promise<string | undefined>> = { ...(opts.deferredSettings ?? {}) };
+    this.hostSettings = resolveSettings(policy.host, opts.settings, values, {
+      provider: policy.provider, endpoint, ...(profile ? { profile } : {}),
+      ...(chain?.deferredSetting ? { deferred } : {}),
+      pending: new Set(Object.keys(resolvers)),
+    });
+    for (const name of deferred) resolvers[name] = chain!.deferredSetting!(policy, name);
     if (chain) {
       chain.settings = this.hostSettings;
       this.credential = chain.credentialProvider(policy, opts.credential);
@@ -182,8 +202,43 @@ export abstract class ProviderLM {
         selectScheme(policy, coerceCredential(loaded.credential));
       }
     }
-    if (policy.host) this.baseUrl = renderBaseUrl(policy.host, this.hostSettings, endpoint, policy.provider);
+    if (policy.host && Object.keys(resolvers).length > 0) {
+      // A placeholder no real value can equal (braces are not allowed in any
+      // setting it stands for); the first request swaps in the real base.
+      const placeholders = Object.fromEntries(Object.keys(resolvers).map((name) => [name, `{${name}}`]));
+      this.baseUrl = renderBaseUrl(policy.host, { ...this.hostSettings, ...placeholders }, endpoint, policy.provider);
+      this.pendingHost = { resolvers, endpoint, base: this.baseUrl };
+    } else if (policy.host) this.baseUrl = renderBaseUrl(policy.host, this.hostSettings, endpoint, policy.provider);
     else if (policy.baseUrl !== undefined && this.baseUrl === dialectBaseUrl) this.baseUrl = policy.baseUrl;
+  }
+
+  /** Ask the deferred settings once (concurrent first requests share the answer), then render the real base URL. */
+  private async resolvePendingHost(): Promise<void> {
+    const pending = this.pendingHost;
+    if (!pending) return;
+    this.pendingResolution ??= (async () => {
+      const found: Record<string, string> = {};
+      for (const [name, resolver] of Object.entries(pending.resolvers)) {
+        const value = await resolver();
+        if (!value) {
+          const hint = name === "project"
+            ? "set GOOGLE_CLOUD_PROJECT or GCLOUD_PROJECT, run `gcloud config set project <id>`, or pass settings={'project': ...}"
+            : `pass settings={'${name}': ...}`;
+          throw new NotConfiguredError(`${this.provider}: setting '${name}' is required and has no default; the metadata server did not answer (not on Google Cloud?); ${hint}`, { provider: this.provider, credentialHint: hint });
+        }
+        found[name] = value;
+      }
+      this.hostSettings = { ...this.hostSettings, ...found };
+      this.baseUrl = renderBaseUrl(this.access.host!, this.hostSettings, pending.endpoint, this.provider);
+      this.placeholderBase = pending.base;
+      this.pendingHost = undefined;
+    })();
+    try {
+      await this.pendingResolution;
+    } catch (e) {
+      this.pendingResolution = undefined; // a later request asks again
+      throw e;
+    }
   }
 
   get supports() {
@@ -233,6 +288,10 @@ export abstract class ProviderLM {
   protected async emit(opts: EmitOptions, { planning = false }: { planning?: boolean } = {}): Promise<TransportRequest> {
     // plan() builds and discards: no credential provider is invoked, no
     // header is signed — the record of adaptations does not depend on it.
+    if (!planning) await this.resolvePendingHost();
+    let url = opts.url;
+    const placeholder = this.placeholderBase?.replace(/\/+$/, "");
+    if (placeholder && url.startsWith(placeholder)) url = this.base() + url.slice(placeholder.length);
     const credential = planning ? undefined : await this.resolveCredential();
     const headers: Record<string, string> = { ...(opts.headers ?? {}) };
     if (credential !== undefined && !(credential instanceof AwsCredentials)) {
@@ -241,7 +300,7 @@ export abstract class ProviderLM {
     }
     const finished = finishRequest(this.access, this.hostSettings, {
       baseUrl: this.baseUrl,
-      url: opts.url,
+      url,
       headers,
       payload: opts.payload,
       params: opts.params,
@@ -332,7 +391,29 @@ export abstract class ProviderLM {
     error = this.withCredentialOrigin(error);
     const hint = this.access.loginHint;
     if (hint && (this.access.credentialPolicy === "oauth" || this.credentialSource === "stored")) return withCredentialHint(error, hint);
+    if (error instanceof AuthError && isCloudChain(this.access)) {
+      // A cloud door refusing an identity is an IAM or token question, not a
+      // mistyped key: say which role, or which kind of credential.
+      const wire = wireAuthHint(this.access, error.status, this.sentCredentialKind());
+      if (wire) return withCredentialHint(error, wire);
+    }
     return error;
+  }
+
+  /** "key", "token", or undefined when a callable decides per request. */
+  private sentCredentialKind(): "key" | "token" | undefined {
+    const credential = this.credential;
+    if (typeof credential === "function") return "source" in credential && "named" in credential ? "token" : undefined;
+    if (credential === undefined) return undefined;
+    let value: CredentialValue;
+    try {
+      value = coerceCredential(credential);
+    } catch {
+      return undefined;
+    }
+    if (value instanceof BearerToken) return "token";
+    if (value instanceof ApiKey) return looksLikeAccessToken(value.value) ? "token" : "key";
+    return undefined;
   }
 
   /** Insert once, before guidance; request snapshots keep concurrent resolutions distinct. */

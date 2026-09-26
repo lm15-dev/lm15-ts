@@ -420,15 +420,20 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
   let origin: string | undefined;
   if (entry !== undefined && typeof apiKey !== "function") origin = `an explicit apiKeys entry (${JSON.stringify(entry)})`;
   let settings: Readonly<Record<string, string>> | undefined;
+  let deferredSettings: Record<string, () => Promise<string | undefined>> | undefined;
   if (definition.hosted) {
     const named = providerEntry(config.credentials, res.provider, config);
     const chain = getDefaultPlatform().openCloudChain?.({ env, online: true });
     const profile = chain?.profile(definition.access);
     const values: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) if (value !== undefined) values[key] = value;
+    const deferred = new Set<string>();
     settings = resolveSettings(definition.access.host, providerEntry(config.settings, res.provider, config), values, {
       provider: res.provider, ...(profile ? { profile } : {}), ...(baseUrl !== undefined ? { endpoint: baseUrl } : {}),
+      ...(chain?.deferredSetting ? { deferred } : {}),
     });
+    // AUTH-10: a setting only the metadata server can supply is asked before the first request.
+    if (deferred.size > 0) deferredSettings = Object.fromEntries([...deferred].map((name) => [name, chain!.deferredSetting!(definition.access, name)]));
     if (chain) chain.settings = settings;
     if (apiKey === undefined && policy !== "key") {
       if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access, named);
@@ -473,7 +478,7 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
       { provider: res.provider, envKeys: definition.access.envKeys },
     );
   }
-  const lm = adapterForDefinition(definition, { apiKey, ...options, ...(settings !== undefined ? { settings } : {}) });
+  const lm = adapterForDefinition(definition, { apiKey, ...options, ...(settings !== undefined ? { settings } : {}), ...(deferredSettings ? { deferredSettings } : {}) });
   if (origin !== undefined) lm.setCredentialOrigin(origin);
   return lm;
 }
@@ -540,9 +545,12 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
     const profile = chain?.profile(definition.access);
     const values: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) if (value !== undefined) values[key] = value;
+    const deferred = new Set<string>();
     const settings = resolveSettings(definition.access.host, providerEntry(config.settings, provider, config), values, {
       provider, ...(profile ? { profile } : {}), ...(baseUrl !== undefined ? { endpoint: baseUrl } : {}),
+      ...(chain?.deferredSetting ? { deferred } : {}),
     });
+    const deferredSettings = deferred.size > 0 ? Object.fromEntries([...deferred].map((name) => [name, chain!.deferredSetting!(definition.access, name)])) : undefined;
     if (chain) chain.settings = settings;
     if (apiKey === undefined && named !== undefined) {
       if (!chain) throw noCloudChain(getDefaultPlatform(), definition.access, named as NamedCredential);
@@ -551,7 +559,7 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
     if (apiKey === undefined) {
       throw new AuthOperationError(`${provider}: no credential for this cloud door under a managed Auth`, { reason: "login_required", stage: "resolution", recovery: "select_connection", provider });
     }
-    const lm = adapterForDefinition(bound, { apiKey, ...options, settings });
+    const lm = adapterForDefinition(bound, { apiKey, ...options, settings, ...(deferredSettings ? { deferredSettings } : {}) });
     if (origin !== undefined) lm.setCredentialOrigin(origin);
     return lm;
   }

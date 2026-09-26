@@ -25,6 +25,17 @@ export function looksLikeJwt(text: string): boolean {
   }
 }
 
+/**
+ * The token shape a plain string has, if any (AUTH-2, amended 2026-09-19 and
+ * 2026-09-26): a JWS compact JWT, or a Google OAuth access token (`ya29.`,
+ * what every Google token endpoint issues). No key any door issues has either.
+ */
+export function looksLikeAccessToken(text: string): "JWT" | "Google access token" | undefined {
+  if (text.startsWith("ya29.")) return "Google access token";
+  if (/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(text) && looksLikeJwt(text)) return "JWT";
+  return undefined;
+}
+
 /** The payload claims of a three-part token, unverified. Throws on a non-JWT. */
 export function decodeJwtPayload(token: string): JsonObject {
   const parts = token.split(".");

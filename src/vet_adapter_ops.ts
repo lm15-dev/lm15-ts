@@ -127,6 +127,18 @@ function raiseIfError(lm: ProviderLM, status: number, body: string): void {
   if (status >= 400) throw lm.normalizeError(status, body);
 }
 
+
+function explainedSettings(report: import("./auth/doctor.ts").AuthReport): JsonObject {
+  const values = new Map(report.settings.filter(([name]) => name !== "error"));
+  const out: JsonObject = {};
+  for (const [name, origin] of report.settingSources ?? []) {
+    if (origin === "missing") out[name] = { value: null, from: null };
+    else if (origin.startsWith("unprobed:")) out[name] = { value: null, from: origin.slice("unprobed:".length), state: "unprobed" };
+    else out[name] = { value: values.get(name) ?? null, from: origin };
+  }
+  return out;
+}
+
 const ops: Record<string, OpHandler> = {
   /** The wire request, plus `adaptations` (MAP-13) when the build recorded any — field/action/asked/applied, never the reason (a port's own wording). */
   async build_request(msg) {
@@ -465,6 +477,8 @@ registerOps({
       configured: report.configured,
       ...(report.baseUrl !== undefined ? { base_url: report.baseUrl } : {}),
       steps: report.steps.map((s) => ({ kind: s.kind, state: s.state })),
+      // PROTOCOL.md explain_auth `settings` (2026-09-26): value and origin per host setting.
+      settings: explainedSettings(report),
       report_text: [describeReport(report), JSON.stringify(report.steps.map((s) => ({ ...s })))].join("\n"),
     };
   },

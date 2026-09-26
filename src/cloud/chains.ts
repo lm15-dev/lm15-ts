@@ -26,6 +26,7 @@ import { ValueError } from "../types/validate.ts";
 import * as rs256 from "./rs256.ts";
 import { sign as sigv4Sign } from "./sigv4.ts";
 import { NAMED_RUNGS, namedMeaning, validateNamedCredential } from "./identity.ts";
+import type { SettingFound } from "./hosts.ts";
 export { NAMED_RUNGS, namedMeaning } from "./identity.ts";
 export { CredentialSource } from "../types/credential.ts";
 
@@ -187,10 +188,34 @@ function str(v: unknown): string {
   return String(v);
 }
 
-async function exchange(ctx: ChainContext, method: string, url: string, headers: Record<string, string>, body: Uint8Array | undefined, what: string): Promise<JsonObject> {
+// AUTH-21 (clarified 2026-09-24): from a failed auth-endpoint exchange only
+// the status and, when the reply's `error` (or `error.code`/`error.type`) is
+// one of these fixed words, that word. An error description can reflect the
+// request (a refresh token, a signed assertion); a fixed word cannot.
+const OAUTH_ERROR_WORDS = new Set([
+  "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type",
+  "invalid_scope", "access_denied", "server_error", "temporarily_unavailable", "authorization_pending",
+  "slow_down", "expired_token",
+]);
+
+function oauthErrorWord(data: JsonObject): string | undefined {
+  const err = data["error"];
+  const candidates = isJsonObject(err) ? [err["code"], err["type"]] : [err];
+  for (const value of candidates) if (typeof value === "string" && OAUTH_ERROR_WORDS.has(value)) return value;
+  return undefined;
+}
+
+/**
+ * One token-endpoint round trip. A refusal carries the status, a fixed OAuth
+ * word (AUTH-21), and, when the caller knows it, the one action that fixes it.
+ */
+async function exchange(ctx: ChainContext, method: string, url: string, headers: Record<string, string>, body: Uint8Array | undefined, what: string, hint?: string): Promise<JsonObject> {
   const [status, , raw] = await ctx.http!(method, url, headers, body, 30);
   const data = jsonBody(raw);
-  if (!(status >= 200 && status < 300)) throw new AuthError(`${what}: HTTP ${status}`);
+  if (!(status >= 200 && status < 300)) {
+    const word = oauthErrorWord(data);
+    throw new AuthError(`${what}: HTTP ${status}${word ? ` (${word})` : ""}`, { credentialHint: hint ?? null, providerCode: word ?? null });
+  }
   return data;
 }
 
@@ -954,25 +979,27 @@ async function gcpFromInfo(ctx: ChainContext, info: JsonObject, where: string): 
   if (kind === "authorized_user") {
     for (const k of ["refresh_token", "client_id", "client_secret"]) if (!info[k]) throw new NotConfiguredError(`${where}: authorized_user file lacks ${k}`);
     const pairs: Array<[string, string]> = [["grant_type", "refresh_token"], ["client_id", str(info["client_id"])], ["client_secret", str(info["client_secret"])], ["refresh_token", str(info["refresh_token"])]];
-    return bearerFromOauth(await exchange(ctx, "POST", str(info["token_uri"]) || GCP_TOKEN_URL, { "content-type": "application/x-www-form-urlencoded" }, form(pairs), "Google OAuth refresh"), now, "Google OAuth");
+    return bearerFromOauth(await exchange(ctx, "POST", str(info["token_uri"]) || GCP_TOKEN_URL, { "content-type": "application/x-www-form-urlencoded" }, form(pairs), `Google OAuth refresh (${where})`, gcpUserLoginHint(where)), now, "Google OAuth");
   }
   if (kind === "service_account") {
     const [tokenUri, assertion] = gcpServiceAccountAssertion(ctx, info);
-    return bearerFromOauth(await exchange(ctx, "POST", tokenUri, { "content-type": "application/x-www-form-urlencoded" }, form([["grant_type", JWT_BEARER], ["assertion", assertion]]), "Google service account"), now, "Google service account");
+    return bearerFromOauth(await exchange(ctx, "POST", tokenUri, { "content-type": "application/x-www-form-urlencoded" }, form([["grant_type", JWT_BEARER], ["assertion", assertion]]), `Google service account key (${where})`,
+      `the key in ${where} may have been deleted or disabled, or this machine's clock is off; create a new key (Cloud console: IAM & Admin > Service accounts > Keys) or use another identity`), now, "Google service account");
   }
   if (kind === "external_account") return gcpExternalAccount(ctx, info, where);
   if (kind === "impersonated_service_account") {
     const source = info["source_credentials"];
     if (!isJsonObject(source)) throw new NotConfiguredError(`${where}: impersonated_service_account lacks source_credentials`);
     const base = await gcpFromInfo(ctx, source, `${where}.source_credentials`);
-    return gcpImpersonate(ctx, base, str(info["service_account_impersonation_url"]), Array.isArray(info["delegates"]) ? info["delegates"] : []);
+    return gcpImpersonate(ctx, base, str(info["service_account_impersonation_url"]), Array.isArray(info["delegates"]) ? info["delegates"] : [], where);
   }
   throw new NotConfiguredError(`${where}: credential type ${JSON.stringify(kind)} is not supported by lm15 (external_account_authorized_user and gdch_service_account are stated gaps)`);
 }
 
-async function gcpImpersonate(ctx: ChainContext, source: BearerToken, url: string, delegates: JsonValue[]): Promise<BearerToken> {
+async function gcpImpersonate(ctx: ChainContext, source: BearerToken, url: string, delegates: JsonValue[], where: string): Promise<BearerToken> {
   const body = new TextEncoder().encode(stringifyJson({ delegates, scope: [GCP_SCOPE], lifetime: "3600s" }));
-  const data = await exchange(ctx, "POST", url, { "content-type": "application/json", authorization: `Bearer ${source.value}` }, body, "generateAccessToken");
+  const data = await exchange(ctx, "POST", url, { "content-type": "application/json", authorization: `Bearer ${source.value}` }, body, `service account impersonation (${where}; generateAccessToken)`,
+    `the service account named in ${where} must exist, and the source identity needs roles/iam.serviceAccountTokenCreator on it (roles/iam.workloadIdentityUser for a workload identity pool), and the IAM Credentials API (iamcredentials.googleapis.com) enabled; a new grant can take several minutes to apply`);
   const token = data["accessToken"];
   if (!token) throw new AuthError("generateAccessToken: no accessToken");
   return new BearerToken(str(token), data["expireTime"] ? parseRfc3339(str(data["expireTime"])) : undefined);
@@ -1015,8 +1042,9 @@ async function gcpExternalAccount(ctx: ChainContext, info: JsonObject, where: st
       subjectTokenType: str(info["subject_token_type"]),
     }),
   );
-  const token = bearerFromOauth(await exchange(ctx, "POST", str(info["token_url"]) || GCP_STS_URL, { "content-type": "application/json" }, body, "Google STS exchange"), ctx.now(), "Google STS");
-  if (info["service_account_impersonation_url"]) return gcpImpersonate(ctx, token, str(info["service_account_impersonation_url"]), []);
+  const token = bearerFromOauth(await exchange(ctx, "POST", str(info["token_url"]) || GCP_STS_URL, { "content-type": "application/json" }, body, `Google STS exchange (${where})`,
+    "the workload identity pool refused the external token: check the provider's issuer, allowed audience and attribute condition, and that the subject token is fresh"), ctx.now(), "Google STS");
+  if (info["service_account_impersonation_url"]) return gcpImpersonate(ctx, token, str(info["service_account_impersonation_url"]), [], where);
   return token;
 }
 
@@ -1034,9 +1062,22 @@ async function gcpMetadataAcquire(ctx: ChainContext): Promise<BearerToken | unde
   return bearerFromOauth(jsonBody(raw), ctx.now(), "GCE metadata");
 }
 
+function gcpUserLoginHint(where: string): string {
+  return `the saved Google login in ${where} has expired or was revoked; run \`gcloud auth application-default login\` (Google ends these sessions on its own schedule)`;
+}
+
 async function gcloudAcquire(ctx: ChainContext): Promise<BearerToken | undefined> {
   if (!ctx.run || ctx.onPath("gcloud") === undefined) return undefined;
-  const token = (await ctx.run(["gcloud", "auth", "print-access-token"], 30)).trim();
+  let token: string;
+  try {
+    token = (await ctx.run(["gcloud", "auth", "print-access-token"], 30)).trim();
+  } catch (e) {
+    if (!(e instanceof AuthError)) throw e;
+    // gcloud's own words stay unread (AUTH-5: a command's stderr is not shown).
+    throw new AuthError(`\`gcloud auth print-access-token\` failed: ${e.message.split("\n\n  To fix:")[0]}`, {
+      credentialHint: "run `gcloud auth print-access-token` yourself to see gcloud's reason; usually `gcloud auth login` fixes it (or `gcloud auth application-default login`, which lm15 reads first)",
+    });
+  }
   return token ? new BearerToken(token) : undefined;
 }
 
@@ -1079,21 +1120,83 @@ function gcpChain(policy: AccessPolicy): Rung[] {
   return rungs;
 }
 
-// ─── Settings from the cloud profile (AUTH-10 fallbacks after env) ────
+// ─── Settings from the cloud's own configuration (AUTH-10, after env) ──
 
-export function profileSettings(policy: AccessPolicy, ctx: ChainContext): (name: string) => string | undefined {
+const GCLOUD_CONFIG_NAME = /^[a-z][-a-z0-9]*$/; // gcloud's own rule (named_configs.py:37); keeps the name inside the directory
+
+/**
+ * The project `gcloud config get project` prints, read from the files gcloud
+ * reads: `CLOUDSDK_CORE_PROJECT`, then `[core] project` in
+ * `$CLOUDSDK_CONFIG/configurations/config_<name>` (`CLOUDSDK_ACTIVE_CONFIG_NAME`,
+ * else the `active_config` file, else `default`). AUTH-10, amended 2026-09-26.
+ */
+export function gcloudConfigProject(ctx: ChainContext): SettingFound | undefined {
+  const fromEnv = (ctx.env["CLOUDSDK_CORE_PROJECT"] ?? "").trim();
+  if (fromEnv) return [fromEnv, "env:CLOUDSDK_CORE_PROJECT"];
+  const base = (ctx.env["CLOUDSDK_CONFIG"] || "~/.config/gcloud").replace(/\/+$/, "");
+  const name = (ctx.env["CLOUDSDK_ACTIVE_CONFIG_NAME"] ?? "").trim() || (ctx.read(`${base}/active_config`) ?? "").trim() || "default";
+  if (!GCLOUD_CONFIG_NAME.test(name)) return undefined;
+  const raw = ctx.read(`${base}/configurations/config_${name}`);
+  if (!raw) return undefined;
+  let ini: Ini;
+  try {
+    ini = parseIni(raw);
+  } catch {
+    return undefined;
+  }
+  const value = (ini.get("core")?.get("project") ?? "").trim();
+  return value ? [value, "gcloud-config"] : undefined;
+}
+
+function gceCheckDisabled(ctx: ChainContext): boolean {
+  return ["1", "true"].includes((ctx.env["NO_GCE_CHECK"] ?? "").toLowerCase());
+}
+
+/**
+ * `project/project-id` from the metadata server: the project a Cloud Run
+ * service, GKE pod or VM runs in. Asynchronous, so a TypeScript door asks it
+ * before its first request, not at construction (AUTH-10 allows either).
+ */
+export async function metadataProject(ctx: ChainContext): Promise<string | undefined> {
+  if (!ctx.http || gceCheckDisabled(ctx)) return undefined;
+  const host = ctx.env["GCE_METADATA_HOST"] || ctx.env["GCE_METADATA_ROOT"] || "metadata.google.internal";
+  try {
+    const [status, , raw] = await ctx.http("GET", `http://${host}/computeMetadata/v1/project/project-id`, { "Metadata-Flavor": "Google" }, undefined, 1);
+    const value = status === 200 ? new TextDecoder().decode(raw).trim() : "";
+    return value && !/[\s/?#]/.test(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The setting values the cloud's own configuration carries, as `[value, from]`.
+ * AWS `region`: the active profile. Google `project` (amended 2026-09-26, the
+ * order google-auth and gcloud give it): the GOOGLE_APPLICATION_CREDENTIALS
+ * file's `project_id` (then `quota_project_id`); gcloud's active configuration;
+ * the ADC file's `quota_project_id`/`project_id`; then `[undefined, "metadata"]`
+ * — the metadata server, asked before the first request.
+ */
+export function profileSettings(policy: AccessPolicy, ctx: ChainContext): (name: string) => SettingFound | undefined {
   return (name) => {
     if (policy.credentialPolicy === "aws-chain" && name === "region") {
       const [creds, conf, profile] = awsConfig(ctx);
-      return awsProfileSection(conf, profile).get("region") || creds.get(profile)?.get("region") || undefined;
+      const value = awsProfileSection(conf, profile).get("region") || creds.get(profile)?.get("region");
+      return value ? [value, "aws-profile"] : undefined;
     }
     if (policy.credentialPolicy === "gcp-chain" && name === "project") {
-      for (const p of [ctx.env["GOOGLE_APPLICATION_CREDENTIALS"], adcFilePath(ctx)]) {
-        if (!p) continue;
-        const info = gcpCredentialFile(ctx, p) ?? {};
-        const value = info["quota_project_id"] || info["project_id"];
-        if (value) return str(value);
+      const gac = ctx.env["GOOGLE_APPLICATION_CREDENTIALS"];
+      if (gac) {
+        const info = gcpCredentialFile(ctx, gac) ?? {};
+        const value = str(info["project_id"]) || str(info["quota_project_id"]);
+        if (value) return [value, "adc-env"];
       }
+      const found = gcloudConfigProject(ctx);
+      if (found) return found;
+      const info = gcpCredentialFile(ctx, adcFilePath(ctx)) ?? {};
+      const value = str(info["quota_project_id"]) || str(info["project_id"]);
+      if (value) return [value, "adc-file"];
+      return gceCheckDisabled(ctx) ? undefined : [undefined, "metadata"];
     }
     return undefined;
   };
@@ -1204,11 +1307,29 @@ export async function resolveWithSource(policy: AccessPolicy, ctx: ChainContext,
     }).join("; ");
     throw new NotConfiguredError(`${policy.provider}: named credential "${named}" — ${namedMeaning(policy, named)} — answered nothing (${probes}). Only this identity was requested; the rest of the ${policy.credentialPolicy} chain is not tried.`, { provider: policy.provider });
   }
+  const probed = rungs.map((r) => {
+    try { return `${r.source}: ${r.probe(ctx)[1]}`; } catch { return `${r.source}: source unavailable`; }
+  }).join("; ");
   throw new NotConfiguredError(
-    `${policy.provider}: no credential found in the ${policy.credentialPolicy} chain${policy.envKeys.length > 0 ? `; set ${policy.envKeys[0]} or configure the cloud SDK` : "; configure the cloud SDK"}`,
-    { provider: policy.provider, envKeys: policy.envKeys },
+    `${policy.provider}: no credential found in the ${policy.credentialPolicy} chain (${probed})`,
+    { provider: policy.provider, envKeys: policy.envKeys, credentialHint: nothingFoundHint(policy) ?? null },
   );
 }
+
+// What to do when a whole chain answers nothing: the command that creates a
+// credential the chain reads, then the deployed alternatives.
+const NOTHING_FOUND_HINTS: Record<string, string> = {
+  "gcp-chain": "on a laptop: `gcloud auth application-default login`; elsewhere: set GOOGLE_APPLICATION_CREDENTIALS to a service-account or workload-identity file, run on Google Cloud with an attached service account, or pass apiKeys: { \"<provider>\": <token, key or callable> }",
+  "azure-chain": "on a laptop: `az login`; elsewhere: a managed identity, AZURE_TENANT_ID + AZURE_CLIENT_ID with a secret or certificate, or apiKeys: { \"<provider>\": <token provider> }",
+  "aws-chain": "on a laptop: `aws sso login` or `aws configure`; elsewhere: the instance or container role, AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, or apiKeys: { \"<provider>\": <credentials callable> }",
+};
+
+function nothingFoundHint(policy: AccessPolicy): string | undefined {
+  let hint = NOTHING_FOUND_HINTS[policy.credentialPolicy];
+  if (hint && policy.envKeys.length > 0) hint = `set ${policy.envKeys[0]}, or ${hint}`;
+  return hint?.replace("<provider>", policy.provider);
+}
+
 
 /** AUTH-2/AUTH-3: resolve once, hand out until the skew window, re-resolve after. In memory only. */
 export function credentialProvider(policy: AccessPolicy, ctx: ChainContext, named?: NamedCredential): SourcedCredentialProvider {
