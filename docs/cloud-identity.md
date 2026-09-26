@@ -72,6 +72,49 @@ OpenAI resources. Paste the Foundry console root when using
 `services.ai.azure.com`. Azure scope defaults to `https://ai.azure.com/.default`;
 the `scope` setting can select the cognitive-services scope instead.
 
+## Google Cloud
+
+Three doors: `vertex` (Gemini in your project), `vertex-anthropic` (Claude in
+your project) and `vertex-express` (Gemini with only an API key).
+
+```ts
+// Laptop: `gcloud auth application-default login` and
+// `gcloud config set project my-project`, then nothing else.
+const router = new LMRouter();
+await router.complete({ model: "vertex:gemini-2.5-flash", messages: [Message.user("hi")] });
+
+// Cloud Run, GKE, a VM: the attached service account; set nothing.
+const deployed = new LMRouter({ credentials: { vertex: "platform" } });
+
+// A Vertex API key in your project, in a region you choose.
+const keyed = new LMRouter({
+  apiKeys: { vertex: process.env.MY_VERTEX_KEY! },
+  settings: { vertex: { location: "europe-west4" } },
+});
+```
+
+The project is found the way Google's own libraries find it, first answer
+wins: `settings`, `GOOGLE_CLOUD_PROJECT` / `GCLOUD_PROJECT`, the
+`GOOGLE_APPLICATION_CREDENTIALS` file's `project_id`, gcloud's active
+configuration (`CLOUDSDK_CORE_PROJECT`, then `gcloud config set project`), the
+ADC file's `quota_project_id`, then the metadata server on Google Cloud. The
+metadata server is asked once, before the first request is built (the
+constructor is synchronous); `plan()`, which sends nothing, shows a
+`{project}` placeholder until then. `explainAuth("vertex")`
+prints which source answered.
+
+On `vertex` a string is a Vertex API key (`x-goog-api-key`) unless it looks
+like a sign-in token (`ya29.…` or a JWT), which goes as bearer; wrap any other
+token in `new BearerToken(value)`. `vertex` never reads `GOOGLE_API_KEY`: that
+variable belongs to the Gemini API and `vertex-express`. Claude on Vertex takes
+no keys, and a new project has no Claude quota until you request it.
+
+A refused sign-in names its fix (`gcloud auth application-default login`, the
+missing IAM role, an expired federation token) and shows only the status and a
+standard OAuth error word from Google's reply. Verified live on 2026-09-26
+through every Google identity above; see
+`lm15-contract/changes/2026-09-26-vertex-live.md`.
+
 ## Browsers
 
 Use `@lm15/lm15/browser` with explicit credentials and endpoint roots. Named cloud
@@ -80,5 +123,5 @@ have no CLI profiles or metadata identity discovery. Never bundle server
 credentials into a page. CORS still governs which requests and diagnostic
 headers the browser can expose.
 
-This implementation pass added regression sources but did not run them or
-perform live cloud verification.
+Azure and AWS identities here are verified by the contract's recorded cases,
+not yet by a live TypeScript run; Google Cloud was verified live (above).
