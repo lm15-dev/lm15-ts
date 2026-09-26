@@ -50,15 +50,15 @@ credentials need neither.
 
 ## Status
 
-Release candidate, checked 2026-09-25 against the pinned contract
-(`CONTRACT_PIN`): **1,492 of 1,492** contract cases pass
+Release candidate, checked 2026-09-26 against the pinned contract
+(`CONTRACT_PIN`): **1,583 of 1,583** contract checks pass
 (`harness/check.py --shim typescript --direction all`; 40 skips are corpus
-gaps shared with the Python reference), and the package's own 456 tests pass (3 skipped).
+gaps shared with the Python reference), and the package's own 457 tests pass (3 skipped).
 
 | Direction | Pass |
 |---|---|
-| request | 398 (1 skip) |
-| response | 308 (23 skips) |
+| request | 400 (1 skip) |
+| response | 310 (23 skips) |
 | stream | 40 (16 skips) |
 | error | 90 |
 | serde | 129 |
@@ -66,6 +66,7 @@ gaps shared with the Python reference), and the package's own 456 tests pass (3 
 | models, live, router | 36, 24, 22 |
 | files, batch, generation, video, cache | 48, 41, 20, 27, 11 |
 | ingest | 169 |
+| mapping (Gemini schema fields, MAP-16) | 87 |
 | managed (sign-in) | 43 |
 
 Sign in once, use everywhere: `Auth`, `connect()` and `BoundClient` are the
