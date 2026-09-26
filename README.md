@@ -36,7 +36,7 @@ that runs this package in your browser.
 npm install @lm15/lm15
 ```
 
-**1.0.0-rc.1 is a release candidate**: the API intended for 1.0, published
+**1.0.0-rc.2 is a release candidate**: the API intended for 1.0, published
 to be tried first. Pin the exact version in applications. Python's lm15 1.0
 is stable; Rust and Go are release candidates too.
 
@@ -189,8 +189,8 @@ own, or a short-lived token from your backend. See
 Besides API keys, lm15 can use an account you sign in to (a ChatGPT, Claude,
 xAI, GitHub Copilot, Kimi Code or OpenRouter login), saved in one file every
 lm15 language shares: `Auth`, `connect()` and `new LMRouter({ auth })`.
-It is in this repository's source and ships in the next release (it is not
-in 1.0.0-rc.1). Sign-in is **provisional**. See
+It ships from 1.0.0-rc.2 (it was not in 1.0.0-rc.1). Sign-in is
+**provisional**. See
 [docs/managed-login.md](docs/managed-login.md).
 
 ### More
