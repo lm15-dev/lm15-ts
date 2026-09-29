@@ -7,7 +7,7 @@ Details for contributors and for readers comparing lm15 languages. The
 
 | Path | What |
 |---|---|
-| `src/json.ts` | JSON with number fidelity: `RawNumber`, `parseJson`, `stringifyJson`, `float` |
+| `src/json.ts` | JSON with number and member-order fidelity: `RawNumber`, `parseJson`, `stringifyJson`, `float`, `orderedObject`, `memberNames`, `setMember` |
 | `src/types/` | every canonical type: interface, validating constructor, `fromJSON`/`toJSON` |
 | `src/vocab.ts`, `src/errors.ts` | the closed vocabularies; the error hierarchy |
 | `src/platform.ts`, `src/platform_node.ts` | the host boundary: the `Platform` interface and the web default; Node's services, installed by the `lm15` entry |
@@ -39,6 +39,18 @@ Each row names the rule it deviates from (playbooks/port.md rule 8).
   `serde_roundtrip` and every response are byte-exact. Typed float fields
   (`temperature`, `top_p`, `logprob`, pricing) are always emitted as floats.
   Use `new RawNumber("1.0")` to force a float lexeme by hand.
+- **Member order of objects authored in JavaScript** (INV-002; contract
+  changes/2026-09-29-index-member-names.md). A JavaScript object enumerates
+  array-index names (`"10"`) first, so a literal `{ b: 1, "10": 2 }` is
+  `{"10": 2, "b": 1}` by the time lm15 sees it and is sent that way.
+  Wire-originated objects keep their order: `parseJson` records it under
+  the registered symbol `MEMBER_ORDER` (`Symbol.for("lm15.memberOrder")`,
+  not enumerable) when JavaScript's differs, and `stringifyJson` writes it,
+  so `serde_roundtrip`, every reply and every request built from them are
+  exact. Use `orderedObject(entries)` to state an order by hand,
+  `setMember` to add a name at the end, `memberNames` to read the order.
+  Copies made by spread or `structuredClone` drop the record. The protocol
+  (in `src/json.ts`) is shared with lmcc.
 - **Shared credential locking uses kernel locks** (spec/auth.md AUTH-4).
   Linux retains the existing util-linux `flock` descriptor protocol. The optional
   Node-API backend uses POSIX `flock` / Windows `LockFileEx`; it must be built and

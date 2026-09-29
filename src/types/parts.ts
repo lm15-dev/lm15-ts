@@ -9,7 +9,7 @@
  */
 
 import { canonicalFactory } from "../canonical.ts";
-import { float, isJsonObject, isStrictJson, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
+import { float, isJsonObject, isStrictJson, memberNames, omitEmpty, orderedObject, setMember, type JsonObject, type JsonValue } from "../json.ts";
 import { IMAGE_DETAILS, JUDGMENT_METHODS, ROLES, type ImageDetail, type JudgmentMethod, type Role } from "../vocab.ts";
 import {
   ValueError,
@@ -581,9 +581,11 @@ function partToJSON(part: Part): JsonObject {
       out["value"] = part.value; // opaque, always emitted (null is a value)
       if (part.probabilities !== undefined) {
         // canonical data, not an opaque payload: floats stay JSON floats (Number rule)
-        out["probabilities"] = Object.fromEntries(
-          Object.entries(part.probabilities).map(([name, dist]) => [name, Object.fromEntries(Object.entries(dist).map(([k, v]) => [k, float(v)]))]),
-        );
+        const probs = part.probabilities;
+        out["probabilities"] = orderedObject(memberNames(probs).map((name) => {
+          const dist = probs[name]!;
+          return [name, orderedObject(memberNames(dist).map((k) => [k, float(dist[k]!)]))];
+        }));
       }
       if (part.method !== undefined) out["method"] = part.method;
       break;
@@ -670,20 +672,23 @@ function normalizeProbabilities(raw: unknown): Readonly<Record<string, Readonly<
   if (!isJsonObject(raw) || Object.keys(raw).length === 0) {
     throw new TypeError("DataPart.probabilities must be a non-empty mapping of field -> {key: probability}");
   }
+  // Declared order kept (judgment and key names may be array indexes, "10").
   const out: Record<string, Readonly<Record<string, number>>> = {};
-  for (const [name, dist] of Object.entries(raw)) {
+  for (const name of memberNames(raw)) {
+    const dist = raw[name];
     if (!name) throw new TypeError("DataPart.probabilities keys must be non-empty strings");
     if (!isJsonObject(dist) || Object.keys(dist).length === 0) {
       throw new TypeError(`DataPart.probabilities[${JSON.stringify(name)}] must be a non-empty mapping of key -> probability`);
     }
     const inner: Record<string, number> = {};
-    for (const [key, prob] of Object.entries(dist)) {
+    for (const key of memberNames(dist)) {
+      const prob = dist[key];
       if (!key) throw new TypeError(`DataPart.probabilities[${JSON.stringify(name)}] keys must be non-empty strings`);
       const n = requireFloat(prob, `DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}]`);
       if (n < 0 || n > 1) throw new ValueError(`DataPart.probabilities[${JSON.stringify(name)}][${JSON.stringify(key)}] must be in [0, 1]`);
-      Object.defineProperty(inner, key, { value: n, enumerable: true, configurable: true, writable: true });
+      setMember(inner, key, n);
     }
-    Object.defineProperty(out, name, { value: Object.freeze(inner), enumerable: true, configurable: true, writable: true });
+    setMember<Readonly<Record<string, number>>>(out, name, Object.freeze(inner));
   }
   return Object.freeze(out);
 }

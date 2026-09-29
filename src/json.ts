@@ -15,11 +15,17 @@
  *   lexemes that need it.
  * - {@link stringifyJson} writes JSON, emitting a `RawNumber` verbatim.
  * - {@link float} marks a typed float field for emission (`1` → `1.0`).
+ * - {@link memberNames}, {@link orderedObject} and {@link setMember} keep a
+ *   member order a JavaScript object cannot hold (array-index names such as
+ *   `"10"` after other names; see {@link MEMBER_ORDER}).
  *
- * Stated deviation (lm15-ts README): a JS literal written by the user inside
- * an opaque payload (`extensions: { x: 1.0 }`) is indistinguishable from
- * `1` and is emitted as the integer `1`. Wire-originated payloads keep their
- * form. Use `new RawNumber("1.0")` to force a float lexeme by hand.
+ * Stated deviations (docs/port-notes.md): a JS literal written by the user
+ * inside an opaque payload (`extensions: { x: 1.0 }`) is indistinguishable
+ * from `1` and is emitted as the integer `1`; use `new RawNumber("1.0")` to
+ * force a float lexeme by hand. Likewise a literal `{ b: 1, "10": 2 }` is
+ * already `{"10": 2, "b": 1}` when lm15 sees it; use
+ * `orderedObject([["b", 1], ["10", 2]])`. Wire-originated payloads keep
+ * both their number forms and their member order.
  */
 
 import { malformedJsonError, type ReplyMetadataSource } from "./errors.ts";
@@ -78,7 +84,8 @@ export function isNumeric(value: unknown): value is number | RawNumber {
 /**
  * INV-001: strict JSON values only. Iterative (no recursion), non-copying.
  * Rejects `undefined`, non-finite numbers, functions, class instances, Dates,
- * Maps, symbols and symbol keys.
+ * Maps, symbols and symbol keys, except a well-formed member order record
+ * ({@link MEMBER_ORDER}), which is how an object says its order.
  */
 export function isStrictJson(value: unknown): value is JsonValue {
   const stack: unknown[] = [value];
@@ -100,7 +107,10 @@ export function isStrictJson(value: unknown): value is JsonValue {
         }
         if (!isJsonObject(item)) return false;
         for (const key of Reflect.ownKeys(item)) {
-          if (typeof key !== "string") return false;
+          if (typeof key !== "string") {
+            if (key === MEMBER_ORDER && isOrderRecord(item)) continue;
+            return false;
+          }
           stack.push((item as Record<string, unknown>)[key]);
         }
         continue;
@@ -109,6 +119,135 @@ export function isStrictJson(value: unknown): value is JsonValue {
     }
   }
   return true;
+}
+
+// ─── Member order ────────────────────────────────────────────────────
+
+/**
+ * The member order record: a registered symbol (`Symbol.for`), so every
+ * copy of lm15 in a process, and any library that speaks the protocol
+ * below, reads and writes the same record.
+ *
+ * INV-002: an opaque payload round-trips exactly, member order included.
+ * A JavaScript object enumerates array-index names (`"0"`, `"10"`,
+ * `"2024"`: canonical digits below 2^32 - 1) first, in numeric order,
+ * however it was built; every other lm15 keeps the order a value holds. A
+ * JSON Schema written `reasoning` then `"2024"` would go out answer-first,
+ * and under strict structured output a model writes properties in schema
+ * order. So an object whose order JavaScript would change carries its
+ * own: the list of its member names under this symbol.
+ *
+ * The protocol (lmcc speaks it too):
+ *
+ * - The record is an own data property holding an array of strings, not
+ *   enumerable, so `Object.keys`, spread, `JSON.stringify`,
+ *   `structuredClone` and `assert.deepStrictEqual` neither see nor copy it.
+ * - An object's member order is: each name of the list that is an own
+ *   enumerable member, at its last place in the list; then the object's
+ *   other own enumerable members, in JavaScript's order. An object without
+ *   a record is in JavaScript's order.
+ * - A writer that adds a member appends its name, so the list may repeat a
+ *   name or name one the object no longer has. It is never rewritten in
+ *   place otherwise, so a record shared by two objects stays correct for
+ *   both.
+ *
+ * {@link parseJson} records the order it read, {@link stringifyJson} writes
+ * it, {@link orderedObject} and {@link setMember} build and extend it, and
+ * {@link memberNames} reads it. A copy made with spread, `structuredClone`
+ * or `JSON.parse(JSON.stringify(x))` is in JavaScript's order again.
+ */
+export const MEMBER_ORDER: unique symbol = Symbol.for("lm15.memberOrder");
+
+/** An array index as ECMA-262 defines it: JavaScript enumerates these names first. */
+export function isIndexName(key: string): boolean {
+  return /^(0|[1-9][0-9]{0,9})$/.test(key) && Number(key) < 4294967295;
+}
+
+function isOrderRecord(obj: object): boolean {
+  const d = Object.getOwnPropertyDescriptor(obj, MEMBER_ORDER);
+  if (d === undefined || !("value" in d) || !Array.isArray(d.value)) return false;
+  for (const name of d.value as unknown[]) if (typeof name !== "string") return false;
+  return true;
+}
+
+function orderRecord(obj: object): string[] | undefined {
+  if (!Object.prototype.hasOwnProperty.call(obj, MEMBER_ORDER)) return undefined;
+  if (!isOrderRecord(obj)) throw new TypeError("a member order record must be an array of strings held as a value");
+  return (obj as { [MEMBER_ORDER]: string[] })[MEMBER_ORDER];
+}
+
+function recordOrder(obj: object, names: string[]): void {
+  Object.defineProperty(obj, MEMBER_ORDER, { value: names, enumerable: false, writable: false, configurable: true });
+}
+
+/**
+ * An object's own enumerable member names in the value's order: the order
+ * lm15 read, built or added them in; names added by plain assignment follow,
+ * in JavaScript's order. Without a record this is `Object.keys`.
+ */
+export function memberNames(obj: object): string[] {
+  const own = Object.keys(obj);
+  const recorded = orderRecord(obj);
+  if (recorded === undefined) return own;
+  const present = new Set(own);
+  const placed = new Set<string>();
+  const out: string[] = [];
+  for (let i = recorded.length - 1; i >= 0; i--) {
+    const name = recorded[i]!;
+    if (present.has(name) && !placed.has(name)) {
+      placed.add(name);
+      out.push(name);
+    }
+  }
+  out.reverse();
+  if (out.length === own.length) return out;
+  for (const name of own) if (!placed.has(name)) out.push(name);
+  return out;
+}
+
+/**
+ * Set a member as data: a name the object does not hold yet comes after
+ * every member it holds, even an array-index name JavaScript would move
+ * first; replacing a member keeps its place; `__proto__` is an own member
+ * like any other, never the prototype.
+ */
+export function setMember<V>(obj: Record<string, V>, name: string, value: V): void {
+  const added = !Object.prototype.hasOwnProperty.call(obj, name);
+  const recorded = orderRecord(obj);
+  const before = added && recorded === undefined && isIndexName(name) ? Object.keys(obj) : null;
+  if (name === "__proto__") {
+    Object.defineProperty(obj, name, { value, enumerable: true, writable: true, configurable: true });
+  } else {
+    obj[name] = value;
+  }
+  if (!added) return;
+  if (recorded !== undefined) recorded.push(name);
+  else if (before !== null && before.length > 0) recordOrder(obj, [...before, name]);
+}
+
+/**
+ * A plain object whose members are in the order given, even array-index
+ * names JavaScript would move first:
+ * `orderedObject([["reasoning", s], ["2024", n]])` is written
+ * `{"reasoning": …, "2024": …}` by `stringifyJson` and sent that way. A
+ * name given twice keeps its first place and its last value, as a JSON
+ * parse does.
+ */
+export function orderedObject<E extends readonly [string, unknown]>(entries: Iterable<E>): Record<string, E[1]> {
+  // Typed by the whole entry, so mixed values (a schema's "type" string and
+  // its "properties" object) infer their union, not the first one's type.
+  const out: Record<string, E[1]> = {};
+  for (const [name, value] of entries) setMember(out, name, value);
+  return out;
+}
+
+/** A deep copy of a JSON value that keeps member order and `RawNumber`s. */
+export function copyJson<T>(value: T): T {
+  if (Array.isArray(value)) return value.map((item) => copyJson(item)) as T;
+  if (!isJsonObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const name of memberNames(value)) setMember(out, name, copyJson((value as Record<string, unknown>)[name]));
+  return out as T;
 }
 
 /**
@@ -145,13 +284,46 @@ export function isFloatLexeme(value: number | RawNumber): boolean {
 
 /**
  * Parse JSON text into JSON values, preserving number lexemes that a JS
- * number cannot (integral floats, big integers) as `RawNumber`.
+ * number cannot (integral floats, big integers) as `RawNumber`, and member
+ * order that a JS object cannot ({@link MEMBER_ORDER}).
  */
 export function parseJson(text: string): JsonValue {
   if (HAS_SOURCE_ACCESS) {
-    return JSON.parse(text, reviver) as JsonValue;
+    // JSON.parse hands the reviver objects already in JavaScript's order,
+    // so it cannot say what order the text had. Text with no member name
+    // that could be an array index is parsed as it always was.
+    if (!INDEX_NAME_HINT.test(text)) return JSON.parse(text, reviver) as JsonValue;
+    // Otherwise the reviver can say that an object might differ (more than
+    // one member, the first an array index, since JavaScript enumerates
+    // those first); only then is the text read again by the parser that
+    // records the order.
+    let reordered = false;
+    const value = JSON.parse(text, function (this: unknown, key: string, v: unknown, context?: { source?: string }) {
+      if (typeof v === "number") return reviver.call(this, key, v, context);
+      if (!reordered && v !== null && typeof v === "object" && !Array.isArray(v)) reordered = mayBeReordered(v);
+      return v;
+    }) as JsonValue;
+    return reordered ? new Parser(text).parseDocument() : value;
   }
   return new Parser(text).parseDocument();
+}
+
+/**
+ * A member name whose first character is a digit, or an escape (`"\u0031"`
+ * is `"1"`), follows `{` or `,`: the only way an array-index name can
+ * appear. It also matches array strings such as `,"2026-09-29"`, which only
+ * costs the reviver's check.
+ */
+const INDEX_NAME_HINT = /[{,][ \t\n\r]*"[0-9\\]/;
+
+function mayBeReordered(obj: object): boolean {
+  let count = 0;
+  let first = "";
+  for (const name in obj) {
+    if (count === 0) first = name;
+    if (++count > 1) return isIndexName(first);
+  }
+  return false;
 }
 
 /**
@@ -336,6 +508,10 @@ class Parser {
       this.pos++;
       return out;
     }
+    // The names in the order read (a repeated name keeps its first place,
+    // as the object does); recorded only when JavaScript enumerates otherwise.
+    const names: string[] = [];
+    let index = false;
     for (;;) {
       this.skipWs();
       if (this.text[this.pos] !== '"') this.fail("expected string key");
@@ -344,7 +520,12 @@ class Parser {
       if (this.text[this.pos++] !== ":") this.fail("expected :");
       this.skipWs();
       const value = this.parseValue();
-      if (this.rejectDuplicates && Object.prototype.hasOwnProperty.call(out, key)) this.fail("duplicate member name");
+      const seen = Object.prototype.hasOwnProperty.call(out, key);
+      if (this.rejectDuplicates && seen) this.fail("duplicate member name");
+      if (!seen) {
+        names.push(key);
+        if (!index && isIndexName(key)) index = true;
+      }
       if (key === "__proto__") {
         Object.defineProperty(out, key, { value, enumerable: true, configurable: true, writable: true });
       } else {
@@ -353,7 +534,10 @@ class Parser {
       this.skipWs();
       const c = this.text[this.pos++];
       if (c === ",") continue;
-      if (c === "}") return out;
+      if (c === "}") {
+        if (index && names.length > 1 && !sameNames(Object.keys(out), names)) recordOrder(out, names);
+        return out;
+      }
       this.fail("expected , or }");
     }
   }
@@ -367,10 +551,11 @@ export interface StringifyOptions {
 }
 
 /**
- * Serialize a JSON value. `RawNumber` is emitted verbatim; `undefined`
- * object members are skipped (as `JSON.stringify` does); anything that is
- * not a JSON value throws — the library validates at construction so this
- * never triggers on canonical data.
+ * Serialize a JSON value. `RawNumber` is emitted verbatim; members in the
+ * value's order ({@link memberNames}); `undefined` object members are
+ * skipped (as `JSON.stringify` does); anything that is not a JSON value
+ * throws — the library validates at construction so this never triggers on
+ * canonical data.
  */
 export function stringifyJson(value: unknown, options: StringifyOptions = {}): string {
   const indent = options.indent ?? 0;
@@ -426,7 +611,7 @@ function write(value: unknown, out: string[], indent: number, depth: number): vo
   if (!isJsonObject(value)) {
     throw new TypeError("stringifyJson: cannot serialize a non-plain object");
   }
-  const keys = Object.keys(value);
+  const keys = memberNames(value);
   let first = true;
   out.push("{");
   for (const key of keys) {
@@ -456,6 +641,12 @@ export function assertUnicodeScalars(text: string): void {
     }
     throw new TypeError(`stringifyJson: unpaired surrogate U+${cp.toString(16).toUpperCase().padStart(4, "0")} has no UTF-8 representation`);
   }
+}
+
+function sameNames(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
 }
 
 // ─── Equality ────────────────────────────────────────────────────────

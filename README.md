@@ -117,6 +117,22 @@ console.log(JSON.parse(reply.text!).answer);
 The schema is sent as written, keys in your order: a model fills a
 structured answer in the order its schema lists the fields.
 
+One exception comes from JavaScript itself: an object always lists
+number-like names (`"1"`, `"2024"`) first, so `{ reasoning: …, "2024": … }`
+is already `{"2024": …, reasoning: …}` before lm15 sees it. When a name is
+a number, build the object with `orderedObject`:
+
+```ts
+import { orderedObject } from "@lm15/lm15";
+
+const properties = orderedObject([["reasoning", { type: "string" }], ["2024", { type: "integer" }]]);
+```
+
+JSON that lm15 reads (a reply, a tool call's arguments, `parseJson`) keeps
+its order the same way, and sending it back keeps it. A copy made with
+`{ ...x }` or `structuredClone(x)` is in JavaScript's order again;
+`memberNames(x)` lists an object's names in its real order.
+
 ### Images and documents
 
 ```ts
@@ -213,8 +229,8 @@ sign-in.
 ## Conformance
 
 Graded by [lm15-contract](https://github.com/lm15-dev/lm15-contract) at the
-commit in `CONTRACT_PIN`: every check passes (1,788 of 1,788 on
-2026-09-26), the same as Python, Rust and Go at theirs. The checks compare
+commit in `CONTRACT_PIN`: every check passes (1,828 of 1,828 on
+2026-09-29), the same as Python, Rust and Go at theirs. The checks compare
 the exact requests lm15 builds and the responses it reads against recorded
 provider traffic. The package's own tests also replay the corpus through
 the browser entry in a realm with only web globals.

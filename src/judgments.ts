@@ -13,7 +13,7 @@
 
 import { adapt } from "./adaptation.ts";
 import { ProviderError, UnsupportedFeatureError, responseErrorMetadata } from "./errors.ts";
-import { RawNumber, isJsonObject, isNumeric, numberValue, parseJson, type JsonObject, type JsonValue } from "./json.ts";
+import { RawNumber, copyJson, isJsonObject, memberNames, orderedObject, isNumeric, numberValue, parseJson, type JsonObject, type JsonValue } from "./json.ts";
 import type { Request, ResponseFormat } from "./types/config.ts";
 import { normalizePart, type DataPart, type Part, type TextPart } from "./types/parts.ts";
 import { Response, Usage } from "./types/response.ts";
@@ -105,8 +105,8 @@ export function judgmentsInSchema(schema: unknown): Map<string, Judgment> {
   if (!isJsonObject(schema) || (schema["type"] !== undefined && schema["type"] !== "object")) return out;
   const props = schema["properties"];
   if (!isJsonObject(props)) return out;
-  for (const [name, prop] of Object.entries(props)) {
-    const j = judgmentOf(name, prop);
+  for (const name of memberNames(props)) {
+    const j = judgmentOf(name, props[name]!);
     if (j) out.set(name, j);
   }
   return out;
@@ -121,7 +121,7 @@ export function requestJudgments(request: Request): Map<string, Judgment> {
 export function nonJudgmentProperties(schema: unknown, found: ReadonlyMap<string, Judgment>): string[] {
   const props = isJsonObject(schema) ? schema["properties"] : undefined;
   if (!isJsonObject(props)) return [];
-  return Object.keys(props).filter((name) => !found.has(name));
+  return memberNames(props).filter((name) => !found.has(name));
 }
 
 // ─── §2 what a wire that measures nothing does with `probabilities` ─
@@ -140,13 +140,11 @@ export function noteUnmeasurableProbabilities(request: Request, provider: string
 }
 
 function deepCopy<T extends JsonValue>(value: T): T {
-  // INV-002/INV-050: opaque numbers keep their lexemes; native JSON
-  // serialization deliberately throws for RawNumber. Clone containers too,
-  // so a wire rewrite cannot mutate the caller's schema or branch objects.
-  if (value instanceof RawNumber) return new RawNumber(value.raw) as T;
-  if (Array.isArray(value)) return value.map((item) => deepCopy(item)) as T;
-  if (isJsonObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, deepCopy(item)])) as T;
-  return value;
+  // INV-002/INV-050: opaque numbers keep their lexemes and objects their
+  // member order (a schema's properties are the order the model answers
+  // in). Clone containers, so a wire rewrite cannot mutate the caller's
+  // schema or branch objects.
+  return copyJson(value);
 }
 
 /**
@@ -235,16 +233,11 @@ export function replaceTextWithData(parts: readonly Part[], found: ReadonlyMap<s
 /** Softmax over log-scores: one normalisation over the key set. */
 export function normalizeLogprobs(scores: Readonly<Record<string, number>>): Record<string, number> {
   const top = Math.max(...Object.values(scores));
-  const weights: Record<string, number> = {};
-  let total = 0;
-  for (const [k, v] of Object.entries(scores)) {
-    const weight = Math.exp(v - top);
-    Object.defineProperty(weights, k, { value: weight, enumerable: true });
-    total += weight;
-  }
-  const out: Record<string, number> = {};
-  for (const [k, w] of Object.entries(weights)) Object.defineProperty(out, k, { value: w / total, enumerable: true });
-  return out;
+  // The keys in their declared order, even levels named "10" after "9".
+  const names = memberNames(scores);
+  const weights = names.map((k) => Math.exp(scores[k]! - top));
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  return orderedObject(names.map((k, i): [string, number] => [k, weights[i]! / total]));
 }
 
 export function expectedLevel(distribution: Readonly<Record<string, number>>): number {
@@ -308,7 +301,7 @@ export function parseTypeSafeResponse(request: Request, response: HttpResponse, 
     if (!isJsonObject(raw) || Object.keys(raw).length !== j.keys.length || j.keys.some((key) => !Object.hasOwn(raw, key))) {
       throw invalid(`${path}.probabilities`, "expected one probability for every declared key, and no other keys");
     }
-    const probs = Object.fromEntries(j.keys.map((key) => [key, probability(raw[key], `${path}.probabilities.${key}`)]));
+    const probs = orderedObject(j.keys.map((key) => [key, probability(raw[key], `${path}.probabilities.${key}`)]));
     distributions.push([name, probs]);
     if (j.kind === "choice") {
       const chosen = answer["choice"];
@@ -335,8 +328,8 @@ export function parseTypeSafeResponse(request: Request, response: HttpResponse, 
   if (model != null && (typeof model !== "string" || model === "")) throw invalid("model", "expected a non-empty string");
   try {
     const part = normalizePart({
-      type: "data", value: Object.fromEntries(values),
-      ...(distributions.length > 0 ? { probabilities: Object.fromEntries(distributions), method: "provider_classification" } : {}),
+      type: "data", value: orderedObject(values),
+      ...(distributions.length > 0 ? { probabilities: orderedObject(distributions), method: "provider_classification" } : {}),
     });
     return new Response({
       id: requestId, model: model ?? request.model,
@@ -357,7 +350,7 @@ export function choice(instruction: string, options: Readonly<Record<string, str
   if (!Array.isArray(options) && !isJsonObject(options)) throw new TypeError("choice options must be a mapping or a list of keys");
   const items: Array<[string, string | undefined]> = Array.isArray(options)
     ? Array.from(options as readonly string[], (k): [string, undefined] => [k, undefined])
-    : Object.entries(options as Record<string, string | null | undefined>).map(([k, d]) => [k, d ?? undefined]);
+    : memberNames(options).map((k) => [k, (options as Record<string, string | null | undefined>)[k] ?? undefined]);
   if (items.length === 0) throw new ValueError("choice needs at least one option");
   if (items.some(([k]) => typeof k !== "string" || k === "")) throw new TypeError("choice option keys must be non-empty strings");
   if (new Set(items.map(([k]) => k)).size !== items.length) throw new ValueError("choice option keys must be unique");
@@ -378,7 +371,7 @@ export function score(instruction: string, levels: Readonly<Record<string, strin
   if (!Array.isArray(levels) && !isJsonObject(levels)) throw new TypeError("score levels must be a mapping or a list of descriptions");
   const items: Array<[string | undefined, string]> = Array.isArray(levels)
     ? Array.from(levels as readonly string[], (d): [undefined, string] => [undefined, d])
-    : Object.entries(levels as Record<string, string>);
+    : memberNames(levels).map((k): [string, string] => [k, (levels as Record<string, string>)[k]!]);
   if (items.length < 2) throw new ValueError("score needs at least two levels");
   if (items.length > MAX_ORDERED_LEVELS) throw new ValueError(`score takes at most ${MAX_ORDERED_LEVELS} levels`);
   const branches = items.map(([name, desc], i) => {
@@ -397,12 +390,12 @@ export type JudgmentsFormat = Extract<ResponseFormat, { type: "json_schema" }> &
 /** A `response_format` declaring the given judgment properties. */
 export function judgments(properties: Readonly<Record<string, JsonObject>>, opts: { name?: string; strict?: boolean } = {}): JudgmentsFormat {
   requireJsonObject(properties, "judgments properties");
-  const names = Object.keys(properties);
+  const names = memberNames(properties);
   if (names.length === 0) throw new ValueError("judgments needs at least one property");
   for (const name of names) requireJsonObject(properties[name], `judgments property ${JSON.stringify(name)}`);
   if (!isJsonObject(opts)) throw new TypeError("judgments options must be an object");
   const name = opts.name === undefined ? "judgments" : requireString(opts.name, "judgments name", false);
   const strict = opts.strict === undefined ? true : requireBool(opts.strict, "judgments strict");
-  const schema: JsonObject = { type: "object", properties: { ...properties }, required: names, additionalProperties: false };
+  const schema: JsonObject = { type: "object", properties: orderedObject(names.map((n) => [n, properties[n]!])), required: names, additionalProperties: false };
   return { type: "json_schema", name, strict, schema };
 }

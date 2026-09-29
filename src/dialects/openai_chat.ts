@@ -31,7 +31,7 @@ import {
   mapHttpError,
   isPinnedModelNotFound,
 } from "../errors.ts";
-import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
+import { isJsonObject, parseJson, setMember, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import { materializeResponseAsync, type SSEEvent } from "../stream.ts";
 import {
   Request,
@@ -725,11 +725,11 @@ export class OpenAIChatLM extends ProviderLM {
     const coverage: Record<string, number> = {};
     tokenized.forEach(({ j, paths }, index) => {
       const folded = this.parseReply(scoringReply, () => foldJudgment(paths, tables[index]!), false);
-      Object.defineProperty(probabilities, j.name, { value: folded.distribution, enumerable: true });
-      Object.defineProperty(coverage, j.name, { value: folded.coverage, enumerable: true });
+      setMember(probabilities, j.name, folded.distribution);
+      setMember(coverage, j.name, folded.coverage);
       let best = j.keys[0]!;
       for (const k of j.keys) if (folded.distribution[k]! > folded.distribution[best]!) best = k;
-      Object.defineProperty(value, j.name, { value: j.kind === "boolean" ? best === "true" : j.kind === "ordered" ? Number(best) : best, enumerable: true });
+      setMember<JsonValue>(value, j.name, j.kind === "boolean" ? best === "true" : j.kind === "ordered" ? Number(best) : best);
     });
     const part = normalizePart({ type: "data", value, probabilities, method: "candidate_sequence_likelihood" });
     let response = new Response({

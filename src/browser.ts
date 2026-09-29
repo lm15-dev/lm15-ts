@@ -155,7 +155,7 @@ export * from "./vocab.ts";
 // Serde
 export { toJSON, KIND_SERDE, serdeForKind } from "./serde.ts";
 export type { KindSerde } from "./serde.ts";
-export { RawNumber, parseJson, parseJsonObject, stringifyJson, jsonEquals, isJsonObject, float } from "./json.ts";
+export { RawNumber, parseJson, parseJsonObject, stringifyJson, jsonEquals, isJsonObject, float, MEMBER_ORDER, memberNames, orderedObject, setMember } from "./json.ts";
 export type { JsonValue, JsonObject, JsonPrimitive } from "./json.ts";
 
 // Errors

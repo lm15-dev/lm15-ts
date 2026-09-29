@@ -15,7 +15,7 @@
  */
 
 import { ProviderError, UnsupportedFeatureError } from "../errors.ts";
-import { isJsonObject, isNumeric, numberValue, parseJson, type JsonObject } from "../json.ts";
+import { isJsonObject, isNumeric, numberValue, parseJson, setMember, type JsonObject } from "../json.ts";
 import { Usage } from "../types/response.ts";
 import { usageFromChat } from "./openai_shared.ts";
 import { nonJudgmentProperties, normalizeLogprobs, requestJudgments, type Judgment } from "../judgments.ts";
@@ -190,7 +190,7 @@ export function foldJudgment(paths: ReadonlyMap<string, readonly number[]>, tabl
   for (const [key, seq] of paths) {
     let total = 0;
     for (let i = 0; i < seq.length; i++) total += table.get(nodeKey(seq.slice(0, i)))!.get(seq[i]!)!;
-    Object.defineProperty(raw, key, { value: total, enumerable: true });
+    setMember(raw, key, total);
   }
   const values = Object.values(raw);
   if (values.some(Number.isNaN) || !values.some(Number.isFinite)) throw new ProviderError("malformed judgment reply: every declared key has zero or unknown likelihood; cannot normalize");
