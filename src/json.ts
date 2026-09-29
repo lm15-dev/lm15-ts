@@ -661,6 +661,8 @@ export function jsonEquals(a: unknown, b: unknown): boolean {
     const fa = isNumeric(a) ? isFloatLexeme(a) : null;
     const fb = isNumeric(b) ? isFloatLexeme(b) : null;
     if (fa === null || fb === null || fa !== fb) return false;
+    // Integers compare exactly: two lexemes past 2^53 can round to one number.
+    if (!fa) return BigInt(a instanceof RawNumber ? a.raw : (a as number)) === BigInt(b instanceof RawNumber ? b.raw : (b as number));
     return numberValue(a as number | RawNumber) === numberValue(b as number | RawNumber);
   }
   if (typeof a !== typeof b) return false;

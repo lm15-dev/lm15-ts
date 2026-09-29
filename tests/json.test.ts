@@ -28,6 +28,10 @@ test("jsonEquals is the harness's strict typed equality", () => {
   assert.ok(!jsonEquals({ a: [] }, { a: {} }));
   assert.ok(!jsonEquals({ a: null }, {}));
   assert.ok(jsonEquals({ a: 1, b: undefined }, { a: 1 }));
+  // Integers past 2^53 compare by their digits, not a rounded number.
+  assert.ok(!jsonEquals(new RawNumber("12345678901234567890"), new RawNumber("12345678901234567891")));
+  assert.ok(jsonEquals(new RawNumber("12345678901234567890"), parseJson("12345678901234567890")));
+  assert.ok(!jsonEquals(new RawNumber("9007199254740993"), 9007199254740992));
 });
 
 test("omitEmpty drops null, empty string, empty array, empty object — its own level only", () => {
