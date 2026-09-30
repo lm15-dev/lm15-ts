@@ -1,6 +1,9 @@
 // AUTH-10 backend settings (amended 2026-09-30) and MAP-7 rule 6's default
 // max_tokens: lm15-contract changes/2026-09-30-claude-code-client-version.md.
 import { test } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { CLAUDE_CODE, DEFAULT_CLAUDE_CODE_VERSION, OPENAI_CODEX, resolveBackendSettings } from "../src/auth/policy.ts";
 import { describeReport, explainAuth } from "../src/auth/doctor.ts";
@@ -17,6 +20,24 @@ installNodePlatform();
 
 const REFUSAL = "Claude Code 2.1.170 does not support this model; version 2.1.280 or newer is required. "
   + "Run 'claude update', or update the Claude desktop app, then try again.";
+
+/** A routed subscription door reads its CLI's login file: a scratch HOME, never the real one. */
+function withScratchLogins<T>(run: () => Promise<T>): Promise<T> {
+  const home = mkdtempSync(join(tmpdir(), "lm15-backend-settings-"));
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  mkdirSync(join(home, ".codex"), { recursive: true });
+  writeFileSync(join(home, ".claude", ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "tok", refreshToken: "r", expiresAt: Date.now() + 3_600_000 } }));
+  writeFileSync(join(home, ".codex", "auth.json"),
+    JSON.stringify({ tokens: { access_token: "tok", refresh_token: "r", account_id: "acct" } }));
+  const saved = process.env["HOME"];
+  process.env["HOME"] = home;
+  return run().finally(() => {
+    if (saved === undefined) delete process.env["HOME"];
+    else process.env["HOME"] = saved;
+    rmSync(home, { recursive: true, force: true });
+  });
+}
 
 function header(req: TransportRequest, name: string): string | undefined {
   return req.headers.find(([k]) => k.toLowerCase() === name)?.[1];
@@ -47,14 +68,14 @@ test("the setting and the named option move the header", async () => {
   assert.throws(() => new ClaudeCodeLM({ apiKey: "k", claudeCodeVersion: "1", settings: { client_version: "2" } }), ValueError);
 });
 
-test("the router reads the setting, then the environment, then the table", async () => {
+test("the router reads the setting, then the environment, then the table", () => withScratchLogins(async () => {
   const explicit = new LMRouter({ apiKeys: { "claude-code": "k" }, env: { LM15_CLAUDE_CODE_VERSION: "2.1.282" }, settings: { claude_code: { client_version: "2.1.281" } } });
   assert.equal(await userAgent(explicit.lm("claude-code:claude-opus-5-5") as AnthropicLM), "claude-cli/2.1.281");
   const fromEnv = new LMRouter({ apiKeys: { "claude-code": "k" }, env: { LM15_CLAUDE_CODE_VERSION: "2.1.282" } });
   assert.equal(await userAgent(fromEnv.lm("claude-code:claude-opus-5-5") as AnthropicLM), "claude-cli/2.1.282");
   const byDefault = new LMRouter({ apiKeys: { "claude-code": "k" }, env: {} });
   assert.equal(await userAgent(byDefault.lm("claude-code:claude-opus-5-5") as AnthropicLM), `claude-cli/${DEFAULT_CLAUDE_CODE_VERSION}`);
-});
+}));
 
 test("an adapter built by hand reads no environment", async () => {
   process.env["LM15_CLAUDE_CODE_VERSION"] = "9.9.9";
@@ -65,13 +86,13 @@ test("an adapter built by hand reads no environment", async () => {
   }
 });
 
-test("codex client_version is the same setting", () => {
+test("codex client_version is the same setting", () => withScratchLogins(async () => {
   const lm = new OpenAICodexLM({ apiKey: "k", accountId: "a", settings: { client_version: "0.150.0" } });
   assert.equal(lm.clientVersion, "0.150.0");
   assert.equal(new OpenAICodexLM({ apiKey: "k", accountId: "a", clientVersion: "0.149.0" }).clientVersion, "0.149.0");
   const routed = new LMRouter({ apiKeys: { "openai-codex": "k" }, env: { LM15_CODEX_CLIENT_VERSION: "0.151.0" } });
   assert.equal(routed.lm("openai-codex:gpt-5.4-mini").access.backendOptions["client_version"], "0.151.0");
-});
+}));
 
 test("a setting nothing reads is refused, not dropped", () => {
   assert.throws(() => new ClaudeCodeLM({ apiKey: "k", settings: { version: "2.1.280" } }), (e: unknown) => e instanceof NotConfiguredError && /known: client_version/.test(e.message));
