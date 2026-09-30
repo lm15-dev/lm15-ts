@@ -36,7 +36,7 @@ that runs this package in your browser.
 npm install @lm15/lm15
 ```
 
-**1.0.0-rc.3 is a release candidate**: the API intended for 1.0, published
+**1.0.0-rc.4 is a release candidate**: the API intended for 1.0, published
 to be tried first. Pin the exact version in applications. Python's lm15 1.0
 is stable; Rust and Go are release candidates too.
 
