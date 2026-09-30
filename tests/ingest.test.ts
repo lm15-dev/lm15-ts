@@ -11,6 +11,7 @@ installNodePlatform();
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { GeminiLM } from "../src/dialects/gemini.ts";
 import { OpenAIChatLM, requestFromOpenAIChat } from "../src/dialects/openai_chat.ts";
 import { UnsupportedFeatureError } from "../src/errors.ts";
 import { parseJson } from "../src/json.ts";
@@ -61,9 +62,37 @@ test("ingest: malformed input is ValueError / TypeError, not a refusal", () => {
     [{ model: "m", messages: USER, user: "a", safety_identifier: "b" }, ValueError],
     [{ model: "m", messages: USER, top_logprobs: 3 }, ValueError],
     [{ model: "m", messages: USER, tool_choice: { type: "function", function: { name: "ghost" } } }, ValueError],
+    [{ model: "m", messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: "QUJD", format: "midi" } }] }] }, ValueError],
+    [{ model: "m", messages: [{ role: "user", content: [{ type: "input_audio", input_audio: { data: "QUJD", format: "toString" } }] }] }, ValueError],
     [[], TypeError],
   ];
   for (const [bad, cls] of cases) assert.throws(() => requestFromOpenAIChat(bad), cls, JSON.stringify(bad));
+});
+
+// MAP-12 rule 4 (amended 2026-09-29): each input_audio format reads as its true media type.
+const audioBody = (format: string) => ({
+  model: "gemini-3.8-flash",
+  messages: [{ role: "user", content: [{ type: "text", text: "Transcribe." }, { type: "input_audio", input_audio: { data: "T2dnUw==", format } }] }],
+});
+
+test("ingest: input_audio reads its true media type", () => {
+  const expected: Array<[string, string]> = [
+    ["wav", "audio/wav"], ["mp3", "audio/mpeg"], ["mpeg", "audio/mpeg"], ["ogg", "audio/ogg"], ["opus", "audio/opus"],
+    ["flac", "audio/flac"], ["aac", "audio/aac"], ["aiff", "audio/aiff"], ["webm", "audio/webm"],
+  ];
+  for (const [format, mediaType] of expected) {
+    const part = requestFromOpenAIChat(audioBody(format)).messages[0]!.parts[1]!;
+    assert.equal(part.type, "audio", format);
+    assert.equal((part as { mediaType?: string }).mediaType, mediaType, format);
+  }
+});
+
+test("ingest: an ogg clip reaches Gemini inline and the chat wire refuses it", async () => {
+  const req = requestFromOpenAIChat(audioBody("ogg"));
+  const wire = await new GeminiLM({ apiKey: "k" }).buildRequest(req, false);
+  const sent = parseJson(new TextDecoder().decode(wire.body)) as { contents: Array<{ parts: unknown[] }> };
+  assert.deepEqual(sent.contents[0]!.parts[1], { inlineData: { mimeType: "audio/ogg", data: "T2dnUw==" } });
+  await assert.rejects(async () => new OpenAIChatLM({ apiKey: "k" }).buildRequest(req, false), UnsupportedFeatureError);
 });
 
 test("ingest: build then ingest is the identity on a rich request", async () => {
