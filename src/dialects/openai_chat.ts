@@ -982,7 +982,14 @@ const INGEST_GROQ_BUILTIN_INVERSE: Readonly<Record<string, string>> = Object.fre
   Object.fromEntries(Object.entries(GROQ_BUILTIN_MAP).map(([name, wire]) => [wire, name])),
 );
 
-const INGEST_AUDIO_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({ wav: "audio/wav", mp3: "audio/mpeg" });
+// MAP-12 rule 4 (amended 2026-09-29): OpenAI's server takes wav and mp3,
+// Gemini's any audio type, and DSPy writes the MIME subtype (mpeg for .mp3).
+// Each format reads as its true media type; a builder with no audio slot
+// raises at send (MAP-10).
+const INGEST_AUDIO_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({
+  wav: "audio/wav", mp3: "audio/mpeg", mpeg: "audio/mpeg", ogg: "audio/ogg", opus: "audio/opus",
+  flac: "audio/flac", aac: "audio/aac", aiff: "audio/aiff", webm: "audio/webm",
+});
 
 function ingestRefuse(provider: string, what: string, why: string): UnsupportedFeatureError {
   return new UnsupportedFeatureError(`${provider}: ${what} cannot be carried by a canonical Request — ${why}`, { provider });
@@ -1132,8 +1139,11 @@ function ingestContentBlocks(provider: string, content: unknown, role: string, w
       const spec = ingestObject(present(block, "input_audio"), `${blockWhere}.input_audio`);
       ingestOnlyKeys(provider, spec, ["data", "format"], `${blockWhere}.input_audio`);
       const fmt = ingestStr(present(spec, "format"), `${blockWhere}.input_audio.format`);
-      const mediaType = INGEST_AUDIO_MEDIA_TYPES[fmt];
-      if (!mediaType) throw new ValueError(`${blockWhere}.input_audio.format must be one of ["mp3", "wav"]`);
+      // Own keys only: "toString" or "constructor" must not read through the prototype.
+      const mediaType = Object.hasOwn(INGEST_AUDIO_MEDIA_TYPES, fmt) ? INGEST_AUDIO_MEDIA_TYPES[fmt] : undefined;
+      if (!mediaType) {
+        throw new ValueError(`${blockWhere}.input_audio.format must be one of ${JSON.stringify(Object.keys(INGEST_AUDIO_MEDIA_TYPES).sort())}`);
+      }
       parts.push(audio({ data: ingestStr(present(spec, "data"), `${blockWhere}.input_audio.data`), mediaType }));
     } else if (kind === "file" && role === "user") {
       ingestOnlyKeys(provider, block, ["type", "file", "prompt_cache_breakpoint"], blockWhere);
