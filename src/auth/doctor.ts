@@ -17,7 +17,7 @@ import { apiKeysSource, routerCanonicalProvider, routerProviderLookup } from "..
 import { ApiKey, type CredentialLike, type NamedCredential } from "../types/credential.ts";
 import { ValueError } from "../types/validate.ts";
 import type { AuthStepState } from "../vocab.ts";
-import { isCloudChain, type AccessPolicy } from "./policy.ts";
+import { isCloudChain, resolveBackendSettings, type AccessPolicy } from "./policy.ts";
 
 /** One rung of the credential chain. `kind` is the language-neutral fixture identifier; `detail` carries no secret by construction. */
 export interface AuthStep {
@@ -151,14 +151,14 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
   const env = opts.env ?? getDefaultPlatform().env();
   const policy = definition.access;
   const entry = apiKeysSource(opts, canonical);
-  if (opts.auth !== undefined) return explainManaged(canonical, definition, opts.auth, opts, env, entry);
+  if (opts.auth !== undefined) return withBackendSettingsReport(explainManaged(canonical, definition, opts.auth, opts, env, entry), definition, opts.settings, env);
   validateNamedCredential(policy, opts.credential, entry !== undefined);
 
   if (isCloudChain(policy) || definition.hosted) return explainCloud(canonical, opts, env);
 
   if (policy.credentialPolicy === "oauth") {
     const step = storeStep(policy, { env, credentialsPath: canonical === "claude-code" ? opts.claudeCredentialsPath : opts.codexAuthPath, shadowed: false });
-    return { provider: canonical, steps: [step], configured: step.state === "selected", settings: [] };
+    return withBackendSettingsReport({ provider: canonical, steps: [step], configured: step.state === "selected", settings: [] }, definition, opts.settings, env);
   }
 
   const steps: AuthStep[] = [];
@@ -191,7 +191,21 @@ export function explainAuth(provider: string, opts: ExplainAuthOptions = {}): Au
     steps.push({ kind: "placeholder", source: "local-server placeholder key", detail: `preset default for keyless ${canonical} servers`, state: selected ? "shadowed" : "selected" });
     selected = true;
   }
-  return { provider: canonical, steps, configured: selected, settings: [] };
+  return withBackendSettingsReport({ provider: canonical, steps, configured: selected, settings: [] }, definition, opts.settings, env);
+}
+
+/**
+ * A door without a host prints its backend settings the way a cloud door
+ * prints its host settings (AUTH-7; AUTH-10 amended 2026-09-30): the Claude
+ * Code release the claude-code door claims, and where it came from.
+ */
+function withBackendSettingsReport(report: AuthReport, definition: ProviderDefinition, given: Readonly<Record<string, string>> | undefined,
+  env: Readonly<Record<string, string | undefined>>): AuthReport {
+  const policy = definition.access;
+  if (policy.host || (policy.backendSettings.length === 0 && given === undefined)) return report;
+  const sources: Record<string, string> = {};
+  const values = resolveBackendSettings(policy, given, env, sources);
+  return { ...report, settings: Object.entries(values), settingSources: Object.entries(sources) };
 }
 
 function explainCloud(canonical: string, opts: ExplainAuthOptions, env: Readonly<Record<string, string | undefined>>): AuthReport {

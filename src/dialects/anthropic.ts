@@ -7,7 +7,7 @@
 import { AdaptationScope, adapt, collecting, nearestEffort } from "../adaptation.ts";
 import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
 import { anthropicSchema, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
-import { ANTHROPIC_API, CLAUDE_CODE, DEFAULT_CLAUDE_CODE_VERSION, withHeaders, type AccessPolicy } from "../auth/policy.ts";
+import { ANTHROPIC_API, CLAUDE_CODE, DEFAULT_CLAUDE_CODE_VERSION, claudeCodeVersionGuidance, mergeClientVersion, type AccessPolicy } from "../auth/policy.ts";
 import {
   ANTHROPIC_PRESET_BASE_URLS,
   EFFORT_THINKING_BUDGETS,
@@ -64,27 +64,33 @@ const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 
 const ANTHROPIC_BUILTIN_MAP: Readonly<Record<string, string>> = Object.freeze({ web_search: "web_search_20250305", code_execution: "code_execution_20250522" });
 const PROVIDER_EXECUTED_BLOCKS = new Set(["server_tool_use", "web_search_tool_result", "code_execution_tool_result"]);
-// Output ceilings by model class, for the `max_tokens` the Messages API
-// requires and the caller did not set (MAP-13 `defaulted`, decision
-// 2026-09-14 §4.8). Until then the default was 1024, which cut ordinary
-// answers off with nothing said. The 3.x classes have documented lower
-// ceilings and a value above them is a 400; everything else (4.x and later,
-// and any name this table does not know) gets 16384 — loud and actionable
-// if a model's ceiling is lower ("max_tokens: 16384 > N"), never a silent
-// truncation. A table that rots; `Config.maxTokens` overrides.
-const DEFAULT_MAX_TOKENS_BY_CLASS: ReadonlyArray<readonly [string, number]> = [
+// The `max_tokens` the Messages API requires and the caller did not set
+// (MAP-13 `defaulted`; MAP-7 rule 6, amended 2026-09-30): a Claude model's own
+// output ceiling, the value OpenAI and Gemini apply when their field is
+// omitted — 128000 for the 4.6 generation and every later Claude (and any
+// Claude name this table has not met: a lower real ceiling is a loud 400,
+// never a silent truncation), 64000 for the 4.5 generation; the retired 3.x
+// values stay. From Anthropic's Models API `max_tokens` (receipts 2026-09-01,
+// 2026-09-30). A model name that is not Claude's (DeepSeek, Kimi, Muse on an
+// Anthropic-dialect server) keeps 16384: those servers publish their own.
+const CLAUDE_OUTPUT_CEILINGS: ReadonlyArray<readonly [string, number]> = [
   ["claude-3-haiku", 4096],
   ["claude-3-opus", 4096],
   ["claude-3-sonnet", 4096],
   ["claude-3-5-", 8192],
   ["claude-3.5-", 8192],
+  ["claude-haiku-4-5", 64000],
+  ["claude-sonnet-4-5", 64000],
+  ["claude-opus-4-5", 64000],
+  ["claude", 128000],
 ];
 const DEFAULT_MAX_TOKENS = 16384;
 
-function defaultMaxTokens(model: string): number {
+/** The output ceiling of a Claude model, by name; undefined for any other. */
+function claudeOutputCeiling(model: string): number | undefined {
   const lowered = model.toLowerCase();
-  for (const [marker, ceiling] of DEFAULT_MAX_TOKENS_BY_CLASS) if (lowered.includes(marker)) return ceiling;
-  return DEFAULT_MAX_TOKENS;
+  for (const [marker, ceiling] of CLAUDE_OUTPUT_CEILINGS) if (lowered.includes(marker)) return ceiling;
+  return undefined;
 }
 
 const ERROR_TYPE_MAP: Readonly<Record<string, typeof ProviderError>> = Object.freeze({
@@ -242,6 +248,8 @@ export class AnthropicLM extends ProviderLM {
       msg = isJsonObject(err) ? str(err["message"]) : str(err);
       errType = isJsonObject(err) ? str(err["type"] || err["code"]) : "";
       requestId = isJsonObject(data) ? str(data["request_id"]) : "";
+      // AUTH-10 backend settings: the minimum-version refusal names the setting to change.
+      if (this.access.backend === "claude-code") msg = claudeCodeVersionGuidance(msg);
       const meta = { status, providerCode: errType || null, requestId: requestId || null };
       if (isContextLengthMessage(msg)) return this.providerError(ContextLengthError, msg, meta);
       if (errType === "DeploymentNotFound" || ((errType === "not_found_error" || errType === "resource_not_found_error") && isModelError(msg)) || isPinnedModelNotFound(errType, msg)) { // MAP-15
@@ -455,7 +463,8 @@ export class AnthropicLM extends ProviderLM {
             ? "this server ignores budget_tokens; effort is the dial"
             : alwaysAdaptive
               ? "this server accepts budget_tokens without translating it; effort is the dial (protocols--messages.md)"
-              : `${request.model} takes thinking.type 'adaptive' with output_config.effort; budget_tokens is rejected by the API (live 2026-09-02)`;
+              : `${request.model} takes thinking.type 'adaptive' with output_config.effort; budget_tokens is rejected by the API (live 2026-09-02). `
+                + "Thinking is bounded only by max_tokens, which covers thinking and answer together: lower the effort or raise max_tokens";
           adapt("config.reasoning.thinking_budget", "dropped", why, { asked: reasoning.thinkingBudget, provider: this.provider });
           const { thinkingBudget: _drop, ...rest } = reasoning;
           reasoning = rest;
@@ -474,12 +483,22 @@ export class AnthropicLM extends ProviderLM {
     const thinkingBudget = adaptive || !on || reasoning === undefined ? undefined : (reasoning.thinkingBudget ?? EFFORT_THINKING_BUDGETS[reasoning.effort]);
     // Manual class: max_tokens includes thinking, so the wire ceiling is the
     // budget plus the visible cap. Adaptive class: Config.maxTokens is the
-    // total ceiling. The Messages API requires the field: when the caller
-    // set none, the class default is used and recorded (MAP-13).
+    // total ceiling. The Messages API requires the field: when the caller set
+    // none, a Claude model gets its output ceiling as the WIRE value (on the
+    // manual class the visible part is what the budget leaves), any other
+    // model 16384 visible; the default is recorded (MAP-13, MAP-7 rule 6).
     let visible = config.maxTokens;
     if (visible === undefined) {
-      visible = defaultMaxTokens(request.model);
-      adapt("config.max_tokens", "defaulted", "the Messages API requires max_tokens and none was set; the class default was used", { applied: visible, provider: this.provider });
+      const ceiling = claudeOutputCeiling(request.model);
+      if (ceiling === undefined) visible = DEFAULT_MAX_TOKENS;
+      else if (thinkingBudget === undefined) visible = ceiling;
+      else if (thinkingBudget < ceiling) visible = ceiling - thinkingBudget;
+      // The caller's budget alone reaches the ceiling: the server's 400 names the limit.
+      else visible = DEFAULT_MAX_TOKENS;
+      adapt("config.max_tokens", "defaulted", ceiling !== undefined
+        ? "the Messages API requires max_tokens and none was set; the model's output ceiling was used"
+        : "the Messages API requires max_tokens and none was set; 16384 was used (this server's ceiling is its own)",
+      { applied: visible, provider: this.provider });
     }
     const payload: JsonObject = {
       model: request.model,
@@ -893,18 +912,27 @@ export class AnthropicLM extends ProviderLM {
 }
 
 export interface ClaudeCodeLMOptions extends AnthropicLMOptions {
+  /** The Claude Code release this door claims: the `client_version` setting under its own name (AUTH-10). */
   readonly claudeCodeVersion?: string;
 }
 
-/** The Claude subscription binding: `AnthropicLM` with `CLAUDE_CODE` bound. */
+/**
+ * The Claude subscription binding: `AnthropicLM` with `CLAUDE_CODE` bound.
+ * `settings: { client_version: "2.1.290" }` (or `claudeCodeVersion`) changes
+ * the Claude Code release the door claims; a router also reads
+ * LM15_CLAUDE_CODE_VERSION, an adapter built by hand reads no environment.
+ */
 export class ClaudeCodeLM extends AnthropicLM {
   static override readonly manifest: AccessPolicy = CLAUDE_CODE;
 
   constructor(opts: ClaudeCodeLMOptions = {}) {
-    let policy = CLAUDE_CODE;
-    if (opts.claudeCodeVersion !== undefined && opts.claudeCodeVersion !== DEFAULT_CLAUDE_CODE_VERSION) {
-      policy = withHeaders(policy, { "user-agent": `claude-cli/${opts.claudeCodeVersion}` });
-    }
-    super({ ...opts, access: opts.access ?? policy }, CLAUDE_CODE);
+    const settings = mergeClientVersion(opts.settings, opts.claudeCodeVersion, "claudeCodeVersion");
+    super({ ...opts, access: opts.access ?? CLAUDE_CODE, ...(settings ? { settings } : {}) }, CLAUDE_CODE);
+  }
+
+  /** The Claude Code release this door claims. */
+  get claudeCodeVersion(): string {
+    return this.access.backendOptions["client_version"] ?? DEFAULT_CLAUDE_CODE_VERSION;
   }
 }
+

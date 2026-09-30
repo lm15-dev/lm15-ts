@@ -12,7 +12,7 @@ import { AdaptationScope, checkPolicy, collecting, hasClientSideStop, type Adapt
 import { abortable, checkAborted } from "./async.ts";
 import type { LiveSession, LiveSessionOptions } from "./live.ts";
 import { BatchJob, VideoJob } from "./jobs.ts";
-import { authHeader, isCloudChain, selectScheme, supportsEndpoint, type AccessPolicy } from "./auth/policy.ts";
+import { authHeader, isCloudChain, resolveBackendSettings, selectScheme, supportsEndpoint, withBackendSettings, type AccessPolicy } from "./auth/policy.ts";
 import { endpointFromEnv, finishRequest, renderBaseUrl, resolveSettings, signRequest, utcNow, type Clock } from "./cloud/hosts.ts";
 import { AuthError, LM15Error, NotConfiguredError, ProviderError, TransportError, UnsupportedFeatureError, malformedJsonError, mapHttpError, withCredentialHint } from "./errors.ts";
 import { isJsonObject, parseJson, type JsonObject } from "./json.ts";
@@ -161,7 +161,16 @@ export abstract class ProviderLM {
   private readonly requestOrigins = new WeakMap<TransportRequest, string>();
 
   protected constructor(manifest: AccessPolicy, dialectBaseUrl: string, opts: LMOptions) {
-    const policy = opts.access ?? manifest;
+    let policy = opts.access ?? manifest;
+    let settings = opts.settings;
+    if (!policy.host) {
+      // A door without a host: `settings` are its backend settings (AUTH-10,
+      // amended 2026-09-30), explicit values and the table's defaults only —
+      // the router fills env fallbacks. A name the door does not declare
+      // raises instead of being dropped.
+      policy = withBackendSettings(policy, resolveBackendSettings(policy, settings));
+      settings = undefined;
+    }
     validateNamedCredential(policy, opts.credential, opts.apiKey !== undefined);
     this.access = policy;
     this.provider = policy.provider;
@@ -184,7 +193,7 @@ export abstract class ProviderLM {
     const profile = chain?.profile(policy);
     const deferred = new Set<string>();
     const resolvers: Record<string, () => Promise<string | undefined>> = { ...(opts.deferredSettings ?? {}) };
-    this.hostSettings = resolveSettings(policy.host, opts.settings, values, {
+    this.hostSettings = resolveSettings(policy.host, settings, values, {
       provider: policy.provider, endpoint, ...(profile ? { profile } : {}),
       ...(chain?.deferredSetting ? { deferred } : {}),
       pending: new Set(Object.keys(resolvers)),

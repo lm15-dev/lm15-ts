@@ -7,7 +7,7 @@
 import { AdaptationScope, adapt, collecting } from "../adaptation.ts";
 import { noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
 import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
-import { OPENAI_API, OPENAI_CODEX, authHeader, type AccessPolicy } from "../auth/policy.ts";
+import { OPENAI_API, OPENAI_CODEX, authHeader, type AccessPolicy, mergeClientVersion } from "../auth/policy.ts";
 import { extractChatgptAccountId } from "../auth/jwt.ts";
 import {
   OPENAI_RESPONSES_PRESET_BASE_URLS,
@@ -1093,11 +1093,26 @@ export class OpenAILM extends ProviderLM {
   }
 }
 
-/** The ChatGPT Codex subscription binding: `OpenAILM` with `OPENAI_CODEX` bound. */
+export interface OpenAICodexLMOptions extends OpenAILMOptions {
+  /** The Codex CLI release the `/models` endpoint is told: the `client_version` setting under its own name (AUTH-10). */
+  readonly clientVersion?: string;
+}
+
+/**
+ * The ChatGPT Codex subscription binding: `OpenAILM` with `OPENAI_CODEX` bound.
+ * `settings: { client_version }` (or `clientVersion`) is its backend setting;
+ * a router also reads LM15_CODEX_CLIENT_VERSION.
+ */
 export class OpenAICodexLM extends OpenAILM {
   static override readonly manifest: AccessPolicy = OPENAI_CODEX;
-  constructor(opts: OpenAILMOptions = {}) {
-    super({ ...opts, access: opts.access ?? OPENAI_CODEX });
+  constructor(opts: OpenAICodexLMOptions = {}) {
+    const settings = mergeClientVersion(opts.settings, opts.clientVersion, "clientVersion");
+    super({ ...opts, access: opts.access ?? OPENAI_CODEX, ...(settings ? { settings } : {}) });
+  }
+
+  /** The Codex CLI release this door names. */
+  get clientVersion(): string {
+    return this.access.backendOptions["client_version"] ?? "";
   }
 }
 

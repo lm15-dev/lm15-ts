@@ -6,6 +6,7 @@
 
 import { looksLikeAccessToken } from "./jwt.ts";
 import { NotConfiguredError } from "../errors.ts";
+import { ValueError } from "../types/validate.ts";
 import { ApiKey, AwsCredentials, BearerToken, coerceCredential, type CredentialValue } from "../types/credential.ts";
 import type { AuthScheme, CredentialPolicy, ModelPlacement, StreamFraming } from "../vocab.ts";
 
@@ -110,6 +111,13 @@ export interface AccessPolicy {
   readonly systemPrefix?: string;
   /** This access path's default base URL, when not the dialect's. */
   readonly baseUrl?: string;
+  /**
+   * The `backendOptions` a caller may set on a door without a host (AUTH-10,
+   * amended 2026-09-30): each names a `backendOptions` key and the env
+   * variables the router consults for it; its default is the table's
+   * `backendOptions` value. The subscription doors declare `client_version`.
+   */
+  readonly backendSettings: readonly HostSetting[];
 }
 
 const CLOUD_CHAINS = new Set<string>(["aws-chain", "azure-chain", "gcp-chain"]);
@@ -127,8 +135,15 @@ function policy(spec: PolicySpec): AccessPolicy {
     headers: [],
     backend: "api",
     backendOptions: {},
+    backendSettings: [],
     ...compactSpec(spec),
   } as AccessPolicy);
+  for (const setting of p.backendSettings) {
+    // One authority for the value a door sends by default: the table's option.
+    if (setting.default !== undefined) throw new Error(`${p.provider}: backend setting '${setting.name}' takes its default from backendOptions`);
+    if (!(setting.name in p.backendOptions)) throw new Error(`${p.provider}: backend setting '${setting.name}' has no backendOptions default`);
+  }
+  if (p.backendSettings.length > 0 && p.host) throw new Error(`${p.provider}: a door with a host declares its settings on the host`);
   if (p.credentialPolicy === "oauth" && p.envKeys.length > 0) throw new Error(`${p.provider}: an 'oauth' access policy declares no env_keys`);
   if (p.authScheme.includes("sigv4") && !p.host?.sigv4Service) throw new Error(`${p.provider}: sigv4 needs a host with sigv4_service`);
   if (CLOUD_CHAINS.has(p.credentialPolicy) && !p.host && p.provider !== "vertex-express") {
@@ -161,6 +176,100 @@ export function withHeaders(p: AccessPolicy, headers: Record<string, string>): A
   const lowered = new Set(Object.keys(headers).map((k) => k.toLowerCase()));
   const kept = p.headers.filter(([k]) => !lowered.has(k.toLowerCase()));
   return Object.freeze({ ...p, headers: [...kept, ...Object.entries(headers)] });
+}
+
+// ─── Backend settings (AUTH-10, amended 2026-09-30) ──────────────────
+
+/**
+ * The door's backend settings: the caller's value, then `env` (when given —
+ * the router passes the environment, an adapter built by hand does not),
+ * then the table's `backendOptions` value. `sources` receives each origin
+ * (`explicit`, `env:<VAR>`, `default`). A name the door does not declare is
+ * a configuration error that lists the names it does: a setting nothing
+ * reads would otherwise be dropped with nothing said.
+ */
+export function resolveBackendSettings(
+  p: AccessPolicy,
+  given: Readonly<Record<string, string>> | undefined,
+  env?: Readonly<Record<string, string | undefined>>,
+  sources?: Record<string, string>,
+): Record<string, string> {
+  const supplied = given ?? {};
+  const known = p.backendSettings.map((s) => s.name);
+  const unknown = Object.keys(supplied).filter((n) => !known.includes(n)).sort();
+  if (unknown.length > 0) {
+    const hint = known.length > 0 ? `known: ${known.join(", ")}` : "this door takes no settings";
+    throw new NotConfiguredError(`${p.provider}: unknown setting(s) ${unknown.map((n) => `'${n}'`).join(", ")}; ${hint}`, {
+      provider: p.provider,
+      credentialHint: known.length > 0 ? `Pass only ${known.join(", ")} for ${p.provider}` : `Remove the settings entry for ${p.provider}`,
+    });
+  }
+  const out: Record<string, string> = {};
+  for (const setting of p.backendSettings) {
+    let value = supplied[setting.name] ?? "";
+    let origin = value ? "explicit" : "";
+    if (!value && env) {
+      for (const name of setting.env) {
+        const candidate = env[name];
+        if (candidate) {
+          value = candidate;
+          origin = `env:${name}`;
+          break;
+        }
+      }
+    }
+    if (!value) [value, origin] = [p.backendOptions[setting.name] ?? "", "default"];
+    out[setting.name] = value;
+    if (sources) sources[setting.name] = origin;
+  }
+  return out;
+}
+
+/**
+ * The policy with these resolved backend settings in `backendOptions`.
+ * `client_version` on the `claude-code` backend is also the version the
+ * `user-agent` header claims (`claude-cli/<client_version>`); on
+ * `chatgpt-codex` it is the `/models` query parameter.
+ */
+export function withBackendSettings(p: AccessPolicy, values: Readonly<Record<string, string>>): AccessPolicy {
+  const options = { ...p.backendOptions, ...values };
+  if (Object.entries(options).every(([k, v]) => p.backendOptions[k] === v)) return p;
+  let out: AccessPolicy = Object.freeze({ ...p, backendOptions: Object.freeze(options) });
+  if (p.backend === "claude-code" && values["client_version"] !== undefined) {
+    out = withHeaders(out, { "user-agent": `claude-cli/${options["client_version"]}` });
+  }
+  return out;
+}
+
+/** `settings` with the `client_version` a named option gave; two different answers are a configuration error. */
+export function mergeClientVersion(
+  settings: Readonly<Record<string, string>> | undefined,
+  version: string | undefined,
+  option: string,
+): Readonly<Record<string, string>> | undefined {
+  if (version === undefined) return settings;
+  const current = settings?.["client_version"];
+  if (current !== undefined && current !== version) {
+    throw new ValueError(`${option}=${JSON.stringify(version)} and settings client_version=${JSON.stringify(current)} disagree; pass one`);
+  }
+  return { ...(settings ?? {}), client_version: version };
+}
+
+const CLAUDE_CODE_FLOOR = /Claude Code (\S+) does not support this model; version (\S+) or newer is required/;
+
+/**
+ * The claude-code door's minimum-version refusal, with what an lm15 caller
+ * changes: the server says "run 'claude update'", which does not move the
+ * version lm15 claims (AUTH-10 backend settings). Any other message is
+ * returned unchanged.
+ */
+export function claudeCodeVersionGuidance(message: string): string {
+  const match = CLAUDE_CODE_FLOOR.exec(message);
+  if (!match || message.includes("\n\n  To fix:")) return message;
+  const required = match[2]!;
+  return `${message}\n\n  To fix:\n`
+    + "    - lm15 sends this version itself; updating Claude Code does not change it\n"
+    + `    - Set the claude-code setting client_version to ${required} or newer (or ${CLAUDE_CODE_VERSION_ENV}=${required})\n`;
 }
 
 // ─── Base URLs shared with the compat tables (one copy each) ─────────
@@ -225,8 +334,19 @@ export const ANTHROPIC_API = policy({
   authScheme: ["x-api-key"],
 });
 
-export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.170";
+/**
+ * The Claude Code release this door says it is (`user-agent:
+ * claude-cli/<version>`). Anthropic's server reads it: a model can require a
+ * newer release (claude-opus-5-5 refuses anything before 2.1.280, live
+ * 2026-09-23 and 2026-09-30). The latest release when last receipted
+ * (lm15-contract changes/2026-09-30-claude-code-client-version.md); callers
+ * move it without a release through the `client_version` setting or
+ * LM15_CLAUDE_CODE_VERSION (AUTH-10 backend settings).
+ */
+export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.285";
 export const DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+export const CLAUDE_CODE_VERSION_ENV = "LM15_CLAUDE_CODE_VERSION";
+export const CODEX_CLIENT_VERSION_ENV = "LM15_CODEX_CLIENT_VERSION";
 
 export const CLAUDE_CODE = policy({
   provider: "claude-code",
@@ -242,6 +362,8 @@ export const CLAUDE_CODE = policy({
   ],
   loginHint: CLAUDE_CODE_LOGIN_HINT,
   backend: "claude-code",
+  backendOptions: { client_version: DEFAULT_CLAUDE_CODE_VERSION },
+  backendSettings: [{ name: "client_version", env: [CLAUDE_CODE_VERSION_ENV] }],
   systemPrefix: DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT,
 });
 
@@ -279,6 +401,7 @@ export const OPENAI_CODEX = policy({
   loginHint: OPENAI_CODEX_LOGIN_HINT,
   backend: "chatgpt-codex",
   backendOptions: { client_version: DEFAULT_CODEX_CLIENT_VERSION },
+  backendSettings: [{ name: "client_version", env: [CODEX_CLIENT_VERSION_ENV] }],
   systemPrefix: DEFAULT_CODEX_INSTRUCTIONS,
   baseUrl: DEFAULT_CODEX_BASE_URL,
 });

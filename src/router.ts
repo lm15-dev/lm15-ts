@@ -12,6 +12,7 @@ import { checkPolicy, type Adaptation, type AdaptationPolicy } from "./adaptatio
 import type { ProviderLM } from "./adapter.ts";
 import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
 import { endpointFromEnv, resolveSettings } from "./cloud/hosts.ts";
+import { resolveBackendSettings } from "./auth/policy.ts";
 import { validateNamedCredential } from "./cloud/identity.ts";
 import { explainAuth, type AuthReport } from "./auth/doctor.ts";
 import { AmbiguousModelError, AuthOperationError, NotConfiguredError, UnknownModelError } from "./errors.ts";
@@ -403,14 +404,30 @@ export function resolveModel(model: string, config: RouterConfig = {}): Resoluti
 /** Provider resolved but no key was found: a `NotConfiguredError` under the family. */
 export class MissingCredentialError extends NotConfiguredError {}
 
+/**
+ * A door without a host: its backend settings (AUTH-10, amended 2026-09-30)
+ * from the config's entry, then the environment, then the table's default —
+ * `client_version` on the subscription doors. Undefined when the door
+ * declares none and the config gives none; a settings entry for a door that
+ * reads none raises (NotConfiguredError), because nothing would read it.
+ */
+function backendSettingsOf(config: RouterConfig, provider: string, definition: ProviderDefinition): Record<string, string> | undefined {
+  if (definition.hosted) return undefined;
+  const given = providerEntry(config.settings, provider, config);
+  if (given === undefined && definition.access.backendSettings.length === 0) return undefined;
+  return resolveBackendSettings(definition.access, given, envOf(config));
+}
+
 function buildLm(res: Resolution, config: RouterConfig, shared: Transport): ProviderLM {
   const definition = routerProviderLookup(res.provider, config)!;
   const policy = definition.access.credentialPolicy;
   const env = envOf(config);
   const baseUrl = baseUrlEntry(config, res.provider) ?? endpointFromEnv(definition.access.host, env);
+  const backendSettings = backendSettingsOf(config, res.provider, definition);
   const options = {
     transport: shared,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
+    ...(backendSettings !== undefined ? { settings: backendSettings } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
   };
   if (config.auth !== undefined) return buildManagedLm(res, config, definition, shared);
@@ -533,10 +550,12 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
       origin = "managed connection";
     }
   }
+  const backendSettings = backendSettingsOf(config, provider, definition);
   const options = {
     transport: shared,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(accountId !== undefined ? { accountId } : {}),
+    ...(backendSettings !== undefined ? { settings: backendSettings } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
   };
   const bound = access === definition.access ? definition : Object.freeze({ ...definition, access }) as ProviderDefinition;
@@ -577,7 +596,10 @@ function planningLm(res: Resolution, config: RouterConfig): ProviderLM {
   const definition = routerProviderLookup(res.provider, config)!;
   const host = definition.access.host;
   const given = providerEntry(config.settings, res.provider, config) ?? {};
-  const settings = Object.fromEntries((host?.settings ?? []).map((s) => [s.name, given[s.name] ?? s.default ?? "planning"]));
+  const settings = host
+    ? Object.fromEntries(host.settings.map((s) => [s.name, given[s.name] ?? s.default ?? "planning"]))
+    // A door's backend settings are the call's, env included: the plan is the call's bytes.
+    : backendSettingsOf(config, res.provider, definition) ?? {};
   const baseUrl = baseUrlEntry(config, res.provider) ?? endpointFromEnv(host, config.env ?? {});
   return adapterForDefinition(definition, {
     apiKey: "lm15-planning",

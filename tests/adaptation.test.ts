@@ -78,7 +78,7 @@ test("complete(): the record rides Response.adaptations under note, is empty und
   // A record keeps its field's JSON type: the clamped temperature is the float 1.0, never the integer 1.
   assert.deepEqual(
     response.adaptations.map((a) => [a.field, a.action, a.asked, a.applied instanceof RawNumber ? a.applied.raw : a.applied]),
-    [["config.max_tokens", "defaulted", undefined, 16384], ["config.seed", "dropped", 7, undefined], ["config.temperature", "clamped", 1.5, "1.0"], ["config.store", "satisfied", false, undefined]],
+    [["config.max_tokens", "defaulted", undefined, 64000], ["config.seed", "dropped", 7, undefined], ["config.temperature", "clamped", 1.5, "1.0"], ["config.store", "satisfied", false, undefined]],
   );
   assert.ok(stringifyJson(response.toJSON()).includes('"applied":1.0'));
   assert.equal(response.toJSON()["adaptations"] !== undefined, true);
