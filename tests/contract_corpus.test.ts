@@ -29,7 +29,7 @@ import { StreamEvent } from "../src/types/stream.ts";
 import { HttpResponse, splitUrl } from "../src/wire.ts";
 import { coalesceStream, materializeResponse, parseSse, splitLines } from "../src/stream.ts";
 import { sign } from "../src/cloud/sigv4.ts";
-import { resolveModel } from "../src/router.ts";
+import { LMRouter, resolveModel } from "../src/router.ts";
 import { ModelInfo, ModelRegistry } from "../src/types/model_info.ts";
 import { StreamAssemblyError, LM15Error } from "../src/errors.ts";
 
@@ -102,7 +102,9 @@ test("corpus: router/resolution.json", { skip: !present }, () => {
     }
     const expect = c["expect"] as JsonObject;
     try {
-      const r = resolveModel(String(c["model"]), { env: {}, ...(registry ? { registry } : {}) });
+      const r = c["op"] === "resolve_openai_chat_model"
+        ? new LMRouter({ env: {} }).resolveOpenAIChat(String(c["model"]))
+        : resolveModel(String(c["model"]), { env: {}, ...(registry ? { registry } : {}) });
       assert.deepEqual({ provider: r.provider, model: r.model, source: r.source }, { provider: expect["provider"], model: expect["model"], source: expect["source"] }, String(c["id"]));
     } catch (e) {
       if (!(e instanceof LM15Error)) throw e;

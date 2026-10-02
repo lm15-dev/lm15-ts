@@ -141,7 +141,7 @@ test("lmstudio is its own chat policy (no dial, a hypothesis) at LM Studio's own
   // 2026-09-14 (MAP-13 audit §3b): Ollama's source maps reasoning_effort to `think`; LM Studio stays unreceipted and dial-less.
   assert.equal(OPENAI_CHAT_PRESETS["ollama"]!.thinkingFormat, "reasoning_effort");
   assert.equal(OPENAI_CHAT_PRESETS["lmstudio"]!.thinkingFormat, "none");
-  assert.equal(OPENAI_RESPONSES_PRESETS["lmstudio"], OPENAI_RESPONSES_PRESETS["ollama"]);
+  assert.deepEqual(OPENAI_RESPONSES_PRESETS["lmstudio"], OPENAI_RESPONSES_PRESETS["ollama"]); // the same policy (two equal entries in the reference table)
   for (const name of ["lmstudio", "lm-studio", "LM Studio"]) {
     assert.equal(new OpenAIChatLM({ apiKey: "k", compat: name }).baseUrl, "http://localhost:1234/v1", name);
     assert.equal(new OpenAILM({ apiKey: "k", compat: name }).baseUrl, "http://localhost:1234/v1", name);

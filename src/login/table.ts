@@ -8,6 +8,7 @@
  */
 
 import { isCloudChain } from "../auth/policy.ts";
+import { SERVICE_LABEL_TABLE } from "../generated/tables.ts";
 import { PROVIDERS, canonicalProvider } from "../registry.ts";
 import { claudeFlow } from "./flows/claude.ts";
 import { codexFlow } from "./flows/codex.ts";
@@ -34,19 +35,7 @@ export const ACCOUNT_FLOWS: Readonly<Record<string, ProviderFlow>> = Object.free
   "github-copilot": copilotFlow,
 });
 
-const SERVICE_LABELS: Readonly<Record<string, string>> = Object.freeze({
-  anthropic: "Anthropic", "claude-code": "Anthropic", openai: "OpenAI", "openai-chat": "OpenAI",
-  "openai-codex": "OpenAI", gemini: "Google", vertex: "Google Cloud", "vertex-anthropic": "Google Cloud",
-  "vertex-express": "Google Cloud", azure: "Microsoft Azure", "azure-chat": "Microsoft Azure",
-  "azure-anthropic": "Microsoft Azure", "aws-anthropic": "AWS", "bedrock-anthropic": "AWS",
-  "bedrock-chat": "AWS", "bedrock-mantle-chat": "AWS", meta: "Meta", "meta-chat": "Meta",
-  "meta-anthropic": "Meta", moonshotai: "Moonshot AI", "moonshotai-anthropic": "Moonshot AI",
-  "moonshotai-responses": "Moonshot AI", "kimi-code": "Moonshot AI", deepseek: "DeepSeek",
-  "deepseek-anthropic": "DeepSeek", groq: "Groq", openrouter: "OpenRouter", xai: "xAI",
-  zai: "Z.AI", typesafe: "TypeSafe", ollama: "Local", vllm: "Local", sglang: "Local",
-  "github-copilot": "GitHub", deepinfra: "DeepInfra", together: "Together AI", fireworks: "Fireworks AI",
-  parasail: "Parasail",
-});
+const SERVICE_LABELS: Readonly<Record<string, string>> = SERVICE_LABEL_TABLE;
 
 function recipeMethods(provider: string): LoginMethod[] {
   const methods: LoginMethod[] = [];

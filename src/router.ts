@@ -8,6 +8,7 @@
  * pass `provider:model` or a catalog instead.
  */
 
+import { DEFAULT_RULE_TABLE, LITELLM_PREFIX_TABLE } from "./generated/tables.ts";
 import { checkPolicy, type Adaptation, type AdaptationPolicy } from "./adaptation.ts";
 import type { ProviderLM } from "./adapter.ts";
 import { requestFromOpenAIChat as readOpenAIChat } from "./dialects/openai_chat.ts";
@@ -41,22 +42,12 @@ export interface RouteRule {
 
 const rule = (prefix: string, provider: string, note: string): RouteRule => Object.freeze({ prefix, provider, note });
 
-/** The complete built-in knowledge of the router. First match wins. A convenience, not a registry of truth. */
-export const DEFAULT_RULES: readonly RouteRule[] = Object.freeze([
-  rule("claude-", "anthropic", "Anthropic Claude family"),
-  rule("gpt-", "openai", "OpenAI GPT family (Responses API; use openai-chat: for Chat Completions)"),
-  rule("o1", "openai", "OpenAI o1 reasoning family"),
-  rule("o3", "openai", "OpenAI o3 reasoning family"),
-  rule("o4", "openai", "OpenAI o4 reasoning family"),
-  rule("gemini-", "gemini", "Google Gemini family"),
-  rule("gemma-", "gemini", "Google Gemma open models, served by the Gemini API (live /models listing 2026-09-01)"),
-  rule("nano-banana", "gemini", "Google image models on the Gemini API (live /models listing 2026-09-01)"),
-  rule("grok-", "xai", "xAI Grok family (XAI_API_KEY or subscription OAuth)"),
-  rule("sora-", "openai", "OpenAI Sora video generation"),
-  rule("jev-", "typesafe", "TypeSafe System One judgment models"),
-  rule("veo-", "gemini", "Google Veo video generation"),
-  rule("chat-latest", "openai", "OpenAI rolling chat alias (live /models listing 2026-09-01)"),
-]);
+/**
+ * The complete built-in knowledge of the router. First match wins. A
+ * convenience, not a registry of truth. Generated from the reference's table
+ * (lm15-contract tables/providers.json); pinned by router/resolution.json.
+ */
+export const DEFAULT_RULES: readonly RouteRule[] = Object.freeze(DEFAULT_RULE_TABLE.map((r) => rule(r.prefix, r.provider, r.note)));
 
 export type ResolutionSource = "prefix" | "catalog" | "rule";
 
@@ -628,24 +619,7 @@ function routedRequest(request: Request, res: Resolution): Request {
  * litellm's name covers two lm15 doors (bedrock, vertex_ai: Anthropic or
  * not, by model) it is left out: choosing would be a guess.
  */
-export const LITELLM_PROVIDER_PREFIXES: Readonly<Record<string, string>> = Object.freeze({
-  openai: "openai-chat",
-  anthropic: "anthropic",
-  gemini: "gemini",
-  groq: "groq",
-  openrouter: "openrouter",
-  deepseek: "deepseek",
-  xai: "xai",
-  ollama: "ollama",
-  ollama_chat: "ollama",
-  hosted_vllm: "vllm",
-  moonshot: "moonshotai",
-  azure: "azure-chat",
-  deepinfra: "deepinfra",
-  together_ai: "together",
-  fireworks_ai: "fireworks",
-  parasail: "parasail",
-});
+export const LITELLM_PROVIDER_PREFIXES: Readonly<Record<string, string>> = LITELLM_PREFIX_TABLE;
 
 /** Keyword arguments of `create()` / `completion()` that configure the CLIENT, not the request: refused with the lm15 place they belong. */
 const CLIENT_KEYWORDS: Readonly<Record<string, string>> = Object.freeze({

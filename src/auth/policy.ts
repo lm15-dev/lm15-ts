@@ -9,6 +9,13 @@ import { NotConfiguredError } from "../errors.ts";
 import { ValueError } from "../types/validate.ts";
 import { ApiKey, AwsCredentials, BearerToken, coerceCredential, type CredentialValue } from "../types/credential.ts";
 import type { AuthScheme, CredentialPolicy, ModelPlacement, StreamFraming } from "../vocab.ts";
+import {
+  ANTHROPIC_BASE_URL_TABLE,
+  DECLARED_LOGIN_ROWS,
+  OPENAI_CHAT_BASE_URL_TABLE,
+  OPENAI_RESPONSES_BASE_URL_TABLE,
+  PROVIDER_ROWS,
+} from "../generated/tables.ts";
 
 export interface EndpointSupport {
   readonly complete: boolean;
@@ -75,19 +82,6 @@ export interface HostSpec {
   /** `(header name, setting name)` pairs sent on every request. */
   readonly requiredHeaders: ReadonlyArray<readonly [string, string]>;
   readonly sigv4Service?: string;
-}
-
-function host(spec: Partial<HostSpec> & { baseUrl: string }): HostSpec {
-  return Object.freeze({
-    settings: [],
-    endpointEnv: [],
-    paths: {},
-    modelIn: "body",
-    anthropicVersionIn: "header",
-    streamFraming: "sse",
-    requiredHeaders: [],
-    ...spec,
-  });
 }
 
 export interface AccessPolicy {
@@ -274,504 +268,110 @@ export function claudeCodeVersionGuidance(message: string): string {
 
 // ─── Base URLs shared with the compat tables (one copy each) ─────────
 
-export const OPENAI_CHAT_PRESET_BASE_URLS: Readonly<Record<string, string>> = Object.freeze({
-  openai: "https://api.openai.com/v1",
-  ollama: "http://localhost:11434/v1",
-  lmstudio: "http://localhost:1234/v1", // lmstudio.ai docs (Local Server)
-  groq: "https://api.groq.com/openai/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  xai: "https://api.x.ai/v1",
-  vllm: "http://localhost:8000/v1",
-  sglang: "http://localhost:30000/v1",
-  deepseek: "https://api.deepseek.com",
-  zai: "https://api.z.ai/api/paas/v4",
-  meta: "https://api.meta.ai/v1",
-  moonshotai: "https://api.moonshot.ai/v1",
-  // The open-model inference hosts, each its documented OpenAI-compatible root
-  // (DeepInfra: the /v1/openai root, not /v1).
-  deepinfra: "https://api.deepinfra.com/v1/openai",
-  together: "https://api.together.ai/v1",
-  fireworks: "https://api.fireworks.ai/inference/v1",
-  parasail: "https://api.parasail.io/v1",
-});
-
-// A server's OpenAI root is one address whichever OpenAI-shaped path is used;
-// the local engines' roots are the chat table's. A preset that names a server
-// absent here (qwen, deepseek, zai: no documented Responses root) is REFUSED
-// at construction without an explicit baseUrl — never sent to the OpenAI
-// cloud (compat.ts presetBaseUrl, 2026-09-11).
-export const OPENAI_RESPONSES_PRESET_BASE_URLS: Readonly<Record<string, string>> = Object.freeze({
-  openai: "https://api.openai.com/v1",
-  ollama: "http://localhost:11434/v1",
-  lmstudio: "http://localhost:1234/v1",
-  vllm: "http://localhost:8000/v1",
-  sglang: "http://localhost:30000/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  meta: "https://api.meta.ai/v1",
-  moonshotai: "https://api.moonshot.ai/v1",
-});
-
-export const ANTHROPIC_PRESET_BASE_URLS: Readonly<Record<string, string>> = Object.freeze({
-  anthropic: "https://api.anthropic.com/v1",
-  deepseek: "https://api.deepseek.com/anthropic/v1",
-  meta: "https://api.meta.ai/v1",
-  moonshotai: "https://api.moonshot.ai/anthropic/v1",
-});
-
-// ─── Login hints (AUTH-6/AUTH-9) ─────────────────────────────────────
-
-export const CLAUDE_CODE_LOGIN_HINT = "Log in again: run `claude` and use /login (Claude subscription auth)";
-export const OPENAI_CODEX_LOGIN_HINT = "Log in again: run `codex login` (ChatGPT subscription auth)";
-export const XAI_LOGIN_HINT = "Log in again: run lm15.auth.login_xai() (SuperGrok / X Premium subscription auth)";
+// Generated from lm15-contract tables/providers.json (src/generated/tables.ts):
+// the reference's preset roots, one copy each.
+export const OPENAI_CHAT_PRESET_BASE_URLS: Readonly<Record<string, string>> = OPENAI_CHAT_BASE_URL_TABLE;
+export const OPENAI_RESPONSES_PRESET_BASE_URLS: Readonly<Record<string, string>> = OPENAI_RESPONSES_BASE_URL_TABLE;
+export const ANTHROPIC_PRESET_BASE_URLS: Readonly<Record<string, string>> = ANTHROPIC_BASE_URL_TABLE;
 
 // ─── The table ───────────────────────────────────────────────────────
 
-export const ANTHROPIC_API = policy({
-  provider: "anthropic",
-  supports: supports({ files: true, batches: true, models: true }),
-  authModes: ["x-api-key"],
-  envKeys: ["ANTHROPIC_API_KEY"],
-  authScheme: ["x-api-key"],
-});
+// Every access policy, registry and managed-login declared providers alike,
+// generated from the reference's table and validated by `policy()`. The named
+// constants below are the public `access.*` names; a provider added to the
+// table needs none (the registry iterates the rows).
+const ACCESS_TABLE: ReadonlyMap<string, AccessPolicy> = new Map(
+  [...PROVIDER_ROWS, ...DECLARED_LOGIN_ROWS].map((row) => [row.id, policy(row.access)] as const),
+);
+
+/** The table's access policy for `provider`; a name the table lacks is a build-time bug. */
+export function tablePolicy(provider: string): AccessPolicy {
+  const found = ACCESS_TABLE.get(provider);
+  if (!found) throw new Error(`no access policy for ${JSON.stringify(provider)} in src/generated/tables.ts`);
+  return found;
+}
+
+function tableSetting(provider: string, name: string): HostSetting {
+  const found = tablePolicy(provider).backendSettings.find((s) => s.name === name);
+  if (!found) throw new Error(`${provider}: no backend setting ${JSON.stringify(name)} in the table`);
+  return found;
+}
+
+function tableHeader(provider: string, name: string): string {
+  const found = tablePolicy(provider).headers.find(([k]) => k.toLowerCase() === name.toLowerCase());
+  if (!found) throw new Error(`${provider}: no ${JSON.stringify(name)} header in the table`);
+  return found[1];
+}
+
+export const ANTHROPIC_API = tablePolicy("anthropic");
+export const CLAUDE_CODE = tablePolicy("claude-code");
+export const OPENAI_API = tablePolicy("openai");
+export const OPENAI_CODEX = tablePolicy("openai-codex");
+export const OPENAI_CHAT_API = tablePolicy("openai-chat");
+export const XAI = tablePolicy("xai");
+export const TYPESAFE_API = tablePolicy("typesafe");
+export const GEMINI_API = tablePolicy("gemini");
+export const META = tablePolicy("meta");
+export const GROQ = tablePolicy("groq");
+export const OPENROUTER = tablePolicy("openrouter");
+export const KIMI_CODE = tablePolicy("kimi-code");
+export const GITHUB_COPILOT = tablePolicy("github-copilot");
+export const DEEPSEEK = tablePolicy("deepseek");
+export const ZAI = tablePolicy("zai");
+export const DEEPINFRA = tablePolicy("deepinfra");
+export const TOGETHER = tablePolicy("together");
+export const FIREWORKS = tablePolicy("fireworks");
+export const PARASAIL = tablePolicy("parasail");
+export const MOONSHOTAI = tablePolicy("moonshotai");
+export const MOONSHOTAI_RESPONSES = tablePolicy("moonshotai-responses");
+export const META_CHAT = tablePolicy("meta-chat");
+export const DEEPSEEK_ANTHROPIC = tablePolicy("deepseek-anthropic");
+export const META_ANTHROPIC = tablePolicy("meta-anthropic");
+export const MOONSHOTAI_ANTHROPIC = tablePolicy("moonshotai-anthropic");
+export const AWS_ANTHROPIC = tablePolicy("aws-anthropic");
+export const BEDROCK_ANTHROPIC = tablePolicy("bedrock-anthropic");
+export const BEDROCK_CHAT = tablePolicy("bedrock-chat");
+export const BEDROCK_MANTLE_CHAT = tablePolicy("bedrock-mantle-chat");
+export const AZURE = tablePolicy("azure");
+export const AZURE_CHAT = tablePolicy("azure-chat");
+export const AZURE_ANTHROPIC = tablePolicy("azure-anthropic");
+export const VERTEX = tablePolicy("vertex");
+export const VERTEX_EXPRESS = tablePolicy("vertex-express");
+export const VERTEX_ANTHROPIC = tablePolicy("vertex-anthropic");
+export const OLLAMA = tablePolicy("ollama");
+export const VLLM = tablePolicy("vllm");
+export const SGLANG = tablePolicy("sglang");
+
+export const CLOUD_HOST_POLICIES: readonly AccessPolicy[] = Object.freeze(
+  [...ACCESS_TABLE.values()].filter((p) => p.host !== undefined),
+);
+
+// ─── Values the table carries, by their historic names ───────────────
+
+// Login hints (AUTH-6/AUTH-9).
+export const CLAUDE_CODE_LOGIN_HINT = CLAUDE_CODE.loginHint!;
+export const OPENAI_CODEX_LOGIN_HINT = OPENAI_CODEX.loginHint!;
+export const XAI_LOGIN_HINT = XAI.loginHint!;
 
 /**
  * The Claude Code release this door says it is (`user-agent:
  * claude-cli/<version>`). Anthropic's server reads it: a model can require a
  * newer release (claude-opus-5-5 refuses anything before 2.1.280, live
- * 2026-09-23 and 2026-09-30). The latest release when last receipted
- * (lm15-contract changes/2026-09-30-claude-code-client-version.md); callers
- * move it without a release through the `client_version` setting or
- * LM15_CLAUDE_CODE_VERSION (AUTH-10 backend settings).
+ * 2026-09-23 and 2026-09-30). Callers move it without a release through the
+ * `client_version` setting or LM15_CLAUDE_CODE_VERSION (AUTH-10 backend
+ * settings).
  */
-export const DEFAULT_CLAUDE_CODE_VERSION = "2.1.285";
-export const DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
-export const CLAUDE_CODE_VERSION_ENV = "LM15_CLAUDE_CODE_VERSION";
-export const CODEX_CLIENT_VERSION_ENV = "LM15_CODEX_CLIENT_VERSION";
-
-export const CLAUDE_CODE = policy({
-  provider: "claude-code",
-  supports: supports({ models: true }),
-  credentialPolicy: "oauth",
-  authModes: ["claude-code-oauth", "bearer-oauth"],
-  authScheme: ["bearer"],
-  headers: [
-    ["anthropic-dangerous-direct-browser-access", "true"],
-    ["anthropic-beta", "claude-code-20250219,oauth-2025-04-20"],
-    ["x-app", "cli"],
-    ["user-agent", `claude-cli/${DEFAULT_CLAUDE_CODE_VERSION}`],
-  ],
-  loginHint: CLAUDE_CODE_LOGIN_HINT,
-  backend: "claude-code",
-  backendOptions: { client_version: DEFAULT_CLAUDE_CODE_VERSION },
-  backendSettings: [{ name: "client_version", env: [CLAUDE_CODE_VERSION_ENV] }],
-  systemPrefix: DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT,
-});
-
-export const OPENAI_API = policy({
-  provider: "openai",
-  supports: supports({
-    live: true,
-    files: true,
-    batches: true,
-    images: true,
-    speech: true,
-    video: true,
-    responsesApi: true,
-    models: true,
-  }),
-  authModes: ["bearer"],
-  envKeys: ["OPENAI_API_KEY"],
-  enterpriseVariants: ["azure-openai"],
-});
-
-export const DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex";
-export const DEFAULT_CODEX_ORIGINATOR = "lm15";
-export const DEFAULT_CODEX_INSTRUCTIONS = "You are a helpful assistant.";
-export const DEFAULT_CODEX_CLIENT_VERSION = "0.147.0";
-
-export const OPENAI_CODEX = policy({
-  provider: "openai-codex",
-  supports: supports({ models: true }),
-  credentialPolicy: "oauth",
-  authModes: ["chatgpt-oauth", "bearer-oauth"],
-  headers: [
-    ["OpenAI-Beta", "responses=experimental"],
-    ["originator", DEFAULT_CODEX_ORIGINATOR],
-  ],
-  loginHint: OPENAI_CODEX_LOGIN_HINT,
-  backend: "chatgpt-codex",
-  backendOptions: { client_version: DEFAULT_CODEX_CLIENT_VERSION },
-  backendSettings: [{ name: "client_version", env: [CODEX_CLIENT_VERSION_ENV] }],
-  systemPrefix: DEFAULT_CODEX_INSTRUCTIONS,
-  baseUrl: DEFAULT_CODEX_BASE_URL,
-});
-
-export const OPENAI_CHAT_API = policy({
-  provider: "openai-chat",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["OPENAI_API_KEY"],
-});
-
-export const DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1";
-
-export const XAI = policy({
-  provider: "xai",
-  supports: supports({ models: true, images: true, video: true }),
-  credentialPolicy: "oauth-unless-explicit",
-  authModes: ["bearer", "xai-oauth"],
-  envKeys: ["XAI_API_KEY"],
-  loginHint: XAI_LOGIN_HINT,
-  baseUrl: DEFAULT_XAI_BASE_URL,
-});
-
-/**
- * TypeSafe System One (Jev): `POST /v1/systemone` and the models list
- * (changes/2026-09-17-judgments.md D1/D10/D11; receipts 2026-09-17). Bearer
- * key from the console (console.typesafe.ai/keys).
- */
-export const TYPESAFE_API = policy({
-  provider: "typesafe",
-  supports: supports({ stream: false, models: true }),
-  authModes: ["bearer"],
-  envKeys: ["TYPESAFE_API_KEY"],
-  authScheme: ["bearer"],
-});
-
-export const GEMINI_API = policy({
-  provider: "gemini",
-  supports: supports({
-    live: true,
-    files: true,
-    batches: true,
-    images: true,
-    speech: true,
-    video: true,
-    models: true,
-    caches: true,
-  }),
-  authModes: ["query-api-key", "x-goog-api-key"],
-  envKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-  authScheme: ["x-api-key"], // the dialect renders it as x-goog-api-key
-});
-
-export const META_ENV_KEYS = ["META_API_KEY"] as const;
-
-export const META = policy({
-  provider: "meta",
-  supports: supports({ files: true, images: true, responsesApi: true, models: true }),
-  authModes: ["bearer"],
-  envKeys: META_ENV_KEYS,
-  baseUrl: OPENAI_RESPONSES_PRESET_BASE_URLS["meta"],
-});
-
-export const GROQ = policy({
-  provider: "groq",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["GROQ_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["groq"],
-});
-
-export const OPENROUTER = policy({
-  provider: "openrouter",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["OPENROUTER_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["openrouter"],
-});
-
-/**
- * Routes that exist only for a managed login (lm15-contract auth/managed/profiles.json
- * `route_status`: declared provider, no contract wire receipt). Key-based policies
- * so a declaration can bind them; the credential is the login's token.
- */
-export const KIMI_CODE = policy({
-  provider: "kimi-code",
-  authModes: ["bearer"],
-  authScheme: ["bearer"],
-  baseUrl: "https://api.kimi.com/coding",
-});
-
-export const GITHUB_COPILOT = policy({
-  provider: "github-copilot",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  headers: [
-    ["User-Agent", "GitHubCopilotChat/0.35.0"],
-    ["Editor-Version", "vscode/1.107.0"],
-    ["Editor-Plugin-Version", "copilot-chat/0.35.0"],
-    ["Copilot-Integration-Id", "vscode-chat"],
-  ],
-  baseUrl: "https://api.individual.githubcopilot.com",
-});
-
-export const DEEPSEEK = policy({
-  provider: "deepseek",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["DEEPSEEK_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["deepseek"],
-});
-
-export const ZAI = policy({
-  provider: "zai",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["ZAI_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["zai"],
-});
-
-// ─── Open-model inference hosts (changes/2026-09-26-inference-hosts-live.md) ───
-// A bearer key each, the provider's own documented variable; batch, files and
-// media endpoints they also sell are not registered.
-export const DEEPINFRA = policy({
-  provider: "deepinfra",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["DEEPINFRA_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["deepinfra"],
-});
-
-export const TOGETHER = policy({
-  provider: "together",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["TOGETHER_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["together"],
-});
-
-export const FIREWORKS = policy({
-  provider: "fireworks",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["FIREWORKS_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["fireworks"],
-});
-
-export const PARASAIL = policy({
-  provider: "parasail",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: ["PARASAIL_API_KEY"],
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["parasail"],
-});
-
-export const MOONSHOTAI_ENV_KEYS = ["MOONSHOTAI_API_KEY", "MOONSHOT_API_KEY"] as const;
-
-export const MOONSHOTAI = policy({
-  provider: "moonshotai",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: MOONSHOTAI_ENV_KEYS,
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["moonshotai"],
-});
-
-export const MOONSHOTAI_RESPONSES = policy({
-  provider: "moonshotai-responses",
-  supports: supports({ responsesApi: true, models: true }),
-  authModes: ["bearer"],
-  envKeys: MOONSHOTAI_ENV_KEYS,
-  baseUrl: OPENAI_RESPONSES_PRESET_BASE_URLS["moonshotai"],
-});
-
-export const META_CHAT = policy({
-  provider: "meta-chat",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: META_ENV_KEYS,
-  baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["meta"],
-});
-
-export const DEEPSEEK_ANTHROPIC = policy({
-  provider: "deepseek-anthropic",
-  supports: supports(),
-  authModes: ["x-api-key"],
-  envKeys: ["DEEPSEEK_API_KEY"],
-  authScheme: ["x-api-key"],
-  baseUrl: ANTHROPIC_PRESET_BASE_URLS["deepseek"],
-});
-
-export const META_ANTHROPIC = policy({
-  provider: "meta-anthropic",
-  supports: supports({ models: true }),
-  authModes: ["bearer"],
-  envKeys: META_ENV_KEYS,
-  authScheme: ["bearer"],
-  baseUrl: ANTHROPIC_PRESET_BASE_URLS["meta"],
-});
-
-export const MOONSHOTAI_ANTHROPIC = policy({
-  provider: "moonshotai-anthropic",
-  supports: supports(),
-  authModes: ["bearer"],
-  envKeys: MOONSHOTAI_ENV_KEYS,
-  authScheme: ["bearer"],
-  baseUrl: ANTHROPIC_PRESET_BASE_URLS["moonshotai"],
-});
-
-// ─── Cloud hosts ─────────────────────────────────────────────────────
-
-const AWS_REGION: HostSetting = { name: "region", env: ["AWS_REGION", "AWS_DEFAULT_REGION"] };
-const AWS_WORKSPACE: HostSetting = { name: "workspace", env: ["ANTHROPIC_AWS_WORKSPACE_ID"] };
-const GCP_PROJECT: HostSetting = { name: "project", env: ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"] };
-const GCP_LOCATION: HostSetting = { name: "location", env: ["GOOGLE_CLOUD_LOCATION"], default: "global" };
-const AZURE_OPENAI_RESOURCE: HostSetting = { name: "resource", env: ["AZURE_OPENAI_RESOURCE"] };
-const AZURE_FOUNDRY_RESOURCE: HostSetting = { name: "resource", env: ["ANTHROPIC_FOUNDRY_RESOURCE"] };
-const AZURE_AUTHORITY: HostSetting = { name: "authority_host", env: ["AZURE_AUTHORITY_HOST"], default: "https://login.microsoftonline.com" };
-const AZURE_SCOPE: HostSetting = { name: "scope", env: [], default: "https://ai.azure.com/.default" };
-
-export const AWS_ANTHROPIC = policy({
-  provider: "aws-anthropic",
-  supports: supports(),
-  credentialPolicy: "aws-chain",
-  authModes: ["sigv4", "x-api-key"],
-  envKeys: ["ANTHROPIC_AWS_API_KEY"],
-  authScheme: ["sigv4", "x-api-key"],
-  backend: "aws-external-anthropic",
-  host: host({
-    baseUrl: "https://aws-external-anthropic.{region}.api.aws/v1",
-    endpointEnv: ["AWS_ENDPOINT_URL_AWS_EXTERNAL_ANTHROPIC", "AWS_ENDPOINT_URL"],
-    settings: [AWS_REGION, AWS_WORKSPACE],
-    requiredHeaders: [["anthropic-workspace-id", "workspace"]],
-    sigv4Service: "aws-external-anthropic",
-  }),
-});
-
-export const BEDROCK_ANTHROPIC = policy({
-  provider: "bedrock-anthropic",
-  supports: supports(),
-  credentialPolicy: "aws-chain",
-  authModes: ["sigv4", "x-api-key"],
-  envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
-  authScheme: ["sigv4", "x-api-key"],
-  backend: "bedrock-mantle",
-  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/anthropic/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_MANTLE", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
-});
-
-export const BEDROCK_CHAT = policy({
-  provider: "bedrock-chat",
-  supports: supports(),
-  credentialPolicy: "aws-chain",
-  authModes: ["sigv4", "bearer"],
-  envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
-  authScheme: ["sigv4", "bearer"],
-  backend: "bedrock-runtime",
-  host: host({ baseUrl: "https://bedrock-runtime.{region}.amazonaws.com/openai/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_RUNTIME", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock" }),
-});
-
-export const BEDROCK_MANTLE_CHAT = policy({
-  provider: "bedrock-mantle-chat",
-  supports: supports({ models: true }),
-  credentialPolicy: "aws-chain",
-  authModes: ["sigv4", "bearer"],
-  envKeys: ["AWS_BEARER_TOKEN_BEDROCK"],
-  authScheme: ["sigv4", "bearer"],
-  backend: "bedrock-mantle",
-  host: host({ baseUrl: "https://bedrock-mantle.{region}.api.aws/v1", endpointEnv: ["AWS_ENDPOINT_URL_BEDROCK_MANTLE", "AWS_ENDPOINT_URL"], settings: [AWS_REGION], sigv4Service: "bedrock-mantle" }),
-});
-
-export const AZURE = policy({
-  provider: "azure",
-  supports: supports({ live: true, files: true, batches: true, speech: true, responsesApi: true, models: true }),
-  credentialPolicy: "azure-chain",
-  authModes: ["api-key", "entra-oauth"],
-  envKeys: ["AZURE_OPENAI_API_KEY"],
-  authScheme: ["api-key", "bearer"],
-  backend: "azure-openai",
-  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", endpointEnv: ["AZURE_OPENAI_ENDPOINT"], settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
-});
-
-export const AZURE_CHAT = policy({
-  provider: "azure-chat",
-  supports: supports({ models: true }),
-  credentialPolicy: "azure-chain",
-  authModes: ["api-key", "entra-oauth"],
-  envKeys: ["AZURE_OPENAI_API_KEY"],
-  authScheme: ["api-key", "bearer"],
-  backend: "azure-openai",
-  host: host({ baseUrl: "https://{resource}.openai.azure.com/openai/v1", endpointEnv: ["AZURE_OPENAI_ENDPOINT"], settings: [AZURE_OPENAI_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE] }),
-});
-
-export const AZURE_ANTHROPIC = policy({
-  provider: "azure-anthropic",
-  supports: supports(),
-  credentialPolicy: "azure-chain",
-  authModes: ["x-api-key", "entra-oauth"],
-  envKeys: ["ANTHROPIC_FOUNDRY_API_KEY"],
-  authScheme: ["x-api-key", "bearer"],
-  backend: "azure-foundry",
-  host: host({
-    baseUrl: "https://{resource}.services.ai.azure.com/anthropic/v1",
-    endpointEnv: ["ANTHROPIC_FOUNDRY_BASE_URL"],
-    settings: [AZURE_FOUNDRY_RESOURCE, AZURE_AUTHORITY, AZURE_SCOPE],
-  }),
-});
-
-const VERTEX_BASE = "https://{location_host}/v1/projects/{project}/locations/{location}";
-
-// API keys (amended 2026-09-26): a Vertex API key in `x-goog-api-key` on the
-// project-scoped hosts; key first, a token-shaped string still bearer
-// (`authHeader`). No env key: GOOGLE_API_KEY belongs to the Gemini API and
-// vertex-express, and reading it here would silently replace the ADC identity.
-export const VERTEX = policy({
-  provider: "vertex",
-  supports: supports(),
-  credentialPolicy: "gcp-chain",
-  authModes: ["x-goog-api-key", "google-oauth"],
-  envKeys: [],
-  authScheme: ["x-api-key", "bearer"],
-  backend: "vertex",
-  host: host({ baseUrl: VERTEX_BASE + "/publishers/google", settings: [GCP_PROJECT, GCP_LOCATION] }),
-});
-
-export const VERTEX_EXPRESS = policy({
-  provider: "vertex-express",
-  supports: supports(),
-  credentialPolicy: "key",
-  authModes: ["query-api-key"],
-  envKeys: ["GOOGLE_API_KEY"],
-  authScheme: ["query-key"],
-  backend: "vertex-express",
-  host: host({ baseUrl: "https://aiplatform.googleapis.com/v1/publishers/google" }),
-});
-
-export const VERTEX_ANTHROPIC = policy({
-  provider: "vertex-anthropic",
-  supports: supports(),
-  credentialPolicy: "gcp-chain",
-  authModes: ["google-oauth"],
-  envKeys: [],
-  authScheme: ["bearer"],
-  backend: "vertex",
-  host: host({
-    baseUrl: VERTEX_BASE,
-    settings: [GCP_PROJECT, GCP_LOCATION],
-    paths: {
-      messages: "/publishers/anthropic/models/{model}:rawPredict",
-      "messages/stream": "/publishers/anthropic/models/{model}:streamRawPredict",
-    },
-    modelIn: "path",
-    anthropicVersionIn: "body:vertex-2023-10-16",
-  }),
-});
-
-export const CLOUD_HOST_POLICIES: readonly AccessPolicy[] = Object.freeze([
-  AZURE,
-  AZURE_CHAT,
-  AZURE_ANTHROPIC,
-  AWS_ANTHROPIC,
-  BEDROCK_ANTHROPIC,
-  BEDROCK_CHAT,
-  BEDROCK_MANTLE_CHAT,
-  VERTEX,
-  VERTEX_EXPRESS,
-  VERTEX_ANTHROPIC,
-]);
-
-export const OLLAMA = policy({ provider: "ollama", supports: supports({ models: true }), authModes: ["bearer"], baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["ollama"] });
-export const VLLM = policy({ provider: "vllm", supports: supports({ models: true }), authModes: ["bearer"], baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["vllm"] });
-export const SGLANG = policy({ provider: "sglang", supports: supports({ models: true }), authModes: ["bearer"], baseUrl: OPENAI_CHAT_PRESET_BASE_URLS["sglang"] });
+export const DEFAULT_CLAUDE_CODE_VERSION = CLAUDE_CODE.backendOptions["client_version"]!;
+export const DEFAULT_CLAUDE_CODE_SYSTEM_PROMPT = CLAUDE_CODE.systemPrefix!;
+export const CLAUDE_CODE_VERSION_ENV = tableSetting("claude-code", "client_version").env[0]!;
+export const CODEX_CLIENT_VERSION_ENV = tableSetting("openai-codex", "client_version").env[0]!;
+export const DEFAULT_CODEX_BASE_URL = OPENAI_CODEX.baseUrl!;
+export const DEFAULT_CODEX_ORIGINATOR = tableHeader("openai-codex", "originator");
+export const DEFAULT_CODEX_INSTRUCTIONS = OPENAI_CODEX.systemPrefix!;
+export const DEFAULT_CODEX_CLIENT_VERSION = OPENAI_CODEX.backendOptions["client_version"]!;
+export const DEFAULT_XAI_BASE_URL = XAI.baseUrl!;
+export const META_ENV_KEYS: readonly string[] = META.envKeys;
+export const MOONSHOTAI_ENV_KEYS: readonly string[] = MOONSHOTAI.envKeys;
 
 // ─── Scheme selection (AUTH-2, D1) ───────────────────────────────────
 

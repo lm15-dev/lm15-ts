@@ -8,17 +8,23 @@
  * seen, and a router lists them only when it can hold their credential.
  */
 
-import { GITHUB_COPILOT, KIMI_CODE } from "../auth/policy.ts";
+import { tablePolicy } from "../auth/policy.ts";
+import type { AnthropicCompat, OpenAIChatCompat } from "../compat.ts";
+import { DECLARED_LOGIN_ROWS } from "../generated/tables.ts";
 import { ProviderDefinition } from "../registry.ts";
 
-export const KIMI_CODE_DEFINITION: ProviderDefinition = ProviderDefinition.anthropic(KIMI_CODE, {
-  compat: {},
-  note: "Kimi Code subscription over the Anthropic Messages wire (managed login only; no lm15 wire receipt yet)",
-});
+/** One managed-login declared provider from the reference's table (src/generated/tables.ts). */
+function declared(id: string): ProviderDefinition {
+  const row = DECLARED_LOGIN_ROWS.find((r) => r.id === id);
+  if (!row || row.compat === undefined || typeof row.compat === "string") throw new Error(`${id}: no declared-login row with a compat object in the generated table`);
+  const policy = tablePolicy(id);
+  if (row.dialect === "anthropic") return ProviderDefinition.anthropic(policy, { compat: row.compat as AnthropicCompat, note: row.note });
+  if (row.dialect === "openai-chat") return ProviderDefinition.chat(policy, { compat: row.compat as OpenAIChatCompat, note: row.note });
+  throw new Error(`${id}: a declared-login row on dialect ${row.dialect} has no declaration factory`);
+}
 
-export const GITHUB_COPILOT_DEFINITION: ProviderDefinition = ProviderDefinition.chat(GITHUB_COPILOT, {
-  compat: { instructionRole: "system", maxTokensField: "max_completion_tokens", streamUsage: "include", thinkingFormat: "reasoning_effort" },
-  note: "GitHub Copilot over the Chat Completions wire (managed login only; the account's host comes from the token; no lm15 wire receipt yet)",
-});
+export const KIMI_CODE_DEFINITION: ProviderDefinition = declared("kimi-code");
+
+export const GITHUB_COPILOT_DEFINITION: ProviderDefinition = declared("github-copilot");
 
 export const DECLARED_LOGIN_PROVIDERS: readonly ProviderDefinition[] = Object.freeze([KIMI_CODE_DEFINITION, GITHUB_COPILOT_DEFINITION]);

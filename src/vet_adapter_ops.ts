@@ -437,7 +437,7 @@ import { sign as sigv4Sign } from "./cloud/sigv4.ts";
 import { LM15Error } from "./errors.ts";
 import { lookup } from "./registry.ts";
 import { ModelRegistry } from "./types/model_info.ts";
-import { resolveModel } from "./router.ts";
+import { LMRouter, resolveModel } from "./router.ts";
 import { AwsCredentials } from "./types/credential.ts";
 
 function stringMap(value: unknown): Record<string, string> {
@@ -543,6 +543,11 @@ registerOps({
       for (const entry of Array.isArray(msg["catalog"]) ? msg["catalog"] : []) registry.add(ModelInfo.fromJSON(entry as JsonObject), { replace: false });
     }
     const resolution = resolveModel(String(msg["model"]), { env, ...(registry ? { registry } : {}) });
+    return { provider: resolution.provider, model: resolution.model, source: resolution.source };
+  },
+  // PROTOCOL.md resolve_openai_chat_model: the router's OpenAI-SDK / litellm door.
+  resolve_openai_chat_model(msg) {
+    const resolution = new LMRouter({ env: stringMap(msg["env"]) }).resolveOpenAIChat(String(msg["model"]));
     return { provider: resolution.provider, model: resolution.model, source: resolution.source };
   },
 });

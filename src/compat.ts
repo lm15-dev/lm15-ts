@@ -12,6 +12,12 @@ import { isJsonObject, isStrictJson, type JsonObject } from "./json.ts";
 import { REASONING_EFFORTS } from "./vocab.ts";
 import { ValueError } from "./types/validate.ts";
 import { NotConfiguredError } from "./errors.ts";
+import {
+  ANTHROPIC_PRESET_TABLE,
+  OPENAI_CHAT_PRESET_TABLE,
+  OPENAI_RESPONSES_PRESET_TABLE,
+  PRESET_ALIAS_TABLE,
+} from "./generated/tables.ts";
 
 export {
   ANTHROPIC_PRESET_BASE_URLS,
@@ -55,54 +61,7 @@ export interface ResolvedOpenAIResponsesCompat {
   readonly extensions?: JsonObject;
 }
 
-export const OPENAI_RESPONSES_PRESETS: Readonly<Record<string, OpenAIResponsesCompat>> = Object.freeze({
-  openai: {
-    developerRole: "developer",
-    maxOutputTokensField: "max_output_tokens",
-    reasoningFormat: "responses_reasoning",
-    toolResultName: "omit",
-    strictTools: "omit",
-    cacheControl: "openai",
-  },
-  openrouter: {
-    developerRole: "developer",
-    maxOutputTokensField: "max_tokens",
-    reasoningFormat: "openrouter",
-    toolResultName: "omit",
-    strictTools: "omit",
-    cacheControl: "openai",
-    toolResultMedia: "reject",
-  },
-  ollama: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "none", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  get lmstudio() { return this.ollama; }, // LM Studio: ollama's wire policy at its own address (api-family, 2026-09-11)
-  vllm: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "reasoning_effort", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  sglang: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "reasoning_effort", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  qwen: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "qwen", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  deepseek: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "deepseek", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  zai: { developerRole: "system", maxOutputTokensField: "max_tokens", reasoningFormat: "zai", toolResultName: "omit", strictTools: "omit", cacheControl: "none", toolResultMedia: "reject" },
-  meta: {
-    developerRole: "developer",
-    maxOutputTokensField: "max_output_tokens",
-    reasoningFormat: "responses_reasoning",
-    toolResultName: "omit",
-    strictTools: "omit",
-    cacheControl: "openai_implicit",
-    commentaryPhase: "tag",
-    editImageField: "indexed",
-    builtinTools: "verbatim",
-    toolResultMedia: "native",
-  },
-  moonshotai: {
-    developerRole: "developer",
-    maxOutputTokensField: "max_output_tokens",
-    reasoningFormat: "responses_reasoning",
-    toolResultName: "omit",
-    strictTools: "omit",
-    cacheControl: "openai_implicit",
-    builtinTools: "verbatim",
-    toolResultMedia: "images",
-  },
-});
+export const OPENAI_RESPONSES_PRESETS: Readonly<Record<string, OpenAIResponsesCompat>> = OPENAI_RESPONSES_PRESET_TABLE;
 
 function pick<T extends string>(value: Auto<T> | undefined, dflt: T): T {
   return value === undefined || value === "auto" ? dflt : value;
@@ -197,169 +156,10 @@ export interface ResolvedOpenAIChatCompat {
   readonly extensions?: JsonObject;
 }
 
-const CHAT_BASE = {
-  instructionRole: "system",
-  streamUsage: "include",
-  toolResultName: "omit",
-  strictTools: "omit",
-} as const;
-
-const INFERENCE_HOST = {
-  ...CHAT_BASE,
-  maxTokensField: "max_completion_tokens",
-  thinkingFormat: "reasoning_effort",
-  thinkingReplay: "native",
-  cacheControl: "none",
-} as const;
-
-/** DeepInfra models measured to honour a forced tool choice (survey, 2026-09-26). */
-const DEEPINFRA_FORCED_TOOL_CHOICE = [
-  "deepseek-ai/DeepSeek-V3.2",
-  "deepseek-ai/DeepSeek-V4-Flash",
-  "deepseek-ai/DeepSeek-V4.1-Flash",
-  "zai-org/GLM-5.3-Flash",
-  "moonshotai/Kimi-K2.6",
-  "meta-llama/Llama-4-Scout-17B-16E-Instruct",
-  "Qwen/Qwen3.6-27B",
-  "Qwen/Qwen3-Next-80B-A3B-Instruct",
-  "nvidia/NVIDIA-Nemotron-3.5-Lightning",
-  "ibm-granite/granite-4.2-8b",
-  "XiaomiMiMo/MiMo-V2.6-Flash",
-  "tencent/Hy3",
-  "google/gemini-3.1-flash-lite",
-  "anthropic/claude-haiku-4-5",
-] as const;
-
-export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = Object.freeze({
-  openai: { ...CHAT_BASE, maxTokensField: "max_completion_tokens", thinkingFormat: "reasoning_effort", cacheControl: "openai", toolResultMedia: "reject" },
-  // ollama: max_tokens; reasoning_effort (and `reasoning: {effort}`) on the
-  // wire, mapped to Ollama's `think` by openai/openai.go
-  // `thinkFromReasoningEffort` (lm15-contract/research/tool-result-content/
-  // sources/ollama.txt:536-560): none → think:false, minimal → low,
-  // low|medium|high|max verbatim, xhigh → max; an unknown word is a 400.
-  // Until 2026-09-14 this said thinkingFormat "none" with "no receipt";
-  // THEORY.md §3.17. Source receipt; live receipt still owed.
-  ollama: {
-    ...CHAT_BASE,
-    maxTokensField: "max_tokens",
-    thinkingFormat: "reasoning_effort",
-    reasoningEfforts: ["minimal", "low", "medium", "high", "xhigh", "max"],
-    cacheControl: "none",
-    toolResultMedia: "reject",
-  },
-  // LM Studio: its own policy at http://localhost:1234/v1. HYPOTHESIS, no
-  // receipt (THEORY.md §3.17): lmstudio.ai lists max_tokens and no reasoning
-  // dial, so thinkingFormat "none" — under MAP-13 a set dial is dropped and
-  // recorded, never refused on this unverified line. Until 2026-09-11 the
-  // name was an alias of "ollama".
-  lmstudio: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "none", cacheControl: "none", toolResultMedia: "reject" },
-  groq: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", builtinTools: "groq", cacheControl: "none", toolResultMedia: "reject" },
-  openrouter: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "openrouter", cacheControl: "openai", toolResultMedia: "reject" },
-  xai: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "deepseek", cacheControl: "none", toolResultMedia: "images" },
-  // MAP-14 §4, receipts/2026-09-17-judgments/vllm-0.29-lfm-trie.json (honoured)
-  // and vllm-0.25.1-qwen-trie-negative.json (silently absent; caught on parse).
-  vllm: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", cacheControl: "none", toolResultMedia: "reject", tokenScoring: "logprob_token_ids" },
-  sglang: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "reasoning_effort", cacheControl: "none", toolResultMedia: "reject" },
-  deepseek: {
-    ...CHAT_BASE,
-    maxTokensField: "max_tokens",
-    thinkingFormat: "deepseek",
-    thinkingReplay: "native",
-    assistantReasoningContent: "include_empty",
-    cacheControl: "none",
-    userField: "user_id",
-    toolResultMedia: "reject",
-  },
-  qwen: { ...CHAT_BASE, maxTokensField: "max_tokens", thinkingFormat: "qwen", cacheControl: "none" },
-  bedrock: {
-    ...CHAT_BASE,
-    maxTokensField: "max_completion_tokens",
-    thinkingFormat: "reasoning_effort",
-    cacheControl: "none",
-    userField: "user",
-    forcedToolChoice: "send",
-    jsonSchema: "send",
-    modelOverrides: [
-      ["openai.gpt-oss", { forcedToolChoice: "reject", jsonSchema: "reject" }],
-      ["google.gemma", { forcedToolChoice: "reject" }],
-    ],
-    toolResultMedia: "reject",
-  },
-  bedrock_mantle: {
-    ...CHAT_BASE,
-    maxTokensField: "max_completion_tokens",
-    thinkingFormat: "reasoning_effort",
-    cacheControl: "none",
-    userField: "user",
-    forcedToolChoice: "send",
-    jsonSchema: "send",
-    modelOverrides: [["openai.gpt-oss", { forcedToolChoice: "reject", jsonSchema: "reject" }]],
-  },
-  zai: {
-    ...CHAT_BASE,
-    maxTokensField: "max_tokens",
-    thinkingFormat: "deepseek",
-    thinkingReplay: "native",
-    cacheControl: "none",
-    userField: "user_id",
-    forcedToolChoice: "reject",
-    jsonSchema: "reject",
-    toolResultMedia: "images",
-  },
-  meta: {
-    ...CHAT_BASE,
-    instructionRole: "developer",
-    maxTokensField: "max_completion_tokens",
-    thinkingFormat: "reasoning_effort",
-    cacheControl: "openai_implicit",
-    userField: "safety_identifier",
-    toolResultMedia: "reject",
-  },
-  moonshotai: {
-    ...CHAT_BASE,
-    maxTokensField: "max_completion_tokens",
-    thinkingFormat: "kimi",
-    thinkingReplay: "native",
-    cacheControl: "openai_implicit",
-    userField: "safety_identifier",
-    reasoningEfforts: ["low", "high", "max"],
-    toolResultMedia: "images",
-  },
-  // ─── Open-model inference hosts (lm15-contract changes/2026-09-26-inference-hosts-live.md) ───
-  // One policy for the four, each knob receipted live 2026-09-26: the
-  // reasoning_effort dial (Fireworks refuses the `reasoning` object);
-  // reasoning replayed as reasoning_content (a planted code word was
-  // recalled through it; Fireworks refuses `reasoning`); max_completion_tokens
-  // and stream usage honoured; caching automatic, so a key or long retention
-  // is dropped with a record. Per-model rules below, each pinned by a case.
-  deepinfra: {
-    ...INFERENCE_HOST,
-    toolResultMedia: "reject", // MAP-10: 422 "Input should be a valid string" on the tool row
-    // Forced tool choice depends on the model: a survey of 24 (research/
-    // providers/deepinfra/tool_choice_survey.py) found these 14 honour
-    // required, a named function and none; others ignore them silently.
-    // MAP-8: refused by default, sent to the receipted models. Ratified 2026-09-26.
-    forcedToolChoice: "reject",
-    modelOverrides: [
-      ["openai/gpt-oss", { reasoningOff: "lowest" }],
-      ...DEEPINFRA_FORCED_TOOL_CHOICE.map((model) => [model, { forcedToolChoice: "send" }] as const),
-    ],
-  },
-  together: {
-    ...INFERENCE_HOST,
-    toolResultMedia: "reject", // open cell: no receipt yet
-    // gpt-oss: a forced tool choice answers 500 (retryable, so refused before
-    // the wire); xhigh/max/unknown words run at medium (clamped, recorded);
-    // `none` is accepted and reasoning still billed (lowest level instead).
-    // GLM-5.3 ignores `none` (lowest level instead).
-    modelOverrides: [
-      ["openai/gpt-oss", { forcedToolChoice: "reject", reasoningEfforts: ["low", "medium", "high"], reasoningOff: "lowest" }],
-      ["zai-org/GLM-5.3", { reasoningOff: "lowest" }],
-    ],
-  },
-  fireworks: { ...INFERENCE_HOST, toolResultMedia: "images" }, // MAP-10: image read (GLM-5.3-Flash)
-  parasail: { ...INFERENCE_HOST, toolResultMedia: "images" }, // MAP-10: image read (Qwen3-VL-8B)
-});
+// The server presets: generated from lm15-contract tables/providers.json
+// (src/generated/tables.ts); the receipt behind each knob is cited at the
+// reference table (lm15-python lm15/compat.py OPENAI_CHAT_PRESETS).
+export const OPENAI_CHAT_PRESETS: Readonly<Record<string, OpenAIChatCompat>> = OPENAI_CHAT_PRESET_TABLE;
 
 export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): ResolvedOpenAIChatCompat {
   return {
@@ -431,29 +231,7 @@ export interface ResolvedAnthropicCompat {
   readonly extensions?: JsonObject;
 }
 
-export const ANTHROPIC_PRESETS: Readonly<Record<string, AnthropicCompat>> = Object.freeze({
-  anthropic: {},
-  deepseek: {
-    thinkingFormat: "deepseek",
-    cacheControl: "none",
-    structuredOutput: "reject",
-    parallelToolCalls: "reject",
-    modelPrefixes: ["deepseek-"],
-    toolResultMedia: "reject",
-  },
-  meta: { thinkingFormat: "adaptive", cacheControl: "none", structuredOutput: "send", parallelToolCalls: "send", toolResultMedia: "native" },
-  moonshotai: {
-    thinkingFormat: "effort",
-    thinkingReplay: "unsigned",
-    cacheControl: "none",
-    structuredOutput: "send",
-    parallelToolCalls: "reject",
-    samplingParams: "reject",
-    reasoningEfforts: ["low", "high", "max"],
-    modelPrefixes: ["kimi-"],
-    toolResultMedia: "images",
-  },
-});
+export const ANTHROPIC_PRESETS: Readonly<Record<string, AnthropicCompat>> = ANTHROPIC_PRESET_TABLE;
 
 export function resolveAnthropicCompat(partial: AnthropicCompat = {}): ResolvedAnthropicCompat {
   return {
@@ -490,16 +268,7 @@ function mergePartial<T extends { readonly extensions?: JsonObject }>(base: T, o
 }
 
 /** Spelling aliases → canonical preset key. Every alias is permanent. */
-const PRESET_ALIASES: Readonly<Record<string, string>> = Object.freeze({
-  openai_chat: "openai",
-  chat: "openai",
-  chat_completions: "openai",
-  responses: "openai",
-  openai_responses: "openai",
-  lm_studio: "lmstudio",
-  dashscope_qwen: "qwen",
-  z_ai: "zai",
-});
+const PRESET_ALIASES: Readonly<Record<string, string>> = PRESET_ALIAS_TABLE;
 
 export function presetKey(name: string): string {
   const key = name.toLowerCase().replace(/[-\s.]/g, "_");

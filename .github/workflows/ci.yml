@@ -86,6 +86,8 @@ jobs:
           PIN=$(tr -d '[:space:]' < CONTRACT_PIN)
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
+      - name: Generated provider tables are current for the pinned contract
+        run: python3 tools/gen_tables.py --check
       - run: npm ci && npm run build
       - name: Contract harness (every direction, at the pin)
         run: python3 ../lm15-contract/harness/check.py --shim typescript --direction all
