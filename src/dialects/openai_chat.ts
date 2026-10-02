@@ -48,6 +48,7 @@ import {
   type ResponseFormat,
   type Tool,
   type ToolChoice,
+  wireToolDescription,
 } from "../types/config.ts";
 import { ValueError } from "../types/validate.ts";
 import type { ModelInfo } from "../types/model_info.ts";
@@ -409,7 +410,7 @@ export class OpenAIChatLM extends ProviderLM {
       const wire: JsonObject[] = [];
       for (const tool of request.tools) {
         if (tool.type === "function") {
-          const fn: JsonObject = { name: tool.name, description: tool.description ?? null, parameters: tool.parameters ?? { type: "object", properties: {} } };
+          const fn: JsonObject = { name: tool.name, ...wireToolDescription(tool), parameters: tool.parameters ?? { type: "object", properties: {} } };
           if (compat.strictTools === "include") fn["strict"] = false;
           wire.push({ type: "function", function: fn });
         } else wire.push(this.builtinToolPayload(tool, compat));

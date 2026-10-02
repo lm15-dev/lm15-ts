@@ -34,7 +34,7 @@ import {
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
-import { Request, type BuiltinTool, type ResponseFormat } from "../types/config.ts";
+import { Request, wireToolDescription, type BuiltinTool, type ResponseFormat } from "../types/config.ts";
 import { BatchEntry, BatchJobInfo, FileInfo, FilePage, type BatchRequest, type FileUploadRequest } from "../types/endpoints.ts";
 import type { ModelInfo } from "../types/model_info.ts";
 import { continuationData, normalizePart, type CitationPart, type MediaPart, type Message, type Part } from "../types/parts.ts";
@@ -547,7 +547,7 @@ export class AnthropicLM extends ProviderLM {
         .filter((tool) => allowedSubset === undefined || allowedSubset.includes(tool.name))
         .map((tool) =>
           tool.type === "function"
-            ? { name: tool.name, description: tool.description ?? null, input_schema: tool.parameters ?? { type: "object", properties: {} } }
+            ? { name: tool.name, ...wireToolDescription(tool), input_schema: tool.parameters ?? { type: "object", properties: {} } }
             : builtinToAnthropic(tool),
         );
       if (allowedSubset !== undefined) {

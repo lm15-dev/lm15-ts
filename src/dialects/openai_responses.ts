@@ -36,7 +36,7 @@ import { float, isJsonObject, parseJson, stringifyJson, type JsonObject, type Ra
 import { materializeResponseAsync, type SSEEvent } from "../stream.ts";
 import { Message } from "../types/parts.ts";
 import type { BuiltinTool, Request } from "../types/config.ts";
-import { Request as RequestNs } from "../types/config.ts";
+import { Request as RequestNs, wireToolDescription } from "../types/config.ts";
 import {
   BatchEntry,
   BatchJobInfo,
@@ -384,7 +384,7 @@ export class OpenAILM extends ProviderLM {
     if (request.tools && request.tools.length > 0) {
       payload["tools"] = request.tools.map((tool) => {
         if (tool.type === "function") {
-          const t: JsonObject = { type: "function", name: tool.name, description: tool.description ?? null, parameters: tool.parameters ?? { type: "object", properties: {} } };
+          const t: JsonObject = { type: "function", name: tool.name, ...wireToolDescription(tool), parameters: tool.parameters ?? { type: "object", properties: {} } };
           if (compat.strictTools === "include") t["strict"] = false;
           return t;
         }
@@ -718,7 +718,7 @@ export class OpenAILM extends ProviderLM {
     if (config.tools && config.tools.length > 0) {
       session["tools"] = config.tools
         .filter((t) => t.type === "function")
-        .map((t) => ({ type: "function", name: t.name, description: t.type === "function" ? (t.description ?? null) : null, parameters: t.type === "function" ? (t.parameters ?? { type: "object", properties: {} }) : {} }));
+        .map((t) => ({ type: "function", name: t.name, ...wireToolDescription(t), parameters: t.type === "function" ? (t.parameters ?? { type: "object", properties: {} }) : {} }));
     }
     if (config.extensions) Object.assign(session, config.extensions);
     return { type: "session.update", session };

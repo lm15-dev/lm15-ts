@@ -25,7 +25,7 @@ import {
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import type { SSEEvent } from "../stream.ts";
-import { Request, type BuiltinTool, type ResponseFormat, type Tool } from "../types/config.ts";
+import { Request, wireToolDescription, type BuiltinTool, type ResponseFormat, type Tool } from "../types/config.ts";
 import {
   BatchEntry,
   BatchJobInfo,
@@ -183,7 +183,7 @@ export function geminiOpenApiSchema(schema: JsonValue | undefined): boolean {
 function geminiFunctionDeclaration(tool: Tool): JsonObject {
   const parameters = tool.type === "function" ? (tool.parameters ?? { type: "object", properties: {} }) : {};
   const field = geminiOpenApiSchema(parameters) ? "parameters" : "parametersJsonSchema";
-  return { name: tool.name, description: tool.type === "function" ? (tool.description ?? null) : null, [field]: parameters };
+  return { name: tool.name, ...wireToolDescription(tool), [field]: parameters };
 }
 
 function responseFormatToGeminiConfig(format: ResponseFormat): JsonObject {

@@ -116,6 +116,19 @@ export function tool(name: string, opts: { description?: string; parameters?: Js
   return normalizeTool({ type: "function", name, ...opts }) as FunctionTool;
 }
 
+/**
+ * MAP-17: a function tool's description field for any wire. `{description}`
+ * when the tool has one, `{}` when it does not: an absent description is
+ * left off the wire, never sent as `null` (Anthropic and Groq refuse `null`
+ * with a 400; lm15-contract receipts/2026-10-02-tool-description). `""` is
+ * the same value as absent in canonical JSON (omit-empty), so it is left off
+ * too. Spread it between the name and the schema to keep the documented key
+ * order. Internal: not exported from the package entry points.
+ */
+export function wireToolDescription(tool: Tool): { description?: string } {
+  return tool.type === "function" && tool.description ? { description: tool.description } : {};
+}
+
 export function builtinTool(name: string, config?: JsonObject): BuiltinTool {
   return normalizeTool({ type: "builtin", name, config }) as BuiltinTool;
 }
