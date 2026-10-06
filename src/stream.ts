@@ -35,97 +35,148 @@ export interface SSEEvent {
 
 const UTF8 = new TextDecoder("utf-8", { fatal: false });
 
-/** Parse SSE lines (bytes or text, newline-terminated or not) into events. */
-export function* parseSse(lines: Iterable<Uint8Array | string>, opts: { maxLineBytes?: number; maxEventBytes?: number } = {}): Generator<SSEEvent> {
-  const maxLine = opts.maxLineBytes ?? 64 * 1024;
-  const maxEvent = opts.maxEventBytes ?? 1024 * 1024;
-  let eventName: string | undefined;
-  let dataLines: string[] = [];
-  let eventBytes = 0;
-  for (const raw of lines) {
-    const size = typeof raw === "string" ? raw.length : raw.length;
-    if (size > maxLine) throw new TransportError(`SSE line exceeds limit (${size} > ${maxLine})`);
-    const line = (typeof raw === "string" ? raw : UTF8.decode(raw)).replace(/[\r\n]+$/, "");
-    eventBytes += size;
-    if (eventBytes > maxEvent) throw new TransportError(`SSE event exceeds limit (${eventBytes} > ${maxEvent})`);
-    if (line === "") {
-      if (dataLines.length > 0) yield eventName === undefined ? { data: dataLines.join("\n") } : { event: eventName, data: dataLines.join("\n") };
-      eventName = undefined;
-      dataLines = [];
-      eventBytes = 0;
-      continue;
-    }
-    if (line.startsWith(":")) continue;
-    if (line.startsWith("event:")) {
-      eventName = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^\s+/, ""));
+/**
+ * Optional caps on {@link parseSse} / {@link parseSseAsync}. Absent means no
+ * cap (lm15-contract INV-056): a provider sends whole objects as one line
+ * (OpenAI Responses repeats the full response, system prompt included, in
+ * `response.completed`; Gemini sends a 4K image as one 29.7 MB line), a
+ * non-streamed reply has no limit either, and a stream is accumulated into
+ * the whole reply anyway. Going over a cap set here is a `TransportError`.
+ */
+export interface SseLimits {
+  readonly maxLineBytes?: number;
+  readonly maxEventBytes?: number;
+}
+
+/** One SSE line through the field grammar; shared by the sync and async parsers. */
+class SseState {
+  private eventName: string | undefined;
+  private dataLines: string[] = [];
+  private eventBytes = 0;
+  private readonly maxLine: number;
+  private readonly maxEvent: number;
+
+  constructor(opts: SseLimits) {
+    this.maxLine = opts.maxLineBytes ?? Infinity;
+    this.maxEvent = opts.maxEventBytes ?? Infinity;
   }
-  if (dataLines.length > 0) yield eventName === undefined ? { data: dataLines.join("\n") } : { event: eventName, data: dataLines.join("\n") };
+
+  line(raw: Uint8Array | string): SSEEvent | undefined {
+    const capped = this.maxLine !== Infinity || this.maxEvent !== Infinity;
+    // Strings are measured in UTF-8 bytes, and only when a cap needs it.
+    const size = typeof raw !== "string" ? raw.length : capped ? UTF8_ENCODER.encode(raw).length : 0;
+    if (size > this.maxLine) throw new TransportError(`SSE line exceeds limit (${size} > ${this.maxLine})`);
+    this.eventBytes += size;
+    if (this.eventBytes > this.maxEvent) throw new TransportError(`SSE event exceeds limit (${this.eventBytes} > ${this.maxEvent})`);
+    const line = trimLineEnd(typeof raw === "string" ? raw : UTF8.decode(raw));
+    if (line === "") {
+      const event = this.take();
+      this.eventBytes = 0;
+      return event;
+    }
+    if (line.startsWith(":")) return undefined;
+    if (line.startsWith("event:")) {
+      this.eventName = line.slice(6).trim();
+      return undefined;
+    }
+    if (line.startsWith("data:")) this.dataLines.push(line.slice(5).replace(/^\s+/, ""));
+    return undefined;
+  }
+
+  /** The pending event (if it has data), resetting the name either way. */
+  take(): SSEEvent | undefined {
+    const event = this.dataLines.length > 0
+      ? (this.eventName === undefined ? { data: this.dataLines.join("\n") } : { event: this.eventName, data: this.dataLines.join("\n") })
+      : undefined;
+    this.eventName = undefined;
+    this.dataLines = [];
+    return event;
+  }
+}
+
+const UTF8_ENCODER = new TextEncoder();
+
+/** Strip trailing CR/LF without a regex scan over a multi-megabyte line. */
+function trimLineEnd(line: string): string {
+  let end = line.length;
+  while (end > 0) {
+    const c = line.charCodeAt(end - 1);
+    if (c !== 0x0a && c !== 0x0d) break;
+    end--;
+  }
+  return end === line.length ? line : line.slice(0, end);
+}
+
+/** Parse SSE lines (bytes or text, newline-terminated or not) into events. No size cap unless `opts` sets one (INV-056). */
+export function* parseSse(lines: Iterable<Uint8Array | string>, opts: SseLimits = {}): Generator<SSEEvent> {
+  const state = new SseState(opts);
+  for (const raw of lines) {
+    const event = state.line(raw);
+    if (event !== undefined) yield event;
+  }
+  const last = state.take();
+  if (last !== undefined) yield last;
 }
 
 /** Async mirror of {@link parseSse}. */
-export async function* parseSseAsync(lines: AsyncIterable<Uint8Array | string>): AsyncGenerator<SSEEvent> {
-  const maxLine = 64 * 1024;
-  const maxEvent = 1024 * 1024;
-  let eventName: string | undefined;
-  let dataLines: string[] = [];
-  let eventBytes = 0;
+export async function* parseSseAsync(lines: AsyncIterable<Uint8Array | string>, opts: SseLimits = {}): AsyncGenerator<SSEEvent> {
+  const state = new SseState(opts);
   for await (const raw of lines) {
-    const size = raw.length;
-    if (size > maxLine) throw new TransportError(`SSE line exceeds limit (${size} > ${maxLine})`);
-    const line = (typeof raw === "string" ? raw : UTF8.decode(raw)).replace(/[\r\n]+$/, "");
-    eventBytes += size;
-    if (eventBytes > maxEvent) throw new TransportError(`SSE event exceeds limit (${eventBytes} > ${maxEvent})`);
-    if (line === "") {
-      if (dataLines.length > 0) yield eventName === undefined ? { data: dataLines.join("\n") } : { event: eventName, data: dataLines.join("\n") };
-      eventName = undefined;
-      dataLines = [];
-      eventBytes = 0;
-      continue;
-    }
-    if (line.startsWith(":")) continue;
-    if (line.startsWith("event:")) {
-      eventName = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^\s+/, ""));
+    const event = state.line(raw);
+    if (event !== undefined) yield event;
   }
-  if (dataLines.length > 0) yield eventName === undefined ? { data: dataLines.join("\n") } : { event: eventName, data: dataLines.join("\n") };
+  const last = state.take();
+  if (last !== undefined) yield last;
 }
 
 /** Split a byte body into newline-terminated lines (keeping the terminator). */
 export function* splitLines(body: Uint8Array): Generator<Uint8Array> {
   let start = 0;
-  for (let i = 0; i < body.length; i++) {
-    if (body[i] === 0x0a) {
-      yield body.subarray(start, i + 1);
-      start = i + 1;
-    }
+  for (let i = body.indexOf(0x0a); i >= 0; i = body.indexOf(0x0a, start)) {
+    yield body.subarray(start, i + 1);
+    start = i + 1;
   }
   if (start < body.length) yield body.subarray(start);
 }
 
-/** Split an async byte stream into newline-terminated lines. */
+/**
+ * Split an async byte stream into newline-terminated lines.
+ *
+ * Linear in the bytes received (INV-056): a line arriving over thousands of
+ * reads keeps its pieces until its newline arrives, then is joined once.
+ * Each byte is searched once; nothing is re-merged or rescanned per read.
+ */
 export async function* splitLinesAsync(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array> {
-  let buffer = new Uint8Array(0);
+  let pending: Uint8Array[] = [];
+  let pendingBytes = 0;
+  const join = (tail: Uint8Array): Uint8Array => {
+    if (pending.length === 0) return tail.slice();
+    const out = new Uint8Array(pendingBytes + tail.length);
+    let at = 0;
+    for (const piece of pending) {
+      out.set(piece, at);
+      at += piece.length;
+    }
+    out.set(tail, at);
+    pending = [];
+    pendingBytes = 0;
+    return out;
+  };
   for await (const chunk of chunks) {
     if (chunk.length === 0) continue;
-    const merged = new Uint8Array(buffer.length + chunk.length);
-    merged.set(buffer);
-    merged.set(chunk, buffer.length);
-    buffer = merged;
     let start = 0;
-    for (let i = 0; i < buffer.length; i++) {
-      if (buffer[i] === 0x0a) {
-        yield buffer.slice(start, i + 1);
-        start = i + 1;
-      }
+    for (let i = chunk.indexOf(0x0a); i >= 0; i = chunk.indexOf(0x0a, start)) {
+      yield join(chunk.subarray(start, i + 1));
+      start = i + 1;
     }
-    buffer = buffer.slice(start);
+    if (start < chunk.length) {
+      // Keep a copy: a transport may reuse its read buffer.
+      const rest = chunk.slice(start);
+      pending.push(rest);
+      pendingBytes += rest.length;
+    }
   }
-  if (buffer.length > 0) yield buffer;
+  if (pendingBytes > 0) yield join(new Uint8Array(0));
 }
 
 // ─── Coalescer (MAP-3 / MAP-4) ───────────────────────────────────────

@@ -24,7 +24,7 @@
 export { LMRouter, DEFAULT_RULES, LITELLM_PROVIDER_PREFIXES, MissingCredentialError, apiKeysSource, describeResolution, openaiChatModelString, resolveModel } from "./router.ts";
 export type { Resolution, ResolutionSource, RouteRule, RouterConfig } from "./router.ts";
 export { ResponseStream, STREAM_CLEANUP_WARNING, StreamAccumulator, coalesceStream, coalesceStreamAsync, materializeResponse, materializeResponseAsync, responseToEvents, parseSse, parseSseAsync, splitLines, splitLinesAsync } from "./stream.ts";
-export type { SSEEvent, CoalesceOptions } from "./stream.ts";
+export type { SSEEvent, SseLimits, CoalesceOptions } from "./stream.ts";
 export { applyClientSideStop, truncateStreamAtStop, truncateStreamAtStopAsync, scoresBeforeCut } from "./stop.ts";
 
 // MAP-13: adapt freely, never invisibly
