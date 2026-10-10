@@ -380,11 +380,4 @@ export function validateCompat(dialect: string, compat: unknown): void {
 }
 
 /** MAP-7: the one effort→budget grading table. */
-export const EFFORT_THINKING_BUDGETS: Readonly<Record<string, number>> = Object.freeze({
-  minimal: 1024,
-  low: 2048,
-  medium: 8192,
-  high: 16384,
-  xhigh: 24576,
-  max: 32768,
-});
+export { EFFORT_THINKING_BUDGETS } from "./vocab.ts"; // one table, in vocab

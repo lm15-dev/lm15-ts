@@ -8,7 +8,7 @@
 
 import { canonicalFactory, canonicalValue } from "../canonical.ts";
 import { normalizeHttpResponse } from "../rate_limits.ts";
-import { float, isJsonObject, omitEmpty, parseJson, type JsonObject, type JsonValue } from "../json.ts";
+import { float, isJsonObject, omitEmpty, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
 import { ERROR_CODES, FINISH_REASONS, type ErrorCode, type FinishReason } from "../vocab.ts";
 import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
 import { Message, normalizeMessage, type CitationPart, type DataPart, type Part, type TextPart, type ToolCallPart } from "./parts.ts";
@@ -315,6 +315,12 @@ export class Response {
     if (this.message.parts.every((p) => p.type === "text" || p.type === "citation" || p.type === "thinking")) {
       const texts = this.message.parts.filter((p): p is TextPart => p.type === "text").map((p) => p.text);
       if (texts.length > 0) return texts.join("\n");
+    }
+    // A structured answer that came back as a DataPart (MAP-14) reads as its compact JSON, so text,
+    // parseJson() and json work whichever form the wire gave it (types.md §Response, amended 2026-10-10).
+    const data = this.message.parts.filter((p): p is DataPart => p.type === "data");
+    if (data.length === 1 && this.message.parts.every((p) => p.type === "data" || p.type === "citation" || p.type === "thinking")) {
+      return stringifyJson(data[0]!.value);
     }
     return undefined;
   }

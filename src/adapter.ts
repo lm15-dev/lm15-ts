@@ -129,8 +129,15 @@ export function loadCredential(policy: AccessPolicy, apiKey: CredentialLike | un
   if (policy.credentialPolicy !== "key" && platform.storedCredentials) return platform.storedCredentials.load(policy, credentialsPath);
   if (policy.credentialPolicy !== "key") throw noStoredCredentials(platform, policy);
   throw new NotConfiguredError(
-    `${policy.provider}: no credential given` + (policy.envKeys.length > 0 ? `; set ${policy.envKeys.join(" or ")} or pass apiKey` : "; pass apiKey"),
-    { provider: policy.provider, envKeys: policy.envKeys, credentialHint: policy.loginHint ?? null },
+    // An adapter built by hand reads no environment (only the router does), so "set the variable" would not help.
+    policy.envKeys.length > 0
+      ? `${policy.provider}: no API key given. An adapter built by hand reads no environment variable, so ${policy.envKeys[0]} is not used here even when it is set`
+      : `${policy.provider}: no credential given; pass apiKey`,
+    {
+      provider: policy.provider,
+      envKeys: policy.envKeys.length > 0 ? [] : policy.envKeys,
+      credentialHint: policy.loginHint ?? (policy.envKeys.length > 0 ? `pass apiKey: process.env.${policy.envKeys[0]}, or use LMRouter, which reads ${policy.envKeys.join(" or ")}` : null),
+    },
   );
 }
 

@@ -81,7 +81,7 @@ test("a cloud wire answers a judgment request with a DataPart; probabilities pol
   assert.deepEqual(response.data, { style: "oak", ok: true });
   assert.equal(response.dataPart?.type, "data");
   assert.equal(response.probabilities, undefined);
-  assert.equal(response.text, undefined);
+  assert.equal(response.text, '{"style":"oak","ok":true}'); // types.md §Response, amended 2026-10-10: a DataPart answer reads as its JSON
   assert.deepEqual(response.adaptations.map((a) => [a.field, a.action, a.asked]), [["config.probabilities", "dropped", "if_available"]]);
   await assert.rejects(
     lm.plan({ model: "claude-sonnet-4-5", messages: user("note"), config: { maxTokens: 50, responseFormat: fmt, probabilities: "required" } }),

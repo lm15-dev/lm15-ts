@@ -14,6 +14,7 @@ import {
   CACHE_RETENTIONS,
   REASONING_EFFORTS,
   REASONING_SUMMARIES,
+  effortForBudget,
   TOOL_CHOICE_MODES,
   type CacheMode,
   type CachePrefix,
@@ -192,7 +193,11 @@ export const ToolChoice = {
 // ─── Reasoning ───────────────────────────────────────────────────────
 
 export interface Reasoning {
-  /** The one dial (MAP-7). Required: `Reasoning` never means "the model decides" — leaving `config.reasoning` unset does. */
+  /**
+   * The one dial (MAP-7). `Reasoning` never means "the model decides" — leaving `config.reasoning` unset does.
+   * Given only `thinkingBudget`, it is filled from MAP-7 rule 3's table read the other way (amended 2026-10-10),
+   * so a normalized Reasoning always has it.
+   */
   readonly effort: ReasoningEffort;
   /** A token cap on budget wires only (`> 0`). */
   readonly thinkingBudget?: number;
@@ -203,9 +208,14 @@ export const normalizeReasoning = canonicalFactory("reasoning", normalizeReasoni
 function normalizeReasoningValue(input: unknown): Reasoning {
   if (typeof input !== "object" || input === null) throw new TypeError("reasoning must be a Reasoning");
   const d = input as Record<string, unknown>;
-  const effort = requireOneOf(REASONING_EFFORTS, d["effort"], "reasoning effort");
+  if (d["thinkingBudget"] === 0) throw new ValueError("thinking_budget must be > 0; to turn thinking off, use { effort: \"off\" } with no budget");
+  if (d["effort"] === "none") throw new ValueError("unsupported reasoning effort: none (lm15 spells \"none\" as effort: \"off\")");
   const summary = optionalOneOf(REASONING_SUMMARIES, d["summary"], "reasoning summary");
   const thinkingBudget = optionalInt(d["thinkingBudget"], "thinking_budget", { min: 1 });
+  if (d["effort"] === undefined && thinkingBudget === undefined) {
+    throw new TypeError(`Reasoning needs effort (one of ${REASONING_EFFORTS.join(", ")}) or thinkingBudget; leave config.reasoning unset to let the model decide`);
+  }
+  const effort = d["effort"] === undefined ? effortForBudget(thinkingBudget!) : requireOneOf(REASONING_EFFORTS, d["effort"], "reasoning effort");
   if (effort === "off" && (thinkingBudget !== undefined || summary !== undefined)) {
     throw new ValueError("Reasoning(effort='off') cannot specify thinking_budget or summary");
   }

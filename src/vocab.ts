@@ -42,6 +42,23 @@ export type FinishReason = (typeof FINISH_REASONS)[number];
 export const REASONING_EFFORTS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
+/** MAP-7 rule 3: the one grading table between effort levels and thinking budgets. */
+export const EFFORT_THINKING_BUDGETS: Readonly<Record<string, number>> = Object.freeze({
+  minimal: 1024,
+  low: 2048,
+  medium: 8192,
+  high: 16384,
+  xhigh: 24576,
+  max: 32768,
+});
+
+/** The highest effort whose table budget is at or below `budget` (`minimal` below 1024): MAP-7 rule 3 read the other way (amended 2026-10-10). */
+export function effortForBudget(budget: number): ReasoningEffort {
+  let level: ReasoningEffort = "minimal";
+  for (const [name, tokens] of Object.entries(EFFORT_THINKING_BUDGETS)) if (tokens <= budget) level = name as ReasoningEffort;
+  return level;
+}
+
 export const REASONING_SUMMARIES = ["auto", "concise", "detailed"] as const;
 export type ReasoningSummary = (typeof REASONING_SUMMARIES)[number];
 
