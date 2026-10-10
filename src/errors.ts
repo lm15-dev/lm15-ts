@@ -605,6 +605,43 @@ export const MODEL_NOT_FOUND_FORMS: readonly { code: string; prefix?: string; co
   { code: "invalid_request_error", prefix: "Deployment ", suffix: " doesn't exist or isn't accessible." }, // Parasail
 ]);
 
+/**
+ * MAP-18: the pinned forms of a provider's "this key is not valid" answer that
+ * arrive without HTTP 401 (lm15-contract spec/auth-failed.json, carried
+ * verbatim; each form has a live receipt). A form with `reason` also needs
+ * that reason in a Google `google.rpc.ErrorInfo` detail of the body.
+ */
+export const AUTH_FAILED_FORMS: readonly { code: string; reason?: string; prefix?: string; contains?: string; suffix?: string }[] = Object.freeze([
+  { code: "INVALID_ARGUMENT", reason: "API_KEY_INVALID" }, // Gemini (2026-10-10)
+  { code: "invalid-argument", prefix: "Incorrect API key provided" }, // xAI (2026-10-10)
+]);
+
+/** The `reason` of every `google.rpc.ErrorInfo` in a Google error envelope's `details` (the inner `error` object). */
+export function googleErrorReasons(error: unknown): string[] {
+  if (error === null || typeof error !== "object" || Array.isArray(error)) return [];
+  const details = (error as Record<string, unknown>)["details"];
+  if (!Array.isArray(details)) return [];
+  const out: string[] = [];
+  for (const d of details) {
+    if (d === null || typeof d !== "object" || Array.isArray(d)) continue;
+    const rec = d as Record<string, unknown>;
+    if (String(rec["@type"] ?? "").endsWith("google.rpc.ErrorInfo") && typeof rec["reason"] === "string") out.push(rec["reason"]);
+  }
+  return out;
+}
+
+/** True when the error is one of the pinned MAP-18 forms: exact code, every text test, and the form's reason when it names one. */
+export function isPinnedAuthFailure(providerCode: string | null | undefined, message: string | null | undefined, reasons: readonly string[] = []): boolean {
+  if (!providerCode) return false;
+  const text = message ?? "";
+  return AUTH_FAILED_FORMS.some((f) =>
+    f.code === providerCode &&
+    (f.reason === undefined || reasons.includes(f.reason)) &&
+    (f.prefix === undefined || text.startsWith(f.prefix)) &&
+    (f.contains === undefined || text.includes(f.contains)) &&
+    (f.suffix === undefined || text.endsWith(f.suffix)));
+}
+
 /** True when the error is one of the pinned MAP-15 forms: exact code, and every text test the form gives. */
 export function isPinnedModelNotFound(providerCode: string | null | undefined, message: string | null | undefined): boolean {
   if (!providerCode) return false;

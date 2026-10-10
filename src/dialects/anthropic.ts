@@ -30,6 +30,7 @@ import {
   UnsupportedModelError,
   canonicalErrorCode,
   mapHttpError,
+  isPinnedAuthFailure,
   isPinnedModelNotFound,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
@@ -251,6 +252,7 @@ export class AnthropicLM extends ProviderLM {
       // AUTH-10 backend settings: the minimum-version refusal names the setting to change.
       if (this.access.backend === "claude-code") msg = claudeCodeVersionGuidance(msg);
       const meta = { status, providerCode: errType || null, requestId: requestId || null };
+      if (isPinnedAuthFailure(errType, msg)) return this.providerError(AuthError, msg, meta); // MAP-18
       if (isContextLengthMessage(msg)) return this.providerError(ContextLengthError, msg, meta);
       if (errType === "DeploymentNotFound" || ((errType === "not_found_error" || errType === "resource_not_found_error") && isModelError(msg)) || isPinnedModelNotFound(errType, msg)) { // MAP-15
         return this.providerError(UnsupportedModelError, msg, { ...meta, providerCode: errType });

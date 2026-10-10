@@ -46,7 +46,8 @@ const MEANINGS: NamedTable<string> = {
 export function validateNamedCredential(policy: AccessPolicy, name: string | undefined, explicit = false): asserts name is NamedCredential | undefined {
   if (name === undefined) return;
   if (!(NAMED_CREDENTIALS as readonly string[]).includes(name)) {
-    throw new NotConfiguredError(`${policy.provider}: unknown named credential; choose ${NAMED_CREDENTIALS.join(", ")}`, { provider: policy.provider });
+    // AUTH-1/AUTH-5 (amended 2026-10-10): a value that is not a name is usually a key in the wrong option; never repeat it.
+    throw new NotConfiguredError(`${policy.provider}: unknown named credential (one of ${NAMED_CREDENTIALS.join(", ")}); the value given is not shown, because it may be a key. If it is your API key, pass it as apiKey (or RouterConfig apiKeys)`, { provider: policy.provider });
   }
   if (!isCloudChain(policy)) throw new NotConfiguredError(`${policy.provider}: not a cloud door; named credentials exist only on cloud chains; pass apiKey instead`, { provider: policy.provider });
   if (explicit) throw new NotConfiguredError(`${policy.provider}: both api_keys and credentials name this door; pass an explicit apiKey or a named credential, not both`, { provider: policy.provider });

@@ -30,6 +30,7 @@ import {
   UnsupportedModelError,
   canonicalErrorCode,
   mapHttpError,
+  isPinnedAuthFailure,
   isPinnedModelNotFound,
 } from "../errors.ts";
 import { float, isJsonObject, parseJson, stringifyJson, type JsonObject, type RawNumber } from "../json.ts";
@@ -231,6 +232,7 @@ export class OpenAILM extends ProviderLM {
       const code = isJsonObject(err) ? str(e["code"]) : "";
       const errType = isJsonObject(err) ? str(e["type"]) : "";
       providerCode = code || errType || null;
+      if (isPinnedAuthFailure(providerCode, msg)) return this.providerError(AuthError, msg, { status, providerCode }); // MAP-18
       if (code === "context_length_exceeded") return this.providerError(ContextLengthError, msg, { status, providerCode });
       if (MODEL_ERROR_CODES.has(code) || (status === 404 && isModelError(msg, code, errType)) || isPinnedModelNotFound(providerCode, msg)) { // MAP-15
         return this.providerError(UnsupportedModelError, msg, { status, providerCode });

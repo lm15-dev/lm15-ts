@@ -21,6 +21,8 @@ import {
   UnsupportedFeatureError,
   UnsupportedModelError,
   canonicalErrorCode,
+  googleErrorReasons,
+  isPinnedAuthFailure,
   mapHttpError,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
@@ -329,6 +331,7 @@ export class GeminiLM extends ProviderLM {
       const err = isJsonObject(data) ? data["error"] : undefined;
       msg = isJsonObject(err) ? str(err["message"]) : err === undefined ? "" : str(err);
       errStatus = isJsonObject(err) ? str(err["status"]) : "";
+      if (isPinnedAuthFailure(errStatus, msg, googleErrorReasons(err))) return this.providerError(AuthError, msg, { status, providerCode: errStatus }); // MAP-18
       if (isContextLengthMessage(msg)) return this.providerError(ContextLengthError, msg, { status, providerCode: errStatus || null });
       if (errStatus === "NOT_FOUND" && isModelError(msg)) return this.providerError(UnsupportedModelError, msg, { status, providerCode: errStatus });
       const cls = ERROR_STATUS_MAP[errStatus];
