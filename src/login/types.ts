@@ -133,6 +133,8 @@ export interface OAuthMaterial {
   /** Codex. */
   readonly accountId?: string;
   readonly id_token?: string;
+  /** Meta: the API address the key mint named (an https meta.ai host). */
+  readonly base_url?: string;
 }
 export interface ApiKeyMaterial { readonly type: "api_key"; readonly key: string; readonly minted?: boolean }
 export type LoginMaterial = OAuthMaterial | ApiKeyMaterial;
