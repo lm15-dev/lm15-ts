@@ -126,6 +126,38 @@ test("typesafe: refusals name the feature; a judgment without a description is d
   await assert.rejects(lm.build({ model: "jev-latest", messages: [Message.user(["a", "b"])], config: { responseFormat: fmt } }, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "messages[0].parts");
 });
 
+test("typesafe images (2026-10-14): an image part is its reference in the state, its bytes an asset, the opt-in header sent with it", async () => {
+  const lm = new TypeSafeLM({ apiKey: "k", transport: new FakeTransport([]) });
+  const fmt = judgments({ circle: yesNo("Is there a red circle in the image?") });
+  const png = "iVBORw0KGgo=", jpg = "/9j/4AAQ";
+  const header = (req: TransportRequest) => req.headers.find(([k]) => k === "TypeSafe-Danger-Zone-Images")?.[1];
+  const one = await lm.build({ model: "jev-latest", messages: [Message.user({ type: "image", data: png, mediaType: "image/png" })], config: { responseFormat: fmt } }, false);
+  const wire = decode(one.request);
+  assert.deepEqual(Object.keys(wire), ["model", "state", "assets", "questions"]);
+  assert.equal(wire["state"], "<lm15-image-1>");
+  assert.deepEqual(wire["assets"], { "<lm15-image-1>": { type: "image", format: "png", data_base64: png } });
+  assert.equal(header(one.request), "true");
+  assert.deepEqual(one.adaptations, []);
+  // D2: an image beside other parts — the parts in order, as an array.
+  const mixed = await lm.build({ model: "jev-latest", messages: [Message.user(["A red ball.", { type: "image", data: png, mediaType: "image/png" }, { type: "data", value: { k: 1 } }, { type: "image", data: jpg, mediaType: "image/jpeg" }])], config: { responseFormat: fmt } }, false);
+  const mixedWire = decode(mixed.request);
+  assert.deepEqual(mixedWire["state"], ["A red ball.", "<lm15-image-1>", { k: 1 }, "<lm15-image-2>"]);
+  assert.deepEqual(Object.values(mixedWire["assets"] as JsonObject).map((a) => (a as JsonObject)["format"]), ["png", "jpg"]);
+  // No image, no header.
+  const plain = await lm.build({ model: "jev-latest", messages: user("x"), config: { responseFormat: fmt } }, false);
+  assert.equal(header(plain.request), undefined);
+  assert.equal("assets" in decode(plain.request), false);
+  for (const [part, why] of [
+    [{ type: "image", url: "https://example.com/a.png" }, /not a URL/],
+    [{ type: "image", fileId: "file_1" }, /not a file id/],
+    [{ type: "image", data: "UklGRg==", mediaType: "image/webp" }, /PNG or JPEG/],
+    [{ type: "audio", data: "UklGRg==" }, /no slot on the systemone wire/],
+  ] as const) {
+    await assert.rejects(lm.build({ model: "jev-latest", messages: [Message.user(["x", part])], config: { responseFormat: fmt } }, false),
+      (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "messages[0].parts[1]" && why.test(e.message));
+  }
+});
+
 test("D3 (2026-09-19): a data part in a user message is its compact JSON on every text wire — the same bytes a lone text part would take", async () => {
   const value = { note: "Ripe.", price_eur: 48, tags: ["red", null] };
   const req = { model: "m", messages: [Message.user({ type: "data", value })], config: { responseFormat: judgments({ ok: yesNo("Ok?") }) } };

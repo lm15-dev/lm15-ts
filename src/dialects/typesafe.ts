@@ -6,8 +6,11 @@
  * `json_schema` become its `questions` (MAP-14 §2), and the answers come
  * back as one `DataPart` with the distribution per judgment and
  * `method = "provider_classification"` (§3). Jev generates no text: a
- * request without judgments, with tools, or with media is refused before
- * the wire (D8). Wire facts: receipts/2026-09-17-judgments/ (jev-*.json).
+ * request without judgments or with tools is refused before the wire (D8).
+ * Images reach Jev as top-level `assets` named by a reference string written
+ * where the image belongs in the state (changes/2026-10-14-jev-images.md);
+ * audio, video and documents are refused (MAP-10). Wire facts:
+ * receipts/2026-09-17-judgments/, receipts/2026-10-14-typesafe/.
  */
 
 import { adapt } from "../adaptation.ts";
@@ -19,10 +22,10 @@ import { MAX_CHOICE_KEYS, MAX_ORDERED_LEVELS, nonJudgmentProperties, parseTypeSa
 import type { SSEEvent } from "../stream.ts";
 import type { Request } from "../types/config.ts";
 import type { ModelInfo } from "../types/model_info.ts";
-import type { DataPart, Part, TextPart } from "../types/parts.ts";
+import type { DataPart, ImagePart, Part, TextPart } from "../types/parts.ts";
 import type { Response } from "../types/response.ts";
 import type { StreamEvent } from "../types/stream.ts";
-import { HttpResponse, modelInfosFromEntries, type TransportRequest } from "../wire.ts";
+import { HttpResponse, mediaBase64, modelInfosFromEntries, type TransportRequest } from "../wire.ts";
 import { optionalWireFloat } from "./openai_responses.ts";
 import { str } from "./openai_shared.ts";
 
@@ -48,12 +51,18 @@ const DROPPED_KNOBS: ReadonlyArray<readonly [string, string]> = [
 
 const FLOAT_KNOBS: ReadonlySet<string> = new Set(["temperature", "top_p", "frequency_penalty", "presence_penalty"]);
 
-function isTextOrData(part: Part): part is TextPart | DataPart {
-  return part.type === "text" || part.type === "data";
+/** changes/2026-10-14-jev-images.md: the asset formats systemone reads (PNG and JPEG, nothing else). */
+const IMAGE_FORMATS: Readonly<Record<string, string>> = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg" });
+/** Images are off unless each request that carries one sends this header (live 400 without it, 2026-10-14). */
+const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
+
+function imageFormat(part: ImagePart): string | undefined {
+  return IMAGE_FORMATS[(part.mediaType ?? "image/png").toLowerCase()];
 }
 
-function textOrValue(part: TextPart | DataPart): JsonValue {
-  return part.type === "text" ? part.text : part.value;
+/** The n-th image's reference (1-based, in part order); `>` closes it so `<lm15-image-1>` never matches inside `<lm15-image-10>`. */
+function imageReference(n: number): string {
+  return `<lm15-image-${n}>`;
 }
 
 export class TypeSafeLM extends ProviderLM {
@@ -83,10 +92,27 @@ export class TypeSafeLM extends ProviderLM {
    * place named, never merged into a shape of ours. A media part is refused
    * first, as the specific fault it is (MAP-10).
    */
-  protected state(request: Request): JsonValue {
+  protected checkImage(part: ImagePart, where: string): void {
+    if (part.url !== undefined || part.fileId !== undefined) {
+      const how = part.url !== undefined ? "a URL" : "a file id";
+      throw this.refuse(where, `systemone takes image bytes, not ${how}; fetch the image and pass its data or path (changes/2026-10-14-jev-images.md)`);
+    }
+    if (imageFormat(part) === undefined) {
+      throw this.refuse(where, `systemone reads PNG or JPEG images, got ${JSON.stringify(part.mediaType ?? "image/png")}; convert the image first (lm15 never converts media)`);
+    }
+  }
+
+  /**
+   * changes/2026-10-14-jev-images.md: an image part is its reference string,
+   * its bytes an asset; a message holding an image and other parts is the
+   * array of its parts in order. Returns [state, assets].
+   */
+  protected state(request: Request): [JsonValue, JsonObject] {
     request.messages.forEach((message, mIndex) => {
       message.parts.forEach((part, pIndex) => {
-        if (!isTextOrData(part)) throw this.refuse(`messages[${mIndex}].parts[${pIndex}]`, `a ${part.type} part has no slot on the systemone wire (MAP-10); Jev reads text or data`);
+        const where = `messages[${mIndex}].parts[${pIndex}]`;
+        if (part.type === "image") this.checkImage(part, where);
+        else if (part.type !== "text" && part.type !== "data") throw this.refuse(where, `a ${part.type} part has no slot on the systemone wire (MAP-10); Jev reads text, data, or PNG/JPEG images`);
       });
     });
     if (request.system !== undefined) {
@@ -97,8 +123,23 @@ export class TypeSafeLM extends ProviderLM {
     }
     const message = request.messages[0]!;
     if (message.role !== "user") throw this.refuse("messages[0].role", `Jev's state is a user message, got role ${JSON.stringify(message.role)}`);
-    if (message.parts.length !== 1) throw this.refuse("messages[0].parts", `Jev's state is one text or data part, got ${message.parts.length} parts; put several pieces in one data part as named keys`);
-    return textOrValue(message.parts[0] as TextPart | DataPart);
+    const hasImage = message.parts.some((part) => part.type === "image");
+    if (message.parts.length !== 1 && !hasImage) throw this.refuse("messages[0].parts", `Jev's state is one text or data part, got ${message.parts.length} parts; put several pieces in one data part as named keys`);
+    const assets: JsonObject = {};
+    let images = 0;
+    const element = (part: Part): JsonValue => {
+      if (part.type === "text") return (part as TextPart).text;
+      if (part.type === "data") return (part as DataPart).value;
+      const image = part as ImagePart;
+      const reference = imageReference(++images);
+      Object.defineProperty(assets, reference, {
+        value: { type: "image", format: imageFormat(image)!, data_base64: mediaBase64(image) },
+        enumerable: true, configurable: true, writable: true,
+      });
+      return reference;
+    };
+    if (message.parts.length === 1) return [element(message.parts[0]!), assets];
+    return [message.parts.map(element), assets];
   }
 
   protected questions(request: Request): JsonObject {
@@ -155,7 +196,10 @@ export class TypeSafeLM extends ProviderLM {
       adapt(`config.${wire}`, "dropped", "no such control on the systemone wire (Jev returns decisions, not samples)", { asked, provider: this.provider });
     }
     const questions = this.questions(request);
-    const payload: JsonObject = { model: request.model, state: this.state(request), questions };
+    const [state, assets] = this.state(request);
+    const payload: JsonObject = { model: request.model, state };
+    if (Object.keys(assets).length > 0) payload["assets"] = assets;
+    payload["questions"] = questions;
     if (cfg.extensions) for (const [k, v] of Object.entries(cfg.extensions)) {
       if (k === "n" && isNumeric(v) && numberValue(v) > 1) throw this.refuse("config.extensions.n", "n > 1 has no canonical multiple-response representation");
       Object.defineProperty(payload, k, { value: v, enumerable: true, configurable: true, writable: true });
@@ -166,7 +210,11 @@ export class TypeSafeLM extends ProviderLM {
   wireRequest(request: Request, stream: boolean): EmitOptions {
     request = this.wireModelRequest(request);
     if (stream) throw this.refuse("stream", "systemone answers in one piece; there is no stream to wrap");
-    return { method: "POST", url: `${this.base()}/v1/systemone`, endpoint: "systemone", model: request.model, headers: this.headers(), payload: this.payload(request) };
+    const payload = this.payload(request);
+    const headers = this.headers();
+    // The caller put an image in the request: that is the opt-in the header exists for (changes/2026-10-14-jev-images.md D3).
+    if (Object.prototype.hasOwnProperty.call(payload, "assets")) headers[IMAGES_HEADER] = "true";
+    return { method: "POST", url: `${this.base()}/v1/systemone`, endpoint: "systemone", model: request.model, headers, payload };
   }
 
   // ─── Response parsing (pure) ─────────────────────────────────────
