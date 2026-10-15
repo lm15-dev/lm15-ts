@@ -33,7 +33,7 @@ export { DEVIATIONS, EFFORT_LADDER, checkPolicy, nearestEffort } from "./adaptat
 export type { AdaptationAction, AdaptationPolicy } from "./adaptation.ts";
 
 // MAP-14: judgments
-export { choice, yesNo, score, judgments, judgmentsInSchema, requestJudgments, expectedLevel, MAX_ORDERED_LEVELS, MAX_CHOICE_KEYS } from "./judgments.ts";
+export { choice, yesNo, score, boundingBox, BOX_EDGES, judgments, judgmentsInSchema, requestJudgments, expectedLevel, MAX_ORDERED_LEVELS, MAX_CHOICE_KEYS } from "./judgments.ts";
 export type { Judgment, JudgmentKind, JudgmentsFormat } from "./judgments.ts";
 
 // Canonical types

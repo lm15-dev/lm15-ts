@@ -3,12 +3,15 @@
  * changes/2026-09-17-judgments.md). A judgment is a top-level property of
  * a `json_schema` `response_format` that declares its answer set: a
  * boolean, a string `enum` / `anyOf`-of-`const`, or an ordered integer
- * `enum` / `anyOf`-of-`const` `0..n-1`. This module reads that convention
- * off a schema (§1), rewrites judgment properties for the two wires that
- * need it (§2), folds a model's JSON text into a `DataPart` (§3), and
- * offers the sugar that EMITS the convention (`choice`, `yesNo`, `score`,
- * `judgments`) the way `tool(...)` emits a tool schema. Nothing here
- * touches the network.
+ * `enum` / `anyOf`-of-`const` `0..n-1` — or, since
+ * changes/2026-10-15-bounding-box.md, a **bounding box**: an object of the
+ * four numbers `top`, `bottom`, `left`, `right` (fractions of the image's
+ * height and width). A box declares no keys, so it is answered, never
+ * scored. This module reads that convention off a schema (§1), rewrites
+ * judgment properties for the two wires that need it (§2), folds a model's
+ * JSON text into a `DataPart` (§3), and offers the sugar that EMITS the
+ * convention (`choice`, `yesNo`, `score`, `boundingBox`, `judgments`) the
+ * way `tool(...)` emits a tool schema. Nothing here touches the network.
  */
 
 import { adapt } from "./adaptation.ts";
@@ -20,12 +23,25 @@ import { Response, Usage } from "./types/response.ts";
 import { ValueError, requireBool, requireJsonObject, requireString } from "./types/validate.ts";
 import type { HttpResponse } from "./wire.ts";
 
-export type JudgmentKind = "boolean" | "choice" | "ordered";
+export type JudgmentKind = "boolean" | "choice" | "ordered" | "box";
 
 /** Jev's Score ceiling (docs.typesafe.ai/primitives/score). */
 export const MAX_ORDERED_LEVELS = 10;
 /** Jev's Choice ceiling (docs.typesafe.ai/primitives/choice). */
 export const MAX_CHOICE_KEYS = 255;
+
+/**
+ * A box's edges, in Jev's order (changes/2026-10-15-bounding-box.md D1):
+ * fractions of the image from its top-left corner, `top`/`bottom` of its
+ * height, `left`/`right` of its width (docs.typesafe.ai/primitives/box).
+ */
+export const BOX_EDGES = ["top", "bottom", "left", "right"] as const;
+const BOX_EDGE_DESCRIPTIONS: Readonly<Record<(typeof BOX_EDGES)[number], string>> = {
+  top: "Top edge, as a fraction of the image's height from the top, from 0 to 1",
+  bottom: "Bottom edge, as a fraction of the image's height from the top, from 0 to 1",
+  left: "Left edge, as a fraction of the image's width from the left, from 0 to 1",
+  right: "Right edge, as a fraction of the image's width from the left, from 0 to 1",
+};
 
 /** One declared judgment read off a schema property. */
 export interface Judgment {
@@ -42,6 +58,11 @@ export function isOrdered(j: Judgment): boolean {
   return j.kind === "ordered";
 }
 
+/** Whether a distribution over declared keys exists to measure: a box declares no keys, so it is answered, never scored (MAP-14 §1). */
+export function isMeasurable(j: Judgment): boolean {
+  return j.kind !== "box";
+}
+
 // ─── §1 reading the convention ──────────────────────────────────────
 
 function constBranches(prop: JsonObject): JsonObject[] | undefined {
@@ -55,9 +76,24 @@ function optionalText(value: unknown): string | undefined {
   return typeof value === "string" && value !== "" ? value : undefined;
 }
 
+/**
+ * An object whose properties are exactly the four edges, each a `number`
+ * (changes/2026-10-15-bounding-box.md D1). Other keywords are the caller's
+ * and travel verbatim.
+ */
+function isBox(prop: JsonObject): boolean {
+  if (prop["type"] !== undefined && prop["type"] !== "object") return false;
+  const props = prop["properties"];
+  if (!isJsonObject(props)) return false;
+  const names = memberNames(props);
+  if (names.length !== BOX_EDGES.length || !BOX_EDGES.every((edge) => names.includes(edge))) return false;
+  return names.every((edge) => { const s = props[edge]; return isJsonObject(s) && s["type"] === "number"; });
+}
+
 function judgmentOf(name: string, prop: unknown): Judgment | undefined {
   if (!isJsonObject(prop)) return undefined;
   const instruction = optionalText(prop["description"]);
+  if (isBox(prop)) return { name, kind: "box", keys: [], instruction, descriptions: {}, titles: {} };
   if (prop["type"] === "boolean") {
     return { name, kind: "boolean", keys: ["true", "false"], instruction, descriptions: { true: undefined, false: undefined }, titles: {} };
   }
@@ -118,6 +154,15 @@ export function requestJudgments(request: Request): Map<string, Judgment> {
   return judgmentsInSchema(fmt.schema);
 }
 
+/** The judgments with declared keys: the ones a distribution can be measured for (boxes are left out). */
+export function measurableJudgments(found: ReadonlyMap<string, Judgment>): Map<string, Judgment> {
+  return new Map([...found].filter(([, j]) => isMeasurable(j)));
+}
+
+export function requestMeasurableJudgments(request: Request): Map<string, Judgment> {
+  return measurableJudgments(requestJudgments(request));
+}
+
 export function nonJudgmentProperties(schema: unknown, found: ReadonlyMap<string, Judgment>): string[] {
   const props = isJsonObject(schema) ? schema["properties"] : undefined;
   if (!isJsonObject(props)) return [];
@@ -126,10 +171,15 @@ export function nonJudgmentProperties(schema: unknown, found: ReadonlyMap<string
 
 // ─── §2 what a wire that measures nothing does with `probabilities` ─
 
-/** MAP-14 §3 on a wire with no distribution: `if_available` records `dropped`; `required` refuses before the wire (MAP-13 b). */
+/**
+ * MAP-14 §3 on a wire with no distribution: `if_available` records
+ * `dropped`; `required` refuses before the wire (MAP-13 b). A request whose
+ * judgments are all boxes asked for nothing measurable: nothing is recorded
+ * and nothing refused.
+ */
 export function noteUnmeasurableProbabilities(request: Request, provider: string): void {
   const policy = request.config?.probabilities;
-  if (policy == null || policy === "off" || requestJudgments(request).size === 0) return;
+  if (policy == null || policy === "off" || requestMeasurableJudgments(request).size === 0) return;
   if (policy === "required") {
     throw new UnsupportedFeatureError(
       `${provider}: config.probabilities='required' but this wire cannot measure a distribution over the declared keys (it returns a pick only); use 'if_available' or a provider that can (typesafe, or a vLLM/SGLang server that honours logprob_token_ids)`,
@@ -181,7 +231,7 @@ export function geminiSchema(schema: JsonObject, found: ReadonlyMap<string, Judg
   const props = out["properties"] as JsonObject;
   for (const [name, j] of found) {
     const prop = props[name] as JsonObject;
-    if (j.kind === "boolean" || !("anyOf" in prop)) continue;
+    if (j.kind === "boolean" || j.kind === "box" || !("anyOf" in prop)) continue;
     delete prop["anyOf"];
     prop["type"] = isOrdered(j) ? "integer" : "string";
     prop["enum"] = isOrdered(j) ? j.keys.map((k) => Number(k)) : [...j.keys];
@@ -289,8 +339,20 @@ export function parseTypeSafeResponse(request: Request, response: HttpResponse, 
     const answer = answers[name];
     const path = `answers.${name}`;
     if (!isJsonObject(answer)) throw invalid(path, "expected an answer object");
-    const expected = j.kind === "boolean" ? "noul" : j.kind === "choice" ? "choice" : "score";
+    const expected = j.kind === "boolean" ? "noul" : j.kind === "choice" ? "choice" : j.kind === "box" ? "box" : "score";
     if (answer["type"] !== expected) throw invalid(`${path}.type`, `expected ${JSON.stringify(expected)}`);
+    if (j.kind === "box") {
+      // The four edges verbatim, in Jev's order; a box has no distribution,
+      // and its `confidence` stays in provider_data.
+      const edges = answer["box"];
+      if (!isJsonObject(edges) || Object.keys(edges).length !== BOX_EDGES.length || BOX_EDGES.some((edge) => !Object.hasOwn(edges, edge))) {
+        throw invalid(`${path}.box`, "expected exactly top, bottom, left and right");
+      }
+      for (const edge of BOX_EDGES) probability(edges[edge], `${path}.box.${edge}`); // a fraction: finite, in [0, 1]
+      // Numbers as written (an opaque value, serde number rule 4).
+      values.push([name, orderedObject(BOX_EDGES.map((edge): [string, JsonValue] => [edge, edges[edge]!]))]);
+      continue;
+    }
     if (j.kind === "boolean") {
       const p = probability(answer["noul"], `${path}.noul`);
       values.push([name, p >= 0.5]);
@@ -359,6 +421,33 @@ export function choice(instruction: string, options: Readonly<Record<string, str
   if (items.every(([, d]) => d === undefined)) prop["enum"] = items.map(([k]) => k);
   else prop["anyOf"] = items.map(([k, d]) => (d ? { const: k, description: d } : { const: k }));
   return prop;
+}
+
+/**
+ * A bounding-box judgment: where in the request's image is what
+ * `instruction` describes (changes/2026-10-15-bounding-box.md).
+ *
+ * The answer is `{top, bottom, left, right}`, each a fraction from 0 to 1
+ * of the image's height (`top`, `bottom`) or width (`left`, `right`),
+ * measured from the top-left corner; multiply by the image's size in
+ * pixels to draw or crop. There is no "not found" answer: ask a `yesNo`
+ * beside it. On `typesafe` this is Jev's Box question and needs Jev 1.14
+ * (`model: "jev-preview"` or `"jev-1.14.0"`); elsewhere it is ordinary
+ * structured output.
+ *
+ * The edges carry no `minimum`/`maximum`: Anthropic refuses both on a
+ * number (HTTP 400, receipted 2026-10-15); the range is in each edge's
+ * description, which every wire passes to the model.
+ */
+export function boundingBox(instruction: string): JsonObject {
+  requireString(instruction, "boundingBox instruction");
+  return {
+    type: "object",
+    description: instruction,
+    properties: orderedObject(BOX_EDGES.map((edge): [string, JsonValue] => [edge, { type: "number", description: BOX_EDGE_DESCRIPTIONS[edge] }])),
+    required: [...BOX_EDGES],
+    additionalProperties: false,
+  };
 }
 
 export function yesNo(instruction: string): JsonObject {

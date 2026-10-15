@@ -18,7 +18,7 @@ import { ProviderError, UnsupportedFeatureError } from "../errors.ts";
 import { isJsonObject, isNumeric, numberValue, parseJson, setMember, type JsonObject } from "../json.ts";
 import { Usage } from "../types/response.ts";
 import { usageFromChat } from "./openai_shared.ts";
-import { nonJudgmentProperties, normalizeLogprobs, requestJudgments, type Judgment } from "../judgments.ts";
+import { nonJudgmentProperties, normalizeLogprobs, requestMeasurableJudgments, type Judgment } from "../judgments.ts";
 import type { Request } from "../types/config.ts";
 
 export const JUDGMENT_PREFILL = "Answer:";
@@ -52,7 +52,7 @@ export function validateScoringRequest(request: Request, provider: string): void
 
 export function mixedJudgments(request: Request): boolean {
   const format = request.config?.responseFormat;
-  return nonJudgmentProperties(format?.type === "json_schema" ? format.schema : undefined, requestJudgments(request)).length > 0;
+  return nonJudgmentProperties(format?.type === "json_schema" ? format.schema : undefined, requestMeasurableJudgments(request)).length > 0;
 }
 
 /** Unknown dimensions propagate; totals remain provider-verbatim. */

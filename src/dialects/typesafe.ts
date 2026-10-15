@@ -9,8 +9,11 @@
  * request without judgments or with tools is refused before the wire (D8).
  * Images reach Jev as top-level `assets` named by a reference string written
  * where the image belongs in the state (changes/2026-10-14-jev-images.md);
- * audio, video and documents are refused (MAP-10). Wire facts:
- * receipts/2026-09-17-judgments/, receipts/2026-10-14-typesafe/.
+ * audio, video and documents are refused (MAP-10). A bounding-box judgment is
+ * Jev's Box question; its answer is the box verbatim, with no distribution
+ * (changes/2026-10-15-bounding-box.md). Wire facts:
+ * receipts/2026-09-17-judgments/, receipts/2026-10-14-typesafe/,
+ * receipts/2026-10-15-typesafe/.
  */
 
 import { adapt } from "../adaptation.ts";
@@ -53,7 +56,7 @@ const FLOAT_KNOBS: ReadonlySet<string> = new Set(["temperature", "top_p", "frequ
 
 /** changes/2026-10-14-jev-images.md: the asset formats systemone reads (PNG and JPEG, nothing else). */
 const IMAGE_FORMATS: Readonly<Record<string, string>> = Object.freeze({ "image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg" });
-/** Images are off unless each request that carries one sends this header (live 400 without it, 2026-10-14). */
+/** Images and Box questions are off unless each request that carries one sends this header (live 400 without it: 2026-10-14 for an image, 2026-10-15 for a Box question with no image). */
 const IMAGES_HEADER = "TypeSafe-Danger-Zone-Images";
 
 function imageFormat(part: ImagePart): string | undefined {
@@ -175,6 +178,8 @@ export class TypeSafeLM extends ProviderLM {
 
   private question(name: string, j: Judgment, instruction: string): JsonObject {
     if (j.kind === "boolean") return { type: "noul", instructions: instruction };
+    // Jev's Box takes no criteria (docs.typesafe.ai/primitives/box).
+    if (j.kind === "box") return { type: "box", instructions: instruction };
     if (j.kind === "choice") {
       if (j.keys.length > MAX_CHOICE_KEYS) throw this.refuse(`config.response_format.schema.properties.${name}`, `a Jev choice takes at most ${MAX_CHOICE_KEYS} keys, got ${j.keys.length}`);
       const criteria: JsonObject = {};
@@ -212,8 +217,11 @@ export class TypeSafeLM extends ProviderLM {
     if (stream) throw this.refuse("stream", "systemone answers in one piece; there is no stream to wrap");
     const payload = this.payload(request);
     const headers = this.headers();
-    // The caller put an image in the request: that is the opt-in the header exists for (changes/2026-10-14-jev-images.md D3).
-    if (Object.prototype.hasOwnProperty.call(payload, "assets")) headers[IMAGES_HEADER] = "true";
+    // The caller put an image or a box in the request: that is the opt-in the
+    // header exists for (changes/2026-10-14-jev-images.md D3; 2026-10-15-bounding-box.md D2).
+    const questions = payload["questions"] as JsonObject;
+    const asksBox = Object.values(questions).some((q) => isJsonObject(q) && q["type"] === "box");
+    if (Object.prototype.hasOwnProperty.call(payload, "assets") || asksBox) headers[IMAGES_HEADER] = "true";
     return { method: "POST", url: `${this.base()}/v1/systemone`, endpoint: "systemone", model: request.model, headers, payload };
   }
 

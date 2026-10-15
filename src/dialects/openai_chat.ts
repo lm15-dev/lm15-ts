@@ -7,7 +7,7 @@
 import { AdaptationScope, adapt, checkPolicy, collecting, hasClientSideStop, nearestEffort, type Adaptation, type AdaptationPolicy } from "../adaptation.ts";
 import { ProviderLM, type LMOptions, type EmitOptions } from "../adapter.ts";
 import { abortable, checkAborted } from "../async.ts";
-import { nonJudgmentProperties, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments, type Judgment } from "../judgments.ts";
+import { nonJudgmentProperties, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments, requestMeasurableJudgments, type Judgment } from "../judgments.ts";
 import { JUDGMENT_PREFILL, foldJudgment, judgmentAsk, keyPaths, scorePayload, scoresFromBody, tokenizePayload, tokensFromBody, trieNodes, validateScoringRequest, mixedJudgments, sumScoringUsage } from "./token_trie.ts";
 import { OPENAI_CHAT_API, type AccessPolicy } from "../auth/policy.ts";
 import {
@@ -610,7 +610,7 @@ export class OpenAIChatLM extends ProviderLM {
 
   private judgmentsViaTokenScoring(request: Request): boolean {
     const policy = request.config?.probabilities;
-    return this.scoresNamedTokens(this.compatFor(request.model)) && (policy === "if_available" || policy === "required") && requestJudgments(request).size > 0;
+    return this.scoresNamedTokens(this.compatFor(request.model)) && (policy === "if_available" || policy === "required") && requestMeasurableJudgments(request).size > 0;
   }
 
   /** The conversation, the judgment's question as a final user turn, and the assistant's answer so far (prefill + key). */
@@ -683,7 +683,7 @@ export class OpenAIChatLM extends ProviderLM {
     const wireRequest = this.wireModelRequest(request);
     if (!this.judgmentsViaTokenScoring(wireRequest)) return super.complete(request, opts);
     const adaptations = this.judgmentAdaptations(wireRequest);
-    const found = requestJudgments(request);
+    const found = requestMeasurableJudgments(request);
     const tokenized: Array<{ j: Judgment; prefix: number[]; paths: Map<string, number[]> }> = [];
     let calls = 0;
     const tokens = async (j: Judgment, answer: string, continueFinal: boolean): Promise<number[]> => {
@@ -807,7 +807,7 @@ export class OpenAIChatLM extends ProviderLM {
       if (!isJsonObject(value)) throw new ProviderError("generated judgment answer needs a JSON object");
       const format = request.config!.responseFormat!;
       if (format.type !== "json_schema") throw new ProviderError("missing judgment schema");
-      const measuredFields = requestJudgments(request);
+      const measuredFields = requestMeasurableJudgments(request);
       const required = format.schema["required"];
       if (Array.isArray(required)) for (const name of required) {
         if (typeof name === "string" && (unmeasured || !measuredFields.has(name)) && !Object.hasOwn(value, name)) {
