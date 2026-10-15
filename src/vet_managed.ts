@@ -15,6 +15,7 @@ import { FileStore } from "./login/file_store.ts";
 import { LoginCancelled } from "./login/engine.ts";
 import { Auth, type Connection, type ConnectionStatus } from "./login/manager.ts";
 import type { AuthUI, LoginMethod, Notice, Prompt } from "./login/types.ts";
+import { LMRouter } from "./router.ts";
 import { registerOps } from "./vet_ops.ts";
 
 const TRANSPORT_HEADERS = new Set(["accept", "accept-encoding", "connection", "content-length", "content-type", "host"]);
@@ -236,6 +237,13 @@ async function managedRun(msg: JsonObject): Promise<JsonValue> {
             const keys = Array.isArray(step["api_keys"]) ? step["api_keys"].map(String) : [];
             const report = explainAuth(provider, { auth, env, ...(keys.length > 0 ? { apiKeys: Object.fromEntries(keys.map((k) => [k, `${sentinel}-explicit`])) } : {}) });
             value = { configured: report.configured, steps: report.steps.map((s) => ({ kind: s.kind, state: s.state })) };
+            break;
+          }
+          case "route": {
+            const keys = Array.isArray(step["api_keys"]) ? step["api_keys"].map(String) : [];
+            const given = isJsonObject(step["settings"]) ? step["settings"] as Record<string, Record<string, string>> : undefined;
+            const router = new LMRouter({ auth, env, ...(keys.length > 0 ? { apiKeys: Object.fromEntries(keys.map((k) => [k, `${sentinel}-explicit`])) } : {}), ...(given ? { settings: given } : {}) });
+            value = { settings: { ...router.lm(String(step["model"])).hostSettings } };
             break;
           }
           default:

@@ -508,6 +508,9 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
   let origin: string | undefined = entry !== undefined && typeof apiKey !== "function" ? `an explicit apiKeys entry (${JSON.stringify(entry)})` : undefined;
   let accountId: string | undefined;
   let access = definition.access;
+  // AUTH-15: a selected connection's saved settings (a cloud recipe's project,
+  // location, region...) are given values; the explicit entry refines them.
+  let savedSettings: Readonly<Record<string, string>> = {};
   if (entry === undefined && named === undefined) {
     let selection: ReturnType<Auth["selectionSync"]>;
     try {
@@ -525,6 +528,7 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
       } else throw error;
     }
     if (selection) {
+      savedSettings = selection.connection.settings;
       if (selection.named) named = selection.named;
       else {
         apiKey = auth.credentialProvider(provider);
@@ -556,7 +560,8 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
     const values: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) if (value !== undefined) values[key] = value;
     const deferred = new Set<string>();
-    const settings = resolveSettings(definition.access.host, providerEntry(config.settings, provider, config), values, {
+    const given = { ...savedSettings, ...(providerEntry(config.settings, provider, config) ?? {}) };
+    const settings = resolveSettings(definition.access.host, given, values, {
       provider, ...(profile ? { profile } : {}), ...(baseUrl !== undefined ? { endpoint: baseUrl } : {}),
       ...(chain?.deferredSetting ? { deferred } : {}),
     });

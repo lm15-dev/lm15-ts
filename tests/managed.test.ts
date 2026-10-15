@@ -198,3 +198,16 @@ test("the file store: private, strict, shared layout; an unreadable file is neve
   await assert.rejects(auth.setApiKey("openai", "k"), (e: unknown) => e instanceof AuthOperationError && e.reason === "storage_unavailable");
   assert.equal(readFileSync(path, "utf8"), "{broken");
 });
+
+test("a saved cloud recipe's settings build the route; an explicit entry, under either spelling, refines them", async () => {
+  const auth = Auth.memory();
+  await auth.configure("vertex-anthropic", { method: "cloud", answers: { named: "environment" }, settings: { project: "saved-project", location: "us-east5" } });
+  const env = { NO_GCE_CHECK: "1", GOOGLE_CLOUD_PROJECT: "env-project" };
+  const model = "vertex-anthropic:claude-test";
+  assert.deepEqual({ ...new LMRouter({ auth, env }).lm(model).hostSettings }, { project: "saved-project", location: "us-east5" });
+  assert.deepEqual({ ...new LMRouter({ auth, env, settings: { vertex_anthropic: { project: "explicit-project" } } }).lm(model).hostSettings },
+    { project: "explicit-project", location: "us-east5" });
+  // An explicit key selects no connection: its settings do not apply.
+  assert.deepEqual({ ...new LMRouter({ auth, env, apiKeys: { "vertex-anthropic": "explicit-key" }, settings: { "vertex-anthropic": { location: "europe-west1" } } }).lm(model).hostSettings },
+    { project: "env-project", location: "europe-west1" });
+});
