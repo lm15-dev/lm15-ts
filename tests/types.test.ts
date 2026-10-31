@@ -67,8 +67,18 @@ test("INV-026/027/028: off forbids dead knobs", () => {
 test("INV-029: total_tokens auto-sums only when both primaries are present; absent is not zero", () => {
   assert.equal(Usage.create({ inputTokens: 1, outputTokens: 2 }).totalTokens, 3);
   assert.equal(Usage.create({ inputTokens: 1 }).totalTokens, undefined);
-  assert.equal(Usage.create({ inputTokens: 1, outputTokens: 2, totalTokens: 10 }).totalTokens, 10);
+  assert.equal(Usage.create({ totalTokens: 10 }).totalTokens, 10);
   assert.deepEqual(Usage.toJSON(Usage.create({})), {});
+});
+
+test("INV-029 (2.0): parts never exceed their wholes; an explicit total is the sum", () => {
+  assert.throws(() => Usage.create({ inputTokens: 1, outputTokens: 2, totalTokens: 10 }), ValueError);
+  assert.throws(() => Usage.create({ inputTokens: 3, cacheWriteTokens: 3275 }), /MAP-19/);
+  assert.throws(() => Usage.create({ inputTokens: 10, cacheReadTokens: 6, cacheWriteTokens: 6 }), ValueError);
+  assert.throws(() => Usage.create({ outputTokens: 48, reasoningTokens: 155 }), ValueError);
+  assert.throws(() => Usage.create({ inputTokens: 5, inputAudioTokens: 6 }), ValueError);
+  assert.throws(() => Usage.create({ outputTokens: 1, outputAudioTokens: 2 }), ValueError);
+  assert.equal(Usage.create({ cacheReadTokens: 4, reasoningTokens: 7 }).inputTokens, undefined);
 });
 
 test("INV-030/031: unique tool names; allowed ⊆ tools", () => {

@@ -29,10 +29,19 @@ import {
 // ─── Usage ───────────────────────────────────────────────────────────
 
 /**
- * Token usage. Every counter is `number | undefined`: `undefined` means "not
- * reported", distinct from a reported `0` (INV-029). Counters are provider-
- * verbatim; lm15 never re-derives one from another except `totalTokens`
- * when the provider reports none and both primaries are present.
+ * Token usage. Every counter means the same thing on every provider (MAP-19,
+ * spec/types.md § Usage): `inputTokens` is every token the model read, cached
+ * tokens included; `outputTokens` every token it generated, reasoning
+ * included; `cacheReadTokens`, `cacheWriteTokens` and `inputAudioTokens` are
+ * parts of input, `reasoningTokens` and `outputAudioTokens` parts of output;
+ * `totalTokens` is input + output. Each is `number | undefined`: `undefined`
+ * means "not reported", distinct from a reported `0`. The provider's own
+ * numbers stay in `Response.providerData`. Construction refuses a part larger
+ * than its whole and a total that is not the sum (INV-029).
+ *
+ * Changed in 2.0: in 1.x each counter was the provider's own, so input
+ * excluded cached tokens on Anthropic and output excluded reasoning on Gemini
+ * and xAI.
  */
 export interface Usage {
   readonly inputTokens?: number;
@@ -56,6 +65,26 @@ const USAGE_FIELDS = [
   ["outputAudioTokens", "output_audio_tokens"],
 ] as const;
 
+type UsageCounters = { -readonly [K in keyof Usage]?: number | undefined };
+
+/** The first INV-029 relation these counters break, or undefined (checked between present counters only). */
+export function usageInconsistency(u: UsageCounters, opts: { total?: boolean } = {}): string | undefined {
+  const { inputTokens: i, outputTokens: o, totalTokens: t } = u;
+  if (i !== undefined) {
+    const cached = (u.cacheReadTokens ?? 0) + (u.cacheWriteTokens ?? 0);
+    if (cached > i) return `cache_read_tokens + cache_write_tokens (${cached}) exceed input_tokens (${i})`;
+    if (u.inputAudioTokens !== undefined && u.inputAudioTokens > i) return `input_audio_tokens (${u.inputAudioTokens}) exceed input_tokens (${i})`;
+  }
+  if (o !== undefined) {
+    if (u.reasoningTokens !== undefined && u.reasoningTokens > o) return `reasoning_tokens (${u.reasoningTokens}) exceed output_tokens (${o})`;
+    if (u.outputAudioTokens !== undefined && u.outputAudioTokens > o) return `output_audio_tokens (${u.outputAudioTokens}) exceed output_tokens (${o})`;
+  }
+  if ((opts.total ?? true) && t !== undefined && i !== undefined && o !== undefined && t !== i + o) {
+    return `total_tokens (${t}) is not input_tokens + output_tokens (${i} + ${o})`;
+  }
+  return undefined;
+}
+
 export const normalizeUsage = canonicalFactory("usage", normalizeUsageValue);
 function normalizeUsageValue(input: unknown): Usage {
   if (absent(input)) return EMPTY_USAGE;
@@ -63,10 +92,49 @@ function normalizeUsageValue(input: unknown): Usage {
   const d = input as Record<string, unknown>;
   const out: Record<string, number | undefined> = {};
   for (const [camel, snake] of USAGE_FIELDS) out[camel] = optionalInt(d[camel], snake, { min: 0 });
+  const problem = usageInconsistency(out);
+  if (problem !== undefined) {
+    throw new ValueError(
+      `${problem} (INV-029). Since lm15-contract MAP-19 (2026-10-31) input_tokens includes cached tokens and output_tokens includes reasoning, ` +
+        "on every provider; an earlier record from Anthropic, Gemini or xAI must add them (changes/2026-10-31-usage-one-meaning.md)",
+    );
+  }
   if (out["totalTokens"] === undefined && out["inputTokens"] !== undefined && out["outputTokens"] !== undefined) {
     out["totalTokens"] = requireInt(out["inputTokens"] + out["outputTokens"], "total_tokens", { min: 0 });
   }
   return frozen(compact(out) as Usage);
+}
+
+/**
+ * MAP-19 rule 3: a Usage from canonical-meaning counters, withholding what the
+ * provider's numbers do not determine. A part larger than its whole withholds
+ * the whole; a provider total that is not input + output withholds both and
+ * keeps the total. Never throws for a provider's inconsistency.
+ */
+export function settleUsage(counters: UsageCounters): Usage {
+  const u: UsageCounters = {};
+  for (const [camel, snake] of USAGE_FIELDS) u[camel] = optionalInt(counters[camel], snake, { min: 0 });
+  if (u.inputTokens !== undefined && usageInconsistency({ inputTokens: u.inputTokens, cacheReadTokens: u.cacheReadTokens, cacheWriteTokens: u.cacheWriteTokens, inputAudioTokens: u.inputAudioTokens })) {
+    u.inputTokens = undefined;
+  }
+  if (u.outputTokens !== undefined && usageInconsistency({ outputTokens: u.outputTokens, reasoningTokens: u.reasoningTokens, outputAudioTokens: u.outputAudioTokens })) {
+    u.outputTokens = undefined;
+  }
+  if (u.totalTokens !== undefined && u.inputTokens !== undefined && u.outputTokens !== undefined && u.totalTokens !== u.inputTokens + u.outputTokens) {
+    u.inputTokens = undefined;
+    u.outputTokens = undefined;
+  }
+  return normalizeUsage(u);
+}
+
+/** The exact sum of wire counters, or undefined when any is unknown (MAP-19 rule 2). */
+export function wireSum(...counts: Array<number | undefined>): number | undefined {
+  let total = 0;
+  for (const c of counts) {
+    if (c === undefined) return undefined;
+    total += c;
+  }
+  return total;
 }
 
 const EMPTY_USAGE: Usage = canonicalValue("usage", Object.freeze({}));

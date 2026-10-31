@@ -143,7 +143,7 @@ export type {
   LiveServerUsageEvent,
   LiveServerErrorEvent,
 } from "./types/live.ts";
-export { ModelInfo, ModelOrigin, InferenceModelInfo, InferencePricing, ModelRegistry } from "./types/model_info.ts";
+export { ModelInfo, ModelOrigin, InferenceModelInfo, InferencePricing, PricingTier, ModelRegistry } from "./types/model_info.ts";
 export { ApiKey, BearerToken, AwsCredentials, Credential, CredentialSource, coerceCredential, isCredentialValue, parseRfc3339, formatRfc3339 } from "./types/credential.ts";
 export type { CredentialValue, CredentialProvider, CredentialLike, NamedCredential, SourcedCredentialProvider } from "./types/credential.ts";
 export { NAMED_CREDENTIALS, NAMED_RUNGS, namedMeaning } from "./cloud/identity.ts";

@@ -36,9 +36,15 @@ that runs this package in your browser.
 npm install @lm15/lm15
 ```
 
-**1.0.0** is the first stable release (after eleven release candidates,
-1.0.0-rc.1 to 1.0.0-rc.11). Python's lm15 is stable too; Rust and Go are
-release candidates.
+**2.0.0** is the current release. 1.0.0 was the first stable one (after
+eleven release candidates); 2.0.0 gives every usage counter one meaning on
+every provider: `usage.inputTokens` includes cached tokens and
+`usage.outputTokens` includes reasoning, so Anthropic input and Gemini and
+xAI output counts grow to their true size, and
+`InferencePricing.estimate(pricing, usage)` returns the exact list price or
+`undefined` (it charged OpenAI's cached tokens twice before;
+lm15-contract `changes/2026-10-31-usage-one-meaning.md`). Python's lm15 is
+stable too; Rust and Go are release candidates.
 
 Set the key of the provider you call (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, ...). Examples use `await` at the top

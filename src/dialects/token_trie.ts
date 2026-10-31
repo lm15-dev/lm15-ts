@@ -96,7 +96,7 @@ export function scorePayload(model: string, prompts: number[][], tokenIds: numbe
 }
 
 /** Per prompt, `{token_id: logprob}` for the ids the server reported; plus usage and model. */
-export function scoresFromBody(body: string, nPrompts: number): { scores: Map<number, number>[]; usage: Usage; model: string | undefined } {
+export function scoresFromBody(body: string, nPrompts: number, reasoningUsage: "in_completion" | "separate" = "in_completion"): { scores: Map<number, number>[]; usage: Usage; model: string | undefined } {
   const invalid = (detail: string) => new ProviderError(`malformed judgment reply: ${detail}`);
   const data = parseJson(body);
   if (!isJsonObject(data)) throw invalid("expected an object");
@@ -132,7 +132,7 @@ export function scoresFromBody(body: string, nPrompts: number): { scores: Map<nu
     if (usageRaw[name] != null && !isJsonObject(usageRaw[name])) throw invalid(`${name} must be an object or null`);
   }
   let usage: Usage;
-  try { usage = usageFromChat(usageRaw); }
+  try { usage = usageFromChat(usageRaw, reasoningUsage); }
   catch (cause) { throw new ProviderError("malformed judgment reply: invalid usage", { cause }); }
   const model = data["model"];
   if (model != null && (typeof model !== "string" || !model)) throw invalid("model must be a non-empty string");

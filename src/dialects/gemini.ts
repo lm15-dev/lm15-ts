@@ -47,7 +47,7 @@ import {
 import type { LiveClientEvent, LiveConfig, LiveServerEvent } from "../types/live.ts";
 import type { ModelInfo } from "../types/model_info.ts";
 import { Message, continuationData, normalizePart, type CitationPart, type Part, type ToolResultPart, type VideoPart } from "../types/parts.ts";
-import { ErrorDetail, Response, Usage, normalizeTokenLogprob, type TokenLogprob } from "../types/response.ts";
+import { ErrorDetail, Response, Usage, normalizeTokenLogprob, settleUsage, type TokenLogprob } from "../types/response.ts";
 import type { StreamEvent } from "../types/stream.ts";
 import { ValueError, encodeBase64 } from "../types/validate.ts";
 import type { FinishReason } from "../vocab.ts";
@@ -68,7 +68,7 @@ import {
   type TransportRequest,
 } from "../wire.ts";
 import { batchEntryRequest } from "./openai_responses.ts";
-import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, type Unmapped } from "./openai_shared.ts";
+import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, wireCount, type Unmapped } from "./openai_shared.ts";
 
 const DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_UPLOAD_BASE_URL = "https://generativelanguage.googleapis.com/upload/v1beta";
@@ -200,23 +200,33 @@ function modalityTokens(details: unknown, modality: string): number | undefined 
   return counts.length > 0 ? counts.reduce((a, b) => a + b, 0) : undefined;
 }
 
-/** `usageMetadata` → Usage: inside a present object an absent primary counter is a reported 0 (proto3-JSON). */
+/**
+ * MAP-19 rule 6, `usageMetadata` → Usage. Gemini counts the prompt, its own
+ * tool-use tokens, the answer and the thoughts side by side (the total is
+ * their sum): input is prompt + tool use, output is answer + thoughts, and
+ * the cached count is part of the prompt. Inside a present object an absent
+ * counter is a reported 0 (proto3 JSON omits zeros); Gemini reports no
+ * cache-write count.
+ */
 function geminiUsage(usage: unknown, outputKeys: readonly string[]): Usage {
   if (!isJsonObject(usage) || Object.keys(usage).length === 0) return Usage.empty;
-  let outputTokens: JsonValue = 0;
+  const count = (key: string): number => wireCount(usage[key], key) ?? 0;
+  let answer = 0;
   for (const key of outputKeys) {
     if (key in usage) {
-      outputTokens = usage[key]!;
+      answer = count(key);
       break;
     }
   }
-  return Usage.create({
-    inputTokens: usage["promptTokenCount"] ?? 0,
-    outputTokens,
-    totalTokens: usage["totalTokenCount"],
-    cacheReadTokens: usage["cachedContentTokenCount"],
-    reasoningTokens: usage["thoughtsTokenCount"],
-    inputAudioTokens: modalityTokens(usage["promptTokensDetails"], "AUDIO"),
+  const thoughts = count("thoughtsTokenCount");
+  const audioIn = [modalityTokens(usage["promptTokensDetails"], "AUDIO"), modalityTokens(usage["toolUsePromptTokensDetails"], "AUDIO")];
+  return settleUsage({
+    inputTokens: count("promptTokenCount") + count("toolUsePromptTokenCount"),
+    outputTokens: answer + thoughts,
+    totalTokens: wireCount(usage["totalTokenCount"], "totalTokenCount"),
+    cacheReadTokens: count("cachedContentTokenCount"),
+    reasoningTokens: thoughts,
+    inputAudioTokens: audioIn.every((a) => a === undefined) ? undefined : audioIn.reduce<number>((a, b) => a + (b ?? 0), 0),
     outputAudioTokens: modalityTokens(usage["candidatesTokensDetails"] ?? usage["responseTokensDetails"], "AUDIO"),
   });
 }

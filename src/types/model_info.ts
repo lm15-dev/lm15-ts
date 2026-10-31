@@ -35,6 +35,25 @@ function positiveIntOrUndefined(value: unknown, field: string): number | undefin
   }
 }
 
+/**
+ * The rates of a call whose prompt is longer than `aboveInputTokens`
+ * (spec/types.md § PricingTier). A tier reprices the WHOLE call; a rate the
+ * tier leaves out is unknown at that tier, never taken from the base rates.
+ */
+export interface PricingTier {
+  readonly aboveInputTokens: number;
+  readonly inputPerMillion?: number;
+  readonly outputPerMillion?: number;
+  readonly cacheReadPerMillion?: number;
+  readonly cacheWritePerMillion?: number;
+}
+
+/**
+ * List prices per million tokens of each billing bucket (uncached input, cache
+ * reads, cache writes, output). An absent rate is unknown, never zero.
+ * `tiers` (strictly ascending, INV-057) reprice long prompts; `dimensions` is
+ * opaque catalog data `estimate` does not read.
+ */
 export interface InferencePricing {
   readonly inputPerMillion?: number;
   readonly outputPerMillion?: number;
@@ -42,6 +61,31 @@ export interface InferencePricing {
   readonly cacheWritePerMillion?: number;
   readonly currency?: string;
   readonly dimensions?: JsonObject;
+  readonly tiers?: readonly PricingTier[];
+}
+
+type Rates = Pick<PricingTier, "inputPerMillion" | "outputPerMillion" | "cacheReadPerMillion" | "cacheWritePerMillion">;
+
+function rates(d: Record<string, unknown>): { [K in keyof Rates]: number | undefined } {
+  return {
+    inputPerMillion: nonNegativeFloat(d["inputPerMillion"], "input_per_million"),
+    outputPerMillion: nonNegativeFloat(d["outputPerMillion"], "output_per_million"),
+    cacheReadPerMillion: nonNegativeFloat(d["cacheReadPerMillion"], "cache_read_per_million"),
+    cacheWritePerMillion: nonNegativeFloat(d["cacheWritePerMillion"], "cache_write_per_million"),
+  };
+}
+
+export function normalizePricingTier(input: unknown): PricingTier {
+  if (typeof input !== "object" || input === null) throw new TypeError("expected a PricingTier");
+  const d = input as Record<string, unknown>;
+  let above: number | undefined;
+  try {
+    above = typeof d["aboveInputTokens"] === "boolean" ? undefined : optionalInt(d["aboveInputTokens"], "above_input_tokens", { min: 1 });
+  } catch {
+    above = undefined;
+  }
+  if (above === undefined) throw new ValueError("PricingTier.above_input_tokens must be a positive integer");
+  return frozen(compact({ aboveInputTokens: above, ...rates(d) })) as PricingTier;
 }
 
 export function normalizeInferencePricing(input: unknown): InferencePricing {
@@ -49,34 +93,101 @@ export function normalizeInferencePricing(input: unknown): InferencePricing {
   const d = input as Record<string, unknown>;
   const dims = d["dimensions"];
   if (!absent(dims) && !isJsonObject(dims)) throw new TypeError("dimensions must be a JSON object or None");
+  const rawTiers = d["tiers"];
+  if (!absent(rawTiers) && !Array.isArray(rawTiers)) throw new TypeError("tiers must be an array of PricingTier");
+  const tiers = ((rawTiers as unknown[] | undefined) ?? []).map(normalizePricingTier);
+  tiers.forEach((tier, index) => {
+    if (index > 0 && tier.aboveInputTokens <= tiers[index - 1]!.aboveInputTokens) {
+      throw new ValueError("InferencePricing.tiers must be in strictly ascending above_input_tokens order");
+    }
+  });
   return frozen(
     compact({
-      inputPerMillion: nonNegativeFloat(d["inputPerMillion"], "input_per_million"),
-      outputPerMillion: nonNegativeFloat(d["outputPerMillion"], "output_per_million"),
-      cacheReadPerMillion: nonNegativeFloat(d["cacheReadPerMillion"], "cache_read_per_million"),
-      cacheWritePerMillion: nonNegativeFloat(d["cacheWritePerMillion"], "cache_write_per_million"),
+      ...rates(d),
       currency: nonEmptyText(d["currency"] ?? "USD", "currency"),
       dimensions: absent(dims) ? undefined : (dims as JsonObject),
+      tiers: tiers.length > 0 ? Object.freeze(tiers) : undefined,
     }),
   );
 }
 
+function tierFromJSON(d: unknown): PricingTier {
+  if (!isJsonObject(d)) throw new TypeError("a pricing tier is a JSON object");
+  return normalizePricingTier({
+    aboveInputTokens: d["above_input_tokens"],
+    inputPerMillion: d["input_per_million"],
+    outputPerMillion: d["output_per_million"],
+    cacheReadPerMillion: d["cache_read_per_million"],
+    cacheWritePerMillion: d["cache_write_per_million"],
+  });
+}
+
+function ratesToJSON(r: Rates): JsonObject {
+  return {
+    input_per_million: float(r.inputPerMillion),
+    output_per_million: float(r.outputPerMillion),
+    cache_read_per_million: float(r.cacheReadPerMillion),
+    cache_write_per_million: float(r.cacheWritePerMillion),
+  } as JsonObject;
+}
+
+export const PricingTier = {
+  create: normalizePricingTier,
+  fromJSON: tierFromJSON,
+  toJSON(t: PricingTier): JsonObject {
+    return omitEmpty({ above_input_tokens: t.aboveInputTokens, ...ratesToJSON(t) });
+  },
+};
+
 export const InferencePricing = {
   create: normalizeInferencePricing,
-  /** Unknown counts (`undefined`) contribute nothing — a lower bound, never zero-filled. */
-  estimate(p: InferencePricing, usage: Usage): number {
-    let total = 0;
-    if (p.inputPerMillion !== undefined && usage.inputTokens !== undefined) total += (usage.inputTokens * p.inputPerMillion) / 1_000_000;
-    if (p.outputPerMillion !== undefined && usage.outputTokens !== undefined) total += (usage.outputTokens * p.outputPerMillion) / 1_000_000;
-    if (p.cacheReadPerMillion !== undefined && usage.cacheReadTokens !== undefined) {
-      total += (usage.cacheReadTokens * p.cacheReadPerMillion) / 1_000_000;
+  /**
+   * The list-price cost of one call, or `undefined` when it is not known
+   * (spec/types.md § InferencePricing, "estimate"). Exact or nothing: the sum,
+   * in this order, of uncached input, cache reads, cache writes and output,
+   * each `tokens * rate / 1_000_000`, at the base rates or the highest tier
+   * whose threshold `inputTokens` exceeds. Unknown when input or output is
+   * unknown; when an unreported cache count's rate differs from the input
+   * rate; when a bucket with tokens has no rate; when audio tokens were used.
+   * Service tiers, regional multipliers, longer cache lifetimes and tool fees
+   * are outside it.
+   */
+  estimate(p: InferencePricing, usage: Usage): number | undefined {
+    const input = usage.inputTokens;
+    const output = usage.outputTokens;
+    if (input === undefined || output === undefined) return undefined;
+    if ((usage.inputAudioTokens ?? 0) > 0 || (usage.outputAudioTokens ?? 0) > 0) return undefined;
+    let r: Rates = p;
+    for (const tier of p.tiers ?? []) if (input > tier.aboveInputTokens) r = tier;
+    let read = usage.cacheReadTokens;
+    let write = usage.cacheWriteTokens;
+    // An unknown cache count is harmless only when its tokens cost the same as
+    // plain input: then the split cannot change the price.
+    if (read === undefined) {
+      if (r.cacheReadPerMillion === undefined || r.cacheReadPerMillion !== r.inputPerMillion) return undefined;
+      read = 0;
     }
-    if (p.cacheWritePerMillion !== undefined && usage.cacheWriteTokens !== undefined) {
-      total += (usage.cacheWriteTokens * p.cacheWritePerMillion) / 1_000_000;
+    if (write === undefined) {
+      if (r.cacheWritePerMillion === undefined || r.cacheWritePerMillion !== r.inputPerMillion) return undefined;
+      write = 0;
+    }
+    const buckets: Array<[number, number | undefined]> = [
+      [input - read - write, r.inputPerMillion],
+      [read, r.cacheReadPerMillion],
+      [write, r.cacheWritePerMillion],
+      [output, r.outputPerMillion],
+    ];
+    let total = 0;
+    for (const [tokens, rate] of buckets) {
+      if (tokens === 0) continue;
+      if (rate === undefined) return undefined;
+      total += (tokens * rate) / 1_000_000;
     }
     return total;
   },
   fromJSON(d: JsonObject): InferencePricing {
+    const tiers = d["tiers"];
+    if (!absent(tiers) && !Array.isArray(tiers)) throw new TypeError("pricing tiers is a JSON array");
     return normalizeInferencePricing({
       inputPerMillion: d["input_per_million"],
       outputPerMillion: d["output_per_million"],
@@ -84,16 +195,15 @@ export const InferencePricing = {
       cacheWritePerMillion: d["cache_write_per_million"],
       currency: d["currency"] ?? "USD",
       dimensions: d["dimensions"],
+      tiers: ((tiers as unknown[] | undefined) ?? []).map(tierFromJSON),
     });
   },
   toJSON(p: InferencePricing): JsonObject {
     return omitEmpty({
-      input_per_million: float(p.inputPerMillion),
-      output_per_million: float(p.outputPerMillion),
-      cache_read_per_million: float(p.cacheReadPerMillion),
-      cache_write_per_million: float(p.cacheWritePerMillion),
+      ...ratesToJSON(p),
       currency: p.currency ?? "USD",
       dimensions: p.dimensions,
+      tiers: (p.tiers ?? []).map((t) => PricingTier.toJSON(t)),
     });
   },
 };

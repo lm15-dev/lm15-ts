@@ -22,7 +22,8 @@ import {
 } from "../errors.ts";
 import type { Request, ResponseFormat } from "../types/config.ts";
 import type { Message, Part, ToolResultPart } from "../types/parts.ts";
-import { ErrorDetail, Usage } from "../types/response.ts";
+import { ErrorDetail, settleUsage, type Usage } from "../types/response.ts";
+import { optionalInt } from "../types/validate.ts";
 import { MEDIA_KINDS, checkToolResultMedia, dataPartText, mediaBase64, mediaDataUri, partsToText, toolResultErrorText } from "../wire.ts";
 
 export type ProviderErrorClass = new (message: string, meta?: never) => ProviderError;
@@ -329,40 +330,64 @@ export function responseFormatToChat(format: ResponseFormat): JsonObject {
 
 // ─── Usage ───────────────────────────────────────────────────────────
 
-/** Responses / Realtime usage: `input_tokens`, `output_tokens`, `*_tokens_details`. */
+/** A token counter as the wire sent it (the Number rule's int coercion), undefined when absent. */
+export function wireCount(value: unknown, field: string): number | undefined {
+  return optionalInt(value, field, { min: 0 });
+}
+
+/**
+ * MAP-19 rule 7, Responses / Realtime: `input_tokens` already includes the
+ * cached and written tokens and `output_tokens` the reasoning, so every
+ * counter keeps its value (Realtime spells the details `*_token_details`).
+ */
 export function usageFromResponses(usageData: unknown): Usage {
   const u = obj(usageData);
   const input = obj(u["input_tokens_details"] ?? u["input_token_details"]);
   const output = obj(u["output_tokens_details"] ?? u["output_token_details"]);
-  return Usage.create({
-    inputTokens: u["input_tokens"],
-    outputTokens: u["output_tokens"],
-    totalTokens: u["total_tokens"],
-    reasoningTokens: output["reasoning_tokens"],
-    cacheReadTokens: input["cached_tokens"],
-    cacheWriteTokens: input["cache_write_tokens"],
-    inputAudioTokens: input["audio_tokens"],
-    outputAudioTokens: output["audio_tokens"],
+  return settleUsage({
+    inputTokens: wireCount(u["input_tokens"], "input_tokens"),
+    outputTokens: wireCount(u["output_tokens"], "output_tokens"),
+    totalTokens: wireCount(u["total_tokens"], "total_tokens"),
+    reasoningTokens: wireCount(output["reasoning_tokens"], "reasoning_tokens"),
+    cacheReadTokens: wireCount(input["cached_tokens"], "cached_tokens"),
+    cacheWriteTokens: wireCount(input["cache_write_tokens"], "cache_write_tokens"),
+    inputAudioTokens: wireCount(input["audio_tokens"], "input audio_tokens"),
+    outputAudioTokens: wireCount(output["audio_tokens"], "output audio_tokens"),
   });
 }
 
-/** Chat Completions usage: `prompt_tokens`, `completion_tokens`, `*_tokens_details`. */
-export function usageFromChat(usageData: unknown): Usage {
+/**
+ * MAP-19 rule 4, Chat Completions. `prompt_tokens` already includes the cached
+ * and written tokens. Reasoning is inside `completion_tokens` unless the
+ * preset says `reasoningUsage: "separate"` (xAI), where output is completion
+ * + reasoning; a body without a reasoning count then still determines output
+ * when its total is prompt + completion, and otherwise output is unknown.
+ */
+export function usageFromChat(usageData: unknown, reasoningUsage: "in_completion" | "separate" = "in_completion"): Usage {
   const u = obj(usageData);
   const prompt = obj(u["prompt_tokens_details"]);
   const completion = obj(u["completion_tokens_details"]);
-  return Usage.create({
-    inputTokens: u["prompt_tokens"],
-    outputTokens: u["completion_tokens"],
-    totalTokens: u["total_tokens"],
-    reasoningTokens: completion["reasoning_tokens"],
+  const promptTokens = wireCount(u["prompt_tokens"], "prompt_tokens");
+  const completionTokens = wireCount(u["completion_tokens"], "completion_tokens");
+  const total = wireCount(u["total_tokens"], "total_tokens");
+  const reasoning = wireCount(completion["reasoning_tokens"], "reasoning_tokens");
+  let output = completionTokens;
+  if (reasoningUsage === "separate" && completionTokens !== undefined) {
+    if (reasoning !== undefined) output = completionTokens + reasoning;
+    else if (!(total !== undefined && promptTokens !== undefined && total === promptTokens + completionTokens)) output = undefined;
+  }
+  return settleUsage({
+    inputTokens: promptTokens,
+    outputTokens: output,
+    totalTokens: total,
+    reasoningTokens: reasoning,
     // Nested (OpenAI) first; some servers report the count flat on usage
     // instead (Together's non-reasoning models: `usage.cached_tokens`, live
     // 2026-09-26). Reading one place only turns a reported 0 into "not reported".
-    cacheReadTokens: prompt["cached_tokens"] ?? u["cached_tokens"],
-    cacheWriteTokens: prompt["cache_write_tokens"],
-    inputAudioTokens: prompt["audio_tokens"],
-    outputAudioTokens: completion["audio_tokens"],
+    cacheReadTokens: wireCount(prompt["cached_tokens"] ?? u["cached_tokens"], "cached_tokens"),
+    cacheWriteTokens: wireCount(prompt["cache_write_tokens"], "cache_write_tokens"),
+    inputAudioTokens: wireCount(prompt["audio_tokens"], "input audio_tokens"),
+    outputAudioTokens: wireCount(completion["audio_tokens"], "output audio_tokens"),
   });
 }
 

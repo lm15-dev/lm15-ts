@@ -715,7 +715,7 @@ export class OpenAIChatLM extends ProviderLM {
     const scoringBuild = this.judgmentScoreRequest(wireRequest.model, prompts, [...union]);
     const scoringRequest = await (opts.signal ? abortable(scoringBuild, opts.signal) : scoringBuild);
     const scoringReply = await this.sendOk(scoringRequest, opts.signal);
-    const { scores, usage, model } = this.parseReply(scoringReply, resp => scoresFromBody(resp.text(), prompts.length));
+    const { scores, usage, model } = this.parseReply(scoringReply, resp => scoresFromBody(resp.text(), prompts.length, this.compatFor(request.model).reasoningUsage));
     const tables: Array<Map<string, Map<number, number>>> = tokenized.map(() => new Map());
     for (const [i, { index, key }] of meta.entries()) {
       const got = scores[i]!;
@@ -877,7 +877,8 @@ export class OpenAIChatLM extends ProviderLM {
 
   parseResponse(request: Request, response: HttpResponse): Response {
     request = this.wireModelRequest(request);
-    return foldJudgments(responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message)), request);
+    return foldJudgments(responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message),
+      this.compatFor(request.model).reasoningUsage), request);
   }
 
   /**
@@ -886,12 +887,13 @@ export class OpenAIChatLM extends ProviderLM {
    * `responseFromOpenAIChat`.
    */
   responseFromOpenAIChat(body: unknown, opts: { model?: string; choice?: number } = {}): Response {
-    return responseFromChatBody(this.provider, body, opts, (code, message) => this.responseError(code, message));
+    const compat = opts.model !== undefined ? this.compatFor(opts.model) : this.resolvedCompat;
+    return responseFromChatBody(this.provider, body, opts, (code, message) => this.responseError(code, message), compat.reasoningUsage);
   }
 
   // ─── Stream ──────────────────────────────────────────────────────
 
-  parseStreamEvents(_request: Request, raw: SSEEvent): StreamEvent[] {
+  parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
     if (!raw.data) return [];
     if (raw.data === "[DONE]") return [{ type: "end" }];
     const payload = parseJson(raw.data);
@@ -929,11 +931,11 @@ export class OpenAIChatLM extends ProviderLM {
       events.push({
         type: "end",
         finishReason: FINISH_REASON_MAP[str(finishRaw)] ?? "stop",
-        ...(isJsonObject(usageData) ? { usage: usageFromChat(usageData) } : {}),
+        ...(isJsonObject(usageData) ? { usage: usageFromChat(usageData, this.compatFor(request.model).reasoningUsage) } : {}),
         providerData: payload,
       });
     } else if (isJsonObject(usageData)) {
-      events.push({ type: "end", usage: usageFromChat(usageData), providerData: payload });
+      events.push({ type: "end", usage: usageFromChat(usageData, this.compatFor(request.model).reasoningUsage), providerData: payload });
     }
     return events;
   }
@@ -1574,6 +1576,7 @@ function responseFromChatBody(
   data: unknown,
   opts: { model?: string; choice?: number },
   onError: (code: string, message: string) => ProviderError,
+  reasoningUsage: "in_completion" | "separate" = "in_completion",
 ): Response {
   if (!isJsonObject(data)) throw new TypeError(`a Chat Completions response body is a JSON object, got ${typeName(data)}`);
   const respError = data["error"];
@@ -1646,7 +1649,7 @@ function responseFromChatBody(
     model: resolvedModel,
     message: { role: "assistant", parts },
     finishReason: OpenAIChatLM.finishReasonOf(chosen["finish_reason"], hasTool, unmapped, path),
-    usage: usageFromChat(data["usage"]),
+    usage: usageFromChat(data["usage"], reasoningUsage),
     logprobs: logprobs.length > 0 ? logprobs : undefined,
     providerData: attachUnmapped(data, unmapped),
   });

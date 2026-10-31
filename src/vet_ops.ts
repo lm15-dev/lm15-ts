@@ -7,7 +7,8 @@
 import { isJsonObject, type JsonObject, type JsonValue } from "./json.ts";
 import { AmbiguousModelError, CapabilityError, LM15Error, StreamAssemblyError, UnknownModelError, UnsupportedFeatureError } from "./errors.ts";
 import { serdeForKind } from "./serde.ts";
-import { Response } from "./types/response.ts";
+import { Response, Usage } from "./types/response.ts";
+import { InferencePricing } from "./types/model_info.ts";
 import { VOCABULARIES } from "./vocab.ts";
 import { SURFACE_TYPES } from "./surface.ts";
 import { VERSION } from "./version.ts";
@@ -34,6 +35,13 @@ const handlers: Record<string, OpHandler> = {
     const { fromJSON, toJSON } = serdeForKind(String(msg["kind"]));
     if (!isJsonObject(msg["value"])) throw new TypeError("value must be a JSON object");
     return { value: toJSON(fromJSON(msg["value"])) };
+  },
+
+  /** PROTOCOL.md estimate_cost: `InferencePricing.estimate`; `cost` is null when unknown. */
+  estimate_cost(msg) {
+    if (!isJsonObject(msg["pricing"]) || !isJsonObject(msg["usage"])) throw new TypeError("pricing and usage must be JSON objects");
+    const cost = InferencePricing.estimate(InferencePricing.fromJSON(msg["pricing"]), Usage.fromJSON(msg["usage"]));
+    return { cost: cost === undefined ? null : cost };
   },
 
   validate(msg) {

@@ -259,7 +259,8 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "cache_read_per_million",
       "cache_write_per_million",
       "currency",
-      "dimensions"
+      "dimensions",
+      "tiers"
     ],
     "LiveClientAudioEvent": [
       "type",
@@ -355,6 +356,13 @@ export const SURFACE_TYPES: Readonly<Record<string, readonly string[]>> = Object
       "id",
       "base_model",
       "provider_data"
+    ],
+    "PricingTier": [
+      "above_input_tokens",
+      "input_per_million",
+      "output_per_million",
+      "cache_read_per_million",
+      "cache_write_per_million"
     ],
     "Reasoning": [
       "effort",

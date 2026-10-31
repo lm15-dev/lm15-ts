@@ -127,6 +127,13 @@ export interface OpenAIChatCompat {
    * (MAP-13 §4.2). Ratified 2026-09-26 (changes/2026-09-26-inference-hosts-live.md).
    */
   readonly reasoningOff?: Auto<"send" | "lowest">;
+  /**
+   * MAP-19: how the server counts reasoning in its usage. "in_completion" (the
+   * dialect's rule): `completion_tokens` already includes it. "separate": it is
+   * counted beside the completion (xAI), so canonical output is their sum.
+   * Usage only; nothing on the request changes.
+   */
+  readonly reasoningUsage?: Auto<"in_completion" | "separate">;
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
   /** `(model-id prefix, knobs)`; the first matching prefix wins. */
@@ -151,6 +158,7 @@ export interface ResolvedOpenAIChatCompat {
   readonly jsonSchema: "send" | "reject";
   readonly tokenScoring: "none" | "logprob_token_ids";
   readonly reasoningOff: "send" | "lowest";
+  readonly reasoningUsage: "in_completion" | "separate";
   readonly reasoningEfforts?: readonly string[];
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
@@ -180,6 +188,7 @@ export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): Resolve
     jsonSchema: pick(partial.jsonSchema, "send"),
     tokenScoring: pick(partial.tokenScoring, "none"),
     reasoningOff: pick(partial.reasoningOff, "send"),
+    reasoningUsage: pick(partial.reasoningUsage, "in_completion"),
     ...(partial.reasoningEfforts ? { reasoningEfforts: partial.reasoningEfforts } : {}),
     ...(partial.routing ? { routing: partial.routing } : {}),
     ...(partial.extensions ? { extensions: partial.extensions } : {}),
@@ -342,7 +351,7 @@ export function validateCompat(dialect: string, compat: unknown): void {
       thinkingReplay: ["native", "as_text", "omit"], assistantReasoningContent: ["include_empty", "omit"],
       strictTools: ["include", "omit"], builtinTools: ["reject", "groq"], cacheControl: ["none", "openai", "openai_implicit", "anthropic"],
       userField: ["user", "user_id", "safety_identifier"], forcedToolChoice: ["send", "reject"], jsonSchema: ["send", "reject"],
-      tokenScoring: ["none", "logprob_token_ids"], reasoningOff: ["send", "lowest"],
+      tokenScoring: ["none", "logprob_token_ids"], reasoningOff: ["send", "lowest"], reasoningUsage: ["in_completion", "separate"],
     },
     "openai-responses": {
       developerRole: ["developer", "system"], maxOutputTokensField: ["max_output_tokens", "max_completion_tokens", "max_tokens"],

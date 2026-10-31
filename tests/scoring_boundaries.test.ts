@@ -194,8 +194,8 @@ for (const policy of ["note", "silent"] as const) for (const missingIds of [fals
     const request = Request.create({ ...mixed, config: { ...mixed.config, probabilities: "if_available", temperature: 0.25 } });
     const transport = new ScoringTransport();
     transport.missingIds = missingIds;
-    transport.scoringUsage = { prompt_tokens: 7, completion_tokens: 3, total_tokens: 99, completion_tokens_details: { reasoning_tokens: 2 } };
-    transport.generatedUsage = { prompt_tokens: 11, completion_tokens: 5, total_tokens: 30 };
+    transport.scoringUsage = { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10, completion_tokens_details: { reasoning_tokens: 2 } };
+    transport.generatedUsage = { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 };
     const lm = new OpenAIChatLM({ apiKey: "k", compat: "vllm", baseUrl: "http://scoring/v1", transport, adaptations: policy });
     const plan = await lm.plan(request);
     assert.deepEqual(plan.map(a => [a.field, a.action]), [["config.response_format", "client_side"], ["config.temperature", "dropped"]]);
@@ -209,10 +209,10 @@ for (const policy of ["note", "silent"] as const) for (const missingIds of [fals
     assert.deepEqual(response.adaptations.map(a => [a.field, a.action]), policy === "silent" ? [] : [
       ...plan.map(a => [a.field, a.action]), ...(missingIds ? [["config.probabilities", "dropped"]] : []),
     ]);
-    assert.deepEqual([response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens], [18, 8, 129]);
+    assert.deepEqual([response.usage.inputTokens, response.usage.outputTokens, response.usage.totalTokens], [18, 8, 26]);
     assert.equal(response.usage.reasoningTokens, undefined);
     assert.equal(response.usage.cacheReadTokens, undefined);
-    assert.equal((response.providerData!["scoring_usage"] as JsonObject)["total_tokens"], 99);
+    assert.equal((response.providerData!["scoring_usage"] as JsonObject)["total_tokens"], 10);
     assert.equal(transport.requests.length, 7);
     assert.ok(transport.requests[5]!.url.endsWith("/completions"));
     assert.ok(transport.requests[6]!.url.endsWith("/chat/completions"));

@@ -39,7 +39,7 @@ import { Request, wireToolDescription, type BuiltinTool, type ResponseFormat } f
 import { BatchEntry, BatchJobInfo, FileInfo, FilePage, type BatchRequest, type FileUploadRequest } from "../types/endpoints.ts";
 import type { ModelInfo } from "../types/model_info.ts";
 import { continuationData, normalizePart, type CitationPart, type MediaPart, type Message, type Part } from "../types/parts.ts";
-import { ErrorDetail, Response, Usage } from "../types/response.ts";
+import { ErrorDetail, Response, settleUsage, wireSum, type Usage } from "../types/response.ts";
 import type { StreamEvent } from "../types/stream.ts";
 import type { FinishReason, ReasoningEffort } from "../vocab.ts";
 import {
@@ -59,7 +59,7 @@ import {
   checkMessageMedia,
 } from "../wire.ts";
 import { batchEntryRequest, optionalWireFloat, wireFloat } from "./openai_responses.ts";
-import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, type Unmapped } from "./openai_shared.ts";
+import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, wireCount, type Unmapped } from "./openai_shared.ts";
 
 const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
 
@@ -145,16 +145,25 @@ function finishReason(stopReason: unknown, hasToolCall = false): FinishReason {
 
 function reasoningTokens(usage: JsonObject): number | undefined {
   const details = usage["output_tokens_details"];
-  if (isJsonObject(details) && details["thinking_tokens"] !== null && details["thinking_tokens"] !== undefined) return int(details["thinking_tokens"]);
-  return undefined;
+  return isJsonObject(details) ? wireCount(details["thinking_tokens"], "thinking_tokens") : undefined;
 }
 
+/**
+ * MAP-19 rule 5, Anthropic Messages (every server on the wire). The wire's
+ * `input_tokens` is only the tokens after the last cache breakpoint; the two
+ * cache counters are counted beside it, so canonical input is their exact
+ * sum, unknown unless all three are reported. A total is read when the server
+ * sends one (Moonshot does).
+ */
 function usageFromAnthropic(u: JsonObject): Usage {
-  return Usage.create({
-    inputTokens: u["input_tokens"],
-    outputTokens: u["output_tokens"],
-    cacheReadTokens: u["cache_read_input_tokens"],
-    cacheWriteTokens: u["cache_creation_input_tokens"],
+  const cacheRead = wireCount(u["cache_read_input_tokens"], "cache_read_input_tokens");
+  const cacheWrite = wireCount(u["cache_creation_input_tokens"], "cache_creation_input_tokens");
+  return settleUsage({
+    inputTokens: wireSum(wireCount(u["input_tokens"], "input_tokens"), cacheRead, cacheWrite),
+    outputTokens: wireCount(u["output_tokens"], "output_tokens"),
+    totalTokens: wireCount(u["total_tokens"], "total_tokens"),
+    cacheReadTokens: cacheRead,
+    cacheWriteTokens: cacheWrite,
     reasoningTokens: reasoningTokens(u),
   });
 }
