@@ -36,9 +36,9 @@ that runs this package in your browser.
 npm install @lm15/lm15
 ```
 
-**1.0.0-rc.11 is a release candidate**: the API intended for 1.0, published
-to be tried first. Pin the exact version in applications. Python's lm15 1.0
-is stable; Rust and Go are release candidates too.
+**1.0.0** is the first stable release (after eleven release candidates,
+1.0.0-rc.1 to 1.0.0-rc.11). Python's lm15 is stable too; Rust and Go are
+release candidates.
 
 Set the key of the provider you call (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, ...). Examples use `await` at the top
@@ -219,7 +219,7 @@ into lm15: see the [guides](https://lm15.dev/docs/).
 
 ## Stability
 
-The chat core is stable in 1.x once 1.0.0 is released: requests, responses,
+The chat core is stable in 1.x: requests, responses,
 streaming, tools, structured output, media inside messages, reasoning,
 errors, credentials and model listing. These ship as **provisional** and may
 still change in 1.x, with a notice in the contract: files, batches, media
@@ -229,8 +229,8 @@ sign-in.
 ## Conformance
 
 Graded by [lm15-contract](https://github.com/lm15-dev/lm15-contract) at the
-commit in `CONTRACT_PIN`: every check passes (1,828 of 1,828 on
-2026-09-29), the same as Python, Rust and Go at theirs. The checks compare
+commit in `CONTRACT_PIN`: every check passes (1,921 of 1,921 on
+2026-10-15), the same as Python, Rust, Go, Julia and R at theirs. The checks compare
 the exact requests lm15 builds and the responses it reads against recorded
 provider traffic. The package's own tests also replay the corpus through
 the browser entry in a realm with only web globals.
