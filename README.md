@@ -44,7 +44,7 @@ xAI output counts grow to their true size, and
 `InferencePricing.estimate(pricing, usage)` returns the exact list price or
 `undefined` (it charged OpenAI's cached tokens twice before;
 lm15-contract `changes/2026-10-31-usage-one-meaning.md`). lm15 is stable in
-Python, Rust and Go too.
+Python, Rust, Go and R too.
 
 Set the key of the provider you call (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, ...). Examples use `await` at the top
@@ -225,10 +225,10 @@ into lm15: see the [guides](https://lm15.dev/docs/).
 
 ## Stability
 
-The chat core is stable in 1.x: requests, responses,
+The chat core is stable in 2.x: requests, responses,
 streaming, tools, structured output, media inside messages, reasoning,
 errors, credentials and model listing. These ship as **provisional** and may
-still change in 1.x, with a notice in the contract: files, batches, media
+still change in 2.x, with a notice in the contract: files, batches, media
 generation, stored caches, realtime sessions, Chat Completions ingest and
 sign-in.
 
