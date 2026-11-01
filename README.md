@@ -43,8 +43,8 @@ every provider: `usage.inputTokens` includes cached tokens and
 xAI output counts grow to their true size, and
 `InferencePricing.estimate(pricing, usage)` returns the exact list price or
 `undefined` (it charged OpenAI's cached tokens twice before;
-lm15-contract `changes/2026-10-31-usage-one-meaning.md`). Python's lm15 is
-stable too; Rust and Go are release candidates.
+lm15-contract `changes/2026-10-31-usage-one-meaning.md`). lm15 is stable in
+Python, Rust and Go too.
 
 Set the key of the provider you call (`ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `GEMINI_API_KEY`, ...). Examples use `await` at the top
