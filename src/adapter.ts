@@ -110,6 +110,17 @@ export interface EmitOptions {
 }
 
 /** A built wire request with the MAP-13 record of what differs from what was asked. */
+/**
+ * Reads ONE stream's raw provider events into canonical events (MAP-20).
+ * A dialect's per-event mapping (`parseStreamEvents`) holds no state; a
+ * reader may hold what one stream needs and nothing across streams: a
+ * dialect that restates an item in a final copy completes the item's
+ * fragments from it. `feed` is called once per raw event, in order.
+ */
+export interface StreamReader {
+  feed(raw: SSEEvent): StreamEvent[];
+}
+
 export interface BuiltRequest {
   readonly request: TransportRequest;
   readonly adaptations: readonly Adaptation[];
@@ -380,6 +391,15 @@ export abstract class ProviderLM {
   abstract parseResponse(request: Request, response: HttpResponse): Response;
   abstract parseStreamEvents(request: Request, event: SSEEvent): StreamEvent[];
 
+  /**
+   * The reader for one stream of `request` (MAP-20). Every path that turns
+   * raw events into canonical events goes through it: the stream and the
+   * vet shim. The default maps each event on its own.
+   */
+  streamReader(request: Request): StreamReader {
+    return { feed: (raw) => this.parseStreamEvents(request, raw) };
+  }
+
   normalizeError(status: number, body: string): ProviderError {
     return this.withLoginHint(mapHttpError(status, body.trim().slice(0, 500) || `HTTP ${status}`, { provider: this.provider, envKeys: this.access.envKeys }));
   }
@@ -540,9 +560,10 @@ export abstract class ProviderLM {
     }
     const handshake = new HttpResponse({ status: res.status, headers: res.headers, body: new Uint8Array() });
     try {
+      const reader = this.streamReader(request);
       for await (const sse of parseSseAsync(splitLinesAsync(res.chunks()))) {
         let events: StreamEvent[];
-        try { events = this.parseStreamEvents(request, sse); }
+        try { events = reader.feed(sse); }
         catch (cause) {
           if (!(cause instanceof SyntaxError)) throw cause;
           const excerpt = new TextDecoder().decode(new TextEncoder().encode(sse.data).subarray(0, 200));

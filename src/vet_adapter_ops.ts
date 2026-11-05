@@ -177,7 +177,8 @@ const ops: Record<string, OpHandler> = {
     const body = bodyBytes(msg);
     if (msg["framing"] === "aws-event-stream") throw new ValueError("aws-event-stream framing is phase 2 (not implemented)");
     const raw: StreamEvent[] = [];
-    for (const sse of parseSse(splitLines(body))) raw.push(...lm.parseStreamEvents(request, sse));
+    const reader = lm.streamReader(request);
+    for (const sse of parseSse(splitLines(body))) raw.push(...reader.feed(sse));
     const events = [...coalesceStream(raw, { model: request.model })];
     const eventDicts = events.map(StreamEvent.toJSON);
     let response;

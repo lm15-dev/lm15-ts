@@ -212,7 +212,7 @@ export type { GeminiLMOptions } from "./dialects/gemini.ts";
 export { XaiLM } from "./dialects/xai.ts";
 export { TypeSafeLM } from "./dialects/typesafe.ts";
 export { ProviderLM } from "./adapter.ts";
-export type { LMOptions, BuiltRequest, EmitOptions } from "./adapter.ts";
+export type { LMOptions, BuiltRequest, EmitOptions, StreamReader } from "./adapter.ts";
 export { adapterFor } from "./providers.ts";
 export { PROVIDERS, ProviderDefinition, lookup, canonicalProvider, DIALECT_API_FAMILY } from "./registry.ts";
 export type { Dialect, ProviderDeclarationOptions, Compat } from "./registry.ts";

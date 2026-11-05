@@ -77,7 +77,8 @@ export function parseBodyJson(caseJson: string, bodyBase64: string): string {
   try {
     if (isStream) {
       const raw: StreamEvent[] = [];
-      for (const sse of parseSse(splitLines(body))) raw.push(...lm.parseStreamEvents(request, sse));
+      const reader = lm.streamReader(request);
+      for (const sse of parseSse(splitLines(body))) raw.push(...reader.feed(sse));
       const events = [...coalesceStream(raw, { model: request.model })];
       const response = materializeResponse(events, request);
       return stringifyJson({ events: events.map(StreamEvent.toJSON), canonical_response: Response.toJSON(response) });

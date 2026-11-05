@@ -212,7 +212,7 @@ test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinne
     }
     compare(want, got, ["canonical_request"], new Set(), id);
   }
-  assert.deepEqual([roundTrips, lossy, foreign, refusals], [175, 37, 34, 9], "case counts moved; move CONTRACT_PIN and these constants together");
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [176, 37, 34, 9], "case counts moved; move CONTRACT_PIN and these constants together");
 });
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {
@@ -283,14 +283,15 @@ test("corpus: every pinned body with a golden parses to it (complete and stream)
     if (!existsSync(goldenPath)) continue;
     const golden = parseJson(readFileSync(goldenPath, "utf-8")) as JsonObject;
     const body = readFileSync(join(root, "bodies", id, c["pinned_body"]));
-    const lm = adapterFor(String(c["provider"]), { apiKey: "vet-parse-only", ...hostOptions(c) });
+    const lm = adapterFor(String(c["provider"]), { apiKey: "vet-parse-only", ...hostOptions(c), ...(String(c["provider"]).replace(/_/g, "-") === "openai-codex" ? { accountId: "test-account" } : {}) });
     const request = Request.fromJSON(c["canonical_request"]);
     const volatile = new Set(Object.keys(isJsonObject(c["volatile"]) ? c["volatile"] : {}).map((k) => (k.startsWith("$.") ? k : `$.${k}`)));
     const raises = isJsonObject((c["expect_lm15"] as JsonObject | undefined)?.["raises"]) ? ((c["expect_lm15"] as JsonObject)["raises"] as JsonObject) : undefined;
     const isStream = c["stream"] === true || /^(event:|data:)/.test(new TextDecoder().decode(body.subarray(0, 64)).trimStart());
     if (isStream) {
       const raw: StreamEvent[] = [];
-      for (const sse of parseSse(splitLines(new Uint8Array(body)))) raw.push(...lm.parseStreamEvents(request, sse));
+      const reader = lm.streamReader(request);
+      for (const sse of parseSse(splitLines(new Uint8Array(body)))) raw.push(...reader.feed(sse));
       const events = [...coalesceStream(raw, { model: request.model })];
       if (raises?.["op"] === "replay_stream") {
         assert.throws(() => materializeResponse(events, request), (e: unknown) => e instanceof StreamAssemblyError && e.code === raises["code"], id);

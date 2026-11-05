@@ -6,7 +6,7 @@
 
 import { AdaptationScope, adapt, collecting } from "../adaptation.ts";
 import { noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
-import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions, type StreamReader } from "../adapter.ts";
 import { OPENAI_API, OPENAI_CODEX, authHeader, type AccessPolicy, mergeClientVersion } from "../auth/policy.ts";
 import { extractChatgptAccountId } from "../auth/jwt.ts";
 import {
@@ -26,6 +26,7 @@ import {
   ProviderError,
   RateLimitError,
   ServerError,
+  StreamAssemblyError,
   UnsupportedFeatureError,
   UnsupportedModelError,
   canonicalErrorCode,
@@ -598,6 +599,15 @@ export class OpenAILM extends ProviderLM {
 
   // ─── Stream ──────────────────────────────────────────────────────
 
+  override streamReader(request: Request): StreamReader {
+    return new ResponsesStreamReader(this, request);
+  }
+
+  /**
+   * Map ONE raw event on its own. A whole stream is read with
+   * `streamReader`, which also completes each item's fragments from its
+   * final copy (MAP-20); this per-event mapping cannot.
+   */
   parseStreamEvents(request: Request, raw: SSEEvent): StreamEvent[] {
     request = this.wireModelRequest(request);
     if (!raw.data) return [];
@@ -654,10 +664,15 @@ export class OpenAILM extends ProviderLM {
         const name = str(payload["name"]);
         return [{ type: "delta", delta: { type: "tool_call", input: str(payload["delta"]), partIndex: outputIndex, ...(id ? { id } : {}), ...(name ? { name } : {}) } }];
       }
-      case "response.completed": {
+      case "response.completed":
+      case "response.incomplete": {
+        // A turn cut short (the output limit, a content filter) ends with
+        // response.incomplete; its finish reason reads status and
+        // incomplete_details as on the complete path (INV-051,
+        // cases/meta/streaming_incomplete.json).
         const response = obj(payload["response"]);
         const hasTool = list(response["output"]).some((i) => isJsonObject(i) && i["type"] === "function_call");
-        return [{ type: "end", finishReason: hasTool ? "tool_call" : "stop", usage: usageFromResponses(response["usage"]), providerData: response }];
+        return [{ type: "end", finishReason: finishFromStatus(response, hasTool), usage: usageFromResponses(response["usage"]), providerData: response }];
       }
       case "response.error":
       case "error":
@@ -1179,3 +1194,137 @@ function defaultCompatForBaseUrl(baseUrl: string): OpenAIResponsesCompat {
   return openaiResponsesPreset("openai");
 }
 
+// ─── Stream reader (MAP-20) ──────────────────────────────────────────
+
+/**
+ * What one stream's fragments delivered, per part slot and channel. A final
+ * copy is the provider restating a value it may also have sent in fragments;
+ * `remainder` is what the fragments did not deliver: the whole value when
+ * none came, the rest when they are its beginning, nothing when they are all
+ * of it. Fragments that are not its beginning contradict it and the stream
+ * is refused: lm15 does not choose.
+ */
+export class FinalCopies {
+  private readonly seen = new Map<string, string>();
+
+  saw(index: number, channel: string, text: string): void {
+    if (!text) return;
+    const key = `${index}:${channel}`;
+    this.seen.set(key, (this.seen.get(key) ?? "") + text);
+  }
+
+  remainder(index: number, channel: string, final: string, opts: { jsonValue?: boolean } = {}): string {
+    const key = `${index}:${channel}`;
+    const got = this.seen.get(key) ?? "";
+    if (final.startsWith(got)) {
+      this.seen.set(key, final);
+      return final.slice(got.length);
+    }
+    // The same JSON value, members in the same order: the text differs
+    // (whitespace, escapes), the arguments do not.
+    if (opts.jsonValue && sameJson(got, final)) return "";
+    throw new StreamAssemblyError(
+      `the streamed ${channel} of part ${index} is not the beginning of the provider's final copy of it ` +
+        `(${got.length} characters streamed, ${final.length} in the final copy); lm15 does not choose between them (MAP-20)`,
+      { partIndex: index },
+    );
+  }
+}
+
+function sameJson(a: string, b: string): boolean {
+  try {
+    return stringifyJson(parseJson(a)) === stringifyJson(parseJson(b));
+  } catch {
+    return false;
+  }
+}
+
+function argumentsText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined || value === null) return "";
+  return stringifyJson(value);
+}
+
+function messageFinalText(item: JsonObject): string {
+  let out = "";
+  for (const content of list(item["content"])) {
+    if (!isJsonObject(content)) continue;
+    if (content["type"] === "output_text" || content["type"] === "text") out += str(content["text"]);
+    else if (content["type"] === "refusal") out += str(content["refusal"] ?? content["text"]);
+  }
+  return out;
+}
+
+/**
+ * One OpenAI Responses stream (MAP-20). `response.output_item.done` is each
+ * item's final copy; at it the reader emits what the item's fragments did
+ * not deliver: a function call's arguments (the Codex backend sends parallel
+ * calls' arguments only there), a message's text, a reasoning item's summary.
+ * A summary's parts are joined with a newline, as the complete path joins
+ * them (INV-051); the newline goes before the first fragment of each later part.
+ */
+class ResponsesStreamReader implements StreamReader {
+  private readonly copies = new FinalCopies();
+  private readonly summaryPart = new Map<number, number>();
+  private readonly named = new Set<number>();
+
+  private readonly lm: OpenAILM;
+  private readonly request: Request;
+
+  constructor(lm: OpenAILM, request: Request) {
+    this.lm = lm;
+    this.request = request;
+  }
+
+  feed(raw: SSEEvent): StreamEvent[] {
+    let events = this.lm.parseStreamEvents(this.request, raw);
+    if (!raw.data || raw.data === "[DONE]") return events;
+    const payload = parseJson(raw.data);
+    if (!isJsonObject(payload)) return events;
+    const et = str(payload["type"]);
+    const index = int(payload["output_index"]) ?? 0;
+    if (et === "response.reasoning_summary_text.delta") {
+      const part = int(payload["summary_index"]) ?? 0;
+      const at = this.summaryPart.get(index) ?? 0;
+      if (part > at) {
+        this.summaryPart.set(index, part);
+        const prefix = "\n".repeat(part - at);
+        events = events.map((e) => (e.type === "delta" && e.delta.type === "thinking" ? { ...e, delta: { ...e.delta, text: prefix + e.delta.text } } : e));
+      }
+      for (const e of events) if (e.type === "delta" && e.delta.type === "thinking") this.copies.saw(index, "summary", e.delta.text);
+    } else if (et === "response.output_text.delta" || et === "response.refusal.delta") {
+      this.copies.saw(index, "text", str(payload["delta"]));
+    } else if (et === "response.output_item.added" || et === "response.function_call_arguments.delta") {
+      for (const e of events) {
+        if (e.type !== "delta" || e.delta.type !== "tool_call") continue;
+        this.copies.saw(index, "arguments", e.delta.input);
+        if (e.delta.name) this.named.add(index);
+      }
+    } else if (et === "response.output_item.done" && isJsonObject(payload["item"])) {
+      events = [...this.complete(index, payload["item"]), ...events];
+    }
+    return events;
+  }
+
+  private complete(index: number, item: JsonObject): StreamEvent[] {
+    const kind = item["type"];
+    if (kind === "function_call") {
+      const rest = this.copies.remainder(index, "arguments", argumentsText(item["arguments"]), { jsonValue: true });
+      if (!rest && this.named.has(index)) return [];
+      const name = str(item["name"]);
+      if (name) this.named.add(index);
+      const id = str(item["call_id"] ?? item["id"]);
+      return [{ type: "delta", delta: { type: "tool_call", input: rest, partIndex: index, ...(id ? { id } : {}), ...(name ? { name } : {}) } }];
+    }
+    if (kind === "message") {
+      const rest = this.copies.remainder(index, "text", messageFinalText(item));
+      return rest ? [{ type: "delta", delta: { type: "text", text: rest, partIndex: index } }] : [];
+    }
+    if (kind === "reasoning" && Array.isArray(item["summary"])) {
+      const final = (item["summary"] as unknown[]).map((x) => (isJsonObject(x) ? str(x["text"]) : str(x))).join("\n");
+      const rest = this.copies.remainder(index, "summary", final);
+      return rest ? [{ type: "delta", delta: { type: "thinking", text: rest, partIndex: index } }] : [];
+    }
+    return [];
+  }
+}

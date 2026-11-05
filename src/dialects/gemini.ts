@@ -5,7 +5,7 @@
  */
 
 import { AdaptationScope, adapt, collecting } from "../adaptation.ts";
-import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions } from "../adapter.ts";
+import { ProviderLM, batchEntryHttp, type LMOptions, type EmitOptions, type StreamReader } from "../adapter.ts";
 import { geminiSchema, noteUnmeasurableProbabilities, replaceTextWithData, requestJudgments } from "../judgments.ts";
 import { GEMINI_API, type AccessPolicy } from "../auth/policy.ts";
 import { EFFORT_THINKING_BUDGETS } from "../compat.ts";
@@ -692,6 +692,14 @@ export class GeminiLM extends ProviderLM {
 
   // ─── Stream ──────────────────────────────────────────────────────
 
+  override streamReader(request: Request): StreamReader {
+    return new GeminiStreamReader(this, request);
+  }
+
+  /**
+   * Map ONE chunk on its own, its parts numbered from 0. A whole stream is
+   * read with `streamReader`, which gives each part its slot across chunks.
+   */
   parseStreamEvents(_request: Request, raw: SSEEvent): StreamEvent[] {
     if (!raw.data) return [];
     const payload = parseJson(raw.data);
@@ -1208,4 +1216,61 @@ export class GeminiLM extends ProviderLM {
 
 function builtinToGemini(tool: BuiltinTool): JsonObject {
   return { [GEMINI_BUILTIN_MAP[tool.name] ?? tool.name]: tool.config ?? {} };
+}
+
+// ─── Stream reader: part slots across chunks (MAP-20) ────────────────
+
+function geminiPartKind(part: unknown): "text" | "thought" | "call" | "media" | undefined {
+  if (!isJsonObject(part)) return undefined;
+  if ("text" in part) return part["thought"] ? "thought" : "text";
+  if (isJsonObject(part["functionCall"])) return "call";
+  if (isJsonObject(part["inlineData"])) return "media";
+  return undefined;
+}
+
+/**
+ * One Gemini stream: which slot each chunk's parts belong to. A chunk's
+ * parts are numbered from 0 in every chunk. The first part of a chunk
+ * continues the previous chunk's last part when both are text (or both
+ * thought text): that is how a long text arrives. Every other part is a new
+ * part with a slot of its own, in arrival order. A function call is never a
+ * continuation: gemini-2.5-pro sends each parallel call in a chunk of its own
+ * (cases/gemini/streaming_parallel_tool_calls_chunked.json).
+ */
+class GeminiStreamReader implements StreamReader {
+  private last: { slot: number; kind: string } | undefined;
+  private next = 0;
+
+  private readonly lm: GeminiLM;
+  private readonly request: Request;
+
+  constructor(lm: GeminiLM, request: Request) {
+    this.lm = lm;
+    this.request = request;
+  }
+
+  feed(raw: SSEEvent): StreamEvent[] {
+    const events = this.lm.parseStreamEvents(this.request, raw);
+    if (!raw.data) return events;
+    let payload: unknown;
+    try { payload = parseJson(raw.data); } catch { return events; }
+    if (!isJsonObject(payload)) return events;
+    const candidate = list(payload["candidates"])[0];
+    const parts = isJsonObject(candidate) ? list(obj(candidate["content"])["parts"]) : [];
+    const slots = new Map<number, number>();
+    parts.forEach((part, idx) => {
+      const kind = geminiPartKind(part);
+      if (kind === undefined) return;
+      let slot: number;
+      if (idx === 0 && (kind === "text" || kind === "thought") && this.last !== undefined && this.last.kind === kind) slot = this.last.slot;
+      else slot = this.next++;
+      slots.set(idx, slot);
+      this.last = { slot, kind };
+    });
+    return events.map((e) => {
+      if (e.type !== "delta" || e.delta.partIndex === undefined) return e;
+      const slot = slots.get(e.delta.partIndex);
+      return slot === undefined || slot === e.delta.partIndex ? e : { ...e, delta: { ...e.delta, partIndex: slot } };
+    });
+  }
 }
