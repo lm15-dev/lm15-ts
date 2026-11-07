@@ -459,8 +459,8 @@ export class AnthropicLM extends ProviderLM {
         reasoning = { ...reasoning, effort: nearest };
       }
       if (reasoning.summary === "concise" || reasoning.summary === "detailed") {
-        // MAP-13: a visibility level the wire lacks; thinking blocks are returned whenever thinking runs, which is "auto".
-        adapt("config.reasoning.summary", "substituted", "the Messages API has no summary detail levels; it returns thinking blocks whenever thinking runs, which is 'auto'", {
+        // MAP-13: a visibility level the wire lacks; the thinking it returns is one summary, which is "auto".
+        adapt("config.reasoning.summary", "substituted", "the Messages API has no summary detail levels; it returns one summary of the thinking, which is 'auto'", {
           asked: reasoning.summary,
           applied: "auto",
           provider: this.provider,
@@ -599,6 +599,13 @@ export class AnthropicLM extends ProviderLM {
       payload["output_config"] = { effort: reasoning.effort };
     } else if (thinkingBudget !== undefined) {
       payload["thinking"] = { type: "enabled", budget_tokens: thinkingBudget };
+    }
+    const thinking = payload["thinking"] as JsonObject | undefined;
+    if (compat.thinkingFormat === "anthropic" && reasoning?.summary !== undefined && (thinking?.["type"] === "adaptive" || thinking?.["type"] === "enabled")) {
+      // MAP-7 rule 7 (amended 2026-11-07): the thinking is shown only when asked on Opus 4.7, 4.8 and every
+      // Claude 5 (display defaults to "omitted": a thinking block with empty text); every Claude model accepts
+      // "summarized" (live 2026-11-07, 14 models).
+      payload["thinking"] = { ...thinking, display: "summarized" };
     }
     if (config.responseFormat) {
       if (compat.structuredOutput === "reject") {
