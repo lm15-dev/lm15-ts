@@ -21,7 +21,7 @@ import { DECLARED_LOGIN_PROVIDERS } from "./login/declared.ts";
 import type { Auth } from "./login/manager.ts";
 import { adapterForDefinition } from "./providers.ts";
 import { getDefaultPlatform, noCloudChain } from "./platform.ts";
-import { canonicalProvider, providerTable, type ProviderDefinition } from "./registry.ts";
+import { PROVIDERS, canonicalProvider, providerTable, type ProviderDefinition } from "./registry.ts";
 import { createTransport, Timeouts, type Transport, type TransportBudgetOptions } from "./transport.ts";
 import type { Request } from "./types/config.ts";
 import { normalizeRequest } from "./types/config.ts";
@@ -116,6 +116,13 @@ export interface RouterConfig extends TransportBudgetOptions {
   readonly transport?: Transport;
   /** MAP-13: `"note"` (default: adapt and record on the response), `"silent"` (adapt, record nothing), `"refuse"` (every deviation refuses before the wire). */
   readonly adaptations?: AdaptationPolicy;
+  /**
+   * A fine-tune's base model, by model id (`{"tinker://…": "Qwen/Qwen3.5-4B"}`):
+   * a provider's per-model rules (a compat preset's `modelOverrides`) match the
+   * model id first, then its base model's. Never sent; never discovered —
+   * the provider's catalog states it (`ModelInfo.origin.baseModel`).
+   */
+  readonly baseModels?: Readonly<Record<string, string>>;
   /**
    * Managed authentication (AUTH-15 mode B): an `Auth` whose saved
    * connections supply the credential when no explicit `apiKeys` /
@@ -322,14 +329,21 @@ function ratio(a: string, b: string): number {
   return (2 * dp[m]![n]!) / (m + n);
 }
 
+/** A model string whose first ":" is followed by "//": a URI, one name. */
+export function isUri(model: string): boolean {
+  const colon = model.indexOf(":");
+  return colon > 0 && model.startsWith("//", colon + 1);
+}
+
 /** The pure resolution: no network, no files, no secret values. */
 export function resolveModel(model: string, config: RouterConfig = {}): Resolution {
   const rules = config.rules ?? DEFAULT_RULES;
   if (typeof model !== "string" || model === "") throw new UnknownModelError("model must be a non-empty string", { model: String(model) });
   const requested = model;
 
-  // Rung 1: explicit provider prefix (split on the FIRST colon).
-  const colon = model.indexOf(":");
+  // Rung 1: explicit provider prefix (split on the FIRST colon). A URI
+  // (`scheme://…`) is one name and never a prefix (2026-11-09).
+  const colon = isUri(model) ? -1 : model.indexOf(":");
   if (colon >= 0) {
     const head = routerCanonicalProvider(model.slice(0, colon), config);
     const rest = model.slice(colon + 1);
@@ -420,6 +434,7 @@ function buildLm(res: Resolution, config: RouterConfig, shared: Transport): Prov
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(backendSettings !== undefined ? { settings: backendSettings } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
+    ...(config.baseModels !== undefined ? { baseModels: config.baseModels } : {}),
   };
   if (config.auth !== undefined) return buildManagedLm(res, config, definition, shared);
   if (policy === "oauth") return adapterForDefinition(definition, options);
@@ -552,6 +567,7 @@ function buildManagedLm(res: Resolution, config: RouterConfig, definition: Provi
     ...(accountId !== undefined ? { accountId } : {}),
     ...(backendSettings !== undefined ? { settings: backendSettings } : {}),
     ...(config.adaptations !== undefined ? { adaptations: checkPolicy(config.adaptations) } : {}),
+    ...(config.baseModels !== undefined ? { baseModels: config.baseModels } : {}),
   };
   const bound = access === definition.access ? definition : Object.freeze({ ...definition, access }) as ProviderDefinition;
   if (definition.hosted) {
@@ -606,6 +622,7 @@ function planningLm(res: Resolution, config: RouterConfig): ProviderLM {
     settings,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(config.adaptations !== undefined ? { adaptations: config.adaptations } : {}),
+    ...(config.baseModels !== undefined ? { baseModels: config.baseModels } : {}),
   });
 }
 
@@ -661,10 +678,11 @@ export function openaiChatModelString(model: string, config: DefinitionConfig = 
   const rest = model.slice(slash + 1);
   if (!rest) return model;
   const declared = (config.providers ?? []).find((d) => [d.id, ...(d.aliases ?? [])].includes(canonicalProvider(head)));
-  const provider = LITELLM_PROVIDER_PREFIXES[head] ?? declared?.id;
+  const registryAlias = [...PROVIDERS.values()].find((d) => (d.aliases ?? []).includes(canonicalProvider(head)));
+  const provider = LITELLM_PROVIDER_PREFIXES[head] ?? registryAlias?.id ?? declared?.id;
   if (provider === undefined) {
     throw new UnknownModelError(
-      `could not read ${JSON.stringify(model)} as a litellm model string: ${JSON.stringify(head)} is not a provider prefix lm15 has a door for (known: ${[...new Set([...Object.keys(LITELLM_PROVIDER_PREFIXES), ...(config.providers ?? []).flatMap((d) => [d.id, ...(d.aliases ?? [])])])].sort().join(", ")}); write it as lm15's provider:model instead`,
+      `could not read ${JSON.stringify(model)} as a litellm model string: ${JSON.stringify(head)} is not a provider prefix lm15 has a door for (known: ${[...new Set([...Object.keys(LITELLM_PROVIDER_PREFIXES), ...[...PROVIDERS.values()].flatMap((d) => d.aliases ?? []), ...(config.providers ?? []).flatMap((d) => [d.id, ...(d.aliases ?? [])])])].sort().join(", ")}); write it as lm15's provider:model instead`,
       { model },
     );
   }
@@ -690,6 +708,12 @@ export class LMRouter {
 
   constructor(config: RouterConfig = {}) {
     checkProviderKeyed(config);
+    if (config.baseModels !== undefined) {
+      const bm = config.baseModels as unknown;
+      if (bm === null || typeof bm !== "object" || Array.isArray(bm) || Object.entries(bm).some(([k, v]) => !k || typeof v !== "string" || !v)) {
+        throw new TypeError("RouterConfig baseModels maps a model id to its base model id, both non-empty strings");
+      }
+    }
     if (config.transport !== undefined && (config.timeouts !== undefined || config.maxConnections !== undefined)) {
       throw new NotConfiguredError("RouterConfig transport cannot be combined with timeouts or maxConnections; configure the supplied transport directly");
     }

@@ -594,7 +594,7 @@ export function errorClassForCode(code: string): typeof LM15Error {
  * model-specific code and no not-found class (lm15-contract
  * spec/model-not-found.json, carried verbatim; each form has a live receipt).
  */
-export const MODEL_NOT_FOUND_FORMS: readonly { code: string; prefix?: string; contains?: string; suffix?: string }[] = Object.freeze([
+export const MODEL_NOT_FOUND_FORMS: readonly { code: string | null; prefix?: string; contains?: string; suffix?: string }[] = Object.freeze([
   { code: "not_found_error", prefix: "model: " }, // Anthropic, Claude Code
   { code: "invalid_request_error", contains: "The supported API model names are " }, // DeepSeek
   { code: "1211" }, // Z.AI: Unknown Model
@@ -603,7 +603,47 @@ export const MODEL_NOT_FOUND_FORMS: readonly { code: string; prefix?: string; co
   { code: "invalid-argument", prefix: "Model not found: " }, // xAI (2026-09-01)
   { code: "validation_error", contains: "The provided model identifier is invalid" }, // Bedrock Chat
   { code: "invalid_request_error", prefix: "Deployment ", suffix: " doesn't exist or isn't accessible." }, // Parasail
+  // Tinker (2026-11-09): code null matches an error with no provider code (MAP-21 detail bodies).
+  { code: null, prefix: "Sampling is not supported for " },
+  { code: "invalid_request_error", prefix: "Sampling is not supported for " },
+  { code: null, prefix: "Weights not found for model_path " },
+  { code: null, prefix: "model_path '", contains: "' is not a valid tinker path." },
 ]);
+
+/**
+ * MAP-21: the message of an error body in FastAPI's shape, which has no
+ * `error` envelope: `{"detail": "<text>"}` (optionally with `errors`, a list
+ * of `{loc, msg}`), or `{"detail": [{loc, msg}]}`. An entry reads
+ * `<loc>: <msg>` (a list `loc` joined with " -> "); entries join with "; " and
+ * follow the text after ": ". Undefined when the body is not that shape.
+ */
+export function detailMessage(data: unknown): string | undefined {
+  if (data === null || typeof data !== "object" || Array.isArray(data) || "error" in data) return undefined;
+  const rec = data as Record<string, unknown>;
+  const entries = (items: unknown): string[] => {
+    const out: string[] = [];
+    if (!Array.isArray(items)) return out;
+    for (const item of items) {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) continue;
+      const it = item as Record<string, unknown>;
+      if (typeof it["msg"] !== "string") continue;
+      let loc = it["loc"];
+      if (Array.isArray(loc)) loc = loc.map((x) => String(x)).join(" -> ");
+      out.push(typeof loc === "string" && loc ? `${loc}: ${it["msg"]}` : it["msg"]);
+    }
+    return out;
+  };
+  const detail = rec["detail"];
+  if (typeof detail === "string" && detail.trim()) {
+    const found = entries(rec["errors"]);
+    return detail.trim() + (found.length ? `: ${found.join("; ")}` : "");
+  }
+  if (Array.isArray(detail)) {
+    const found = entries(detail);
+    return found.length ? found.join("; ") : undefined;
+  }
+  return undefined;
+}
 
 /**
  * MAP-18: the pinned forms of a provider's "this key is not valid" answer that
@@ -642,12 +682,16 @@ export function isPinnedAuthFailure(providerCode: string | null | undefined, mes
     (f.suffix === undefined || text.endsWith(f.suffix)));
 }
 
-/** True when the error is one of the pinned MAP-15 forms: exact code, and every text test the form gives. */
+/**
+ * True when the error is one of the pinned MAP-15 forms: exact code (a form
+ * whose code is null matches an error with none), and every text test the
+ * form gives.
+ */
 export function isPinnedModelNotFound(providerCode: string | null | undefined, message: string | null | undefined): boolean {
-  if (!providerCode) return false;
+  const code = providerCode ? providerCode : null;
   const text = message ?? "";
   return MODEL_NOT_FOUND_FORMS.some((f) =>
-    f.code === providerCode &&
+    f.code === code &&
     (f.prefix === undefined || text.startsWith(f.prefix)) &&
     (f.contains === undefined || text.includes(f.contains)) &&
     (f.suffix === undefined || text.endsWith(f.suffix)));

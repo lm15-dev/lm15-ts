@@ -30,6 +30,7 @@ import {
   UnsupportedModelError,
   mapHttpError,
   isPinnedAuthFailure,
+  detailMessage,
   isPinnedModelNotFound,
 } from "../errors.ts";
 import { isJsonObject, parseJson, setMember, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
@@ -179,6 +180,13 @@ function toolRowContent(provider: string, part: ToolResultPart, policy: string):
 export interface OpenAIChatLMOptions extends LMOptions {
   /** An `OpenAIChatCompat`, a preset name (`groq`, `ollama`, `deepseek`, …), or absent (plain OpenAI). */
   readonly compat?: OpenAIChatCompat | string;
+  /**
+   * What a fine-tune was trained from, by model id (`RouterConfig.baseModels`):
+   * a model matching no `modelOverrides` entry follows its base model's entry
+   * (a Tinker checkpoint takes its base family's reasoning switch). Never sent;
+   * never discovered.
+   */
+  readonly baseModels?: Readonly<Record<string, string>>;
 }
 
 export class OpenAIChatLM extends ProviderLM {
@@ -186,9 +194,12 @@ export class OpenAIChatLM extends ProviderLM {
   protected readonly dialectBaseUrl = DEFAULT_BASE_URL;
   protected readonly compatPartial: OpenAIChatCompat;
   protected readonly resolvedCompat: ResolvedOpenAIChatCompat;
+  /** RouterConfig.baseModels / the `baseModels` option: a fine-tune's base model by id. */
+  readonly baseModels: Readonly<Record<string, string>>;
 
   constructor(opts: OpenAIChatLMOptions = {}, manifest: AccessPolicy = OPENAI_CHAT_API) {
     super(manifest, DEFAULT_BASE_URL, opts);
+    this.baseModels = { ...(opts.baseModels ?? {}) };
     const compat = opts.compat ?? this.registryCompat();
     if (typeof compat === "string") {
       this.compatPartial = openaiChatPreset(compat);
@@ -218,6 +229,8 @@ export class OpenAIChatLM extends ProviderLM {
       const err = isJsonObject(data) ? data["error"] : undefined;
       const e = isJsonObject(err) ? err : {};
       msg = isJsonObject(err) ? str(e["message"]) : err === undefined ? "" : str(err);
+      // MAP-21: FastAPI servers (Tinker) answer {"detail": ...} with no envelope.
+      if (!msg) msg = detailMessage(data) ?? "";
       const code = isJsonObject(err) ? str(e["code"]) : "";
       const errType = isJsonObject(err) ? str(e["type"]) : "";
       providerCode = code || errType || null;
@@ -271,7 +284,8 @@ export class OpenAIChatLM extends ProviderLM {
 
   protected compatFor(model: string): ResolvedOpenAIChatCompat {
     if (!this.compatPartial.modelOverrides || this.compatPartial.modelOverrides.length === 0) return this.resolvedCompat;
-    return resolveOpenAIChatCompat(chatCompatForModel(this.compatPartial, model));
+    const base = Object.hasOwn(this.baseModels, model) ? this.baseModels[model] : undefined;
+    return resolveOpenAIChatCompat(chatCompatForModel(this.compatPartial, model, base));
   }
 
   protected buildMessages(request: Request, compat: ResolvedOpenAIChatCompat): JsonObject[] {
@@ -459,7 +473,17 @@ export class OpenAIChatLM extends ProviderLM {
     }
     if (config.toolChoice?.parallel !== undefined) payload["parallel_tool_calls"] = config.toolChoice.parallel;
     if (config.responseFormat) {
-      if (compat.jsonSchema === "reject" && config.responseFormat.type !== "json_object") {
+      if (compat.jsonSchema === "none") {
+        // The server applies no response_format of either type and answers
+        // 200 with free text (Tinker, live 2026-11-09): MAP-8, never sent to
+        // be ignored.
+        adapt(
+          "config.response_format",
+          "dropped",
+          `this server accepts response_format type ${JSON.stringify(config.responseFormat.type)} and applies no response_format at all; describe the shape in the prompt`,
+          { asked: config.responseFormat as unknown as JsonObject, provider: this.provider },
+        );
+      } else if (compat.jsonSchema === "reject" && config.responseFormat.type !== "json_object") {
         // The server accepts response_format.type=json_schema and ignores it
         // (Z.AI, live 2026-09-03: HTTP 200, fenced JSON with keys the schema
         // never named). json_object is honoured. MAP-13: omit and record.
@@ -541,6 +565,16 @@ export class OpenAIChatLM extends ProviderLM {
           case "reasoning_effort":
             payload["reasoning_effort"] = effort;
             break;
+          case "reasoning_effort_switch":
+            // An on/off switch with no levels (Tinker's Qwen, Kimi K2.6,
+            // Nemotron): a level's nearest value is "on" (MAP-13).
+            adapt("config.reasoning.effort", "substituted", "this model's reasoning is an on/off switch with no levels; reasoning was switched on", {
+              asked: effort,
+              applied: "on",
+              provider: this.provider,
+            });
+            payload["reasoning_effort"] = true;
+            break;
           case "openrouter":
             payload["reasoning"] = { effort };
             break;
@@ -560,8 +594,12 @@ export class OpenAIChatLM extends ProviderLM {
         }
       } else if (reasoning !== undefined) {
         switch (compat.thinkingFormat) {
+          case "reasoning_effort_switch":
+            payload["reasoning_effort"] = false;
+            break;
           case "reasoning_effort":
-            payload["reasoning_effort"] = "none";
+            // The switch's off where `none` is refused (compat reasoningOff "switch").
+            payload["reasoning_effort"] = compat.reasoningOff === "switch" ? false : "none";
             break;
           case "openrouter":
             payload["reasoning"] = { enabled: false };
@@ -876,9 +914,18 @@ export class OpenAIChatLM extends ProviderLM {
   }
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    // MAP-22: a server that returns the stop sequence it stopped at is cut here.
+    return this.cutReturnedStop(request, this.parseResponseBody(request, response));
+  }
+
+  private parseResponseBody(request: Request, response: HttpResponse): Response {
     request = this.wireModelRequest(request);
     return foldJudgments(responseFromChatBody(this.provider, response.json(), { model: request.model }, (code, message) => this.responseError(code, message),
       this.compatFor(request.model).reasoningUsage), request);
+  }
+
+  protected override stopInText(request: Request): "excluded" | "included" {
+    return this.compatFor(this.wireModelRequest(request).model).stopInText;
   }
 
   /**
@@ -1401,6 +1448,7 @@ function ingestReasoning(provider: string, body: JsonObject, compat: ResolvedOpe
     kimi: ["thinking", "reasoning_effort"],
     qwen: ["enable_thinking"],
     qwen_chat_template: ["chat_template_kwargs"],
+    reasoning_effort_switch: ["reasoning_effort"],
     none: [],
   }[compat.thinkingFormat]!.slice();
   if (compat.builtinTools === "groq") spelledBy.push("reasoning_format");
@@ -1411,8 +1459,16 @@ function ingestReasoning(provider: string, body: JsonObject, compat: ResolvedOpe
   }
   let effort: ReasoningEffort | undefined;
   let off = false;
-  if ("reasoning_effort" in body) {
+  if ("reasoning_effort" in body && typeof body["reasoning_effort"] === "boolean") {
+    // The switch's spelling (reasoning_effort_switch; reasoningOff "switch"):
+    // false is off; true has no level to read back.
+    const switchSpelled = compat.thinkingFormat === "reasoning_effort_switch" || (compat.thinkingFormat === "reasoning_effort" && compat.reasoningOff === "switch");
+    if (!switchSpelled) throw ingestRefuse(provider, `reasoning_effort = ${String(body["reasoning_effort"])}`, "this server's reasoning_effort is a word, not a switch");
+    if (body["reasoning_effort"] === false) off = true;
+    else throw ingestRefuse(provider, "reasoning_effort = true", "this switch has no effort level; lm15's dial is a level (MAP-7) — set config.reasoning yourself");
+  } else if ("reasoning_effort" in body) {
     const word = ingestStr(body["reasoning_effort"], "reasoning_effort");
+    if (compat.thinkingFormat === "reasoning_effort_switch") throw ingestRefuse(provider, `reasoning_effort = ${JSON.stringify(word)}`, "this server's reasoning_effort is an on/off switch (true or false)");
     if (word === "none") off = true;
     else effort = word as ReasoningEffort;
   }

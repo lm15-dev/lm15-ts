@@ -16,6 +16,8 @@ import { XaiLM } from "./dialects/xai.ts";
 
 export interface AdapterOptions extends LMOptions {
   readonly baseUrl?: string;
+  /** RouterConfig.baseModels: reaches the Chat Completions dialect only (the one with per-model rules). */
+  readonly baseModels?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -31,7 +33,8 @@ export function adapterFor(provider: string, opts: AdapterOptions = {}): Provide
 }
 
 export function adapterForDefinition(definition: ProviderDefinition, opts: AdapterOptions = {}): ProviderLM {
-  const base: LMOptions = { ...opts };
+  const { baseModels, ...rest } = opts;
+  const base: LMOptions = { ...rest };
   const bound = definition.bound ? { access: definition.access } : {};
   const compat = definition.compat;
   switch (definition.id) {
@@ -46,7 +49,7 @@ export function adapterForDefinition(definition: ProviderDefinition, opts: Adapt
     case "openai-responses":
       return new OpenAILM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | OpenAIResponsesCompat } : {}) });
     case "openai-chat":
-      return new OpenAIChatLM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | OpenAIChatCompat } : {}) });
+      return new OpenAIChatLM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | OpenAIChatCompat } : {}), ...(baseModels !== undefined ? { baseModels } : {}) });
     case "anthropic":
       return new AnthropicLM({ ...base, ...bound, ...(compat !== undefined ? { compat: compat as string | AnthropicCompat } : {}) });
     case "gemini":

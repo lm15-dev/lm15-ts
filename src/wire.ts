@@ -311,14 +311,12 @@ export function modelInfosFromEntries(
     if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue;
     const id = opts.idOf(entry as JsonObject);
     if (typeof id !== "string" || id === "") continue;
-    out.push(
-      ModelInfo.create({
-        id,
-        provider: opts.provider,
-        apiFamily: opts.apiFamily,
-        origin: { type: "provider", providerData: entry as JsonObject },
-      }),
-    );
+    // MAP-23: an entry naming the model it was trained from (Tinker's checkpoints) is a fine-tune.
+    const base = (entry as JsonObject)["base_model"];
+    const origin = typeof base === "string" && base !== "" && base !== id
+      ? { type: "fine-tune", baseModel: base, providerData: entry as JsonObject }
+      : { type: "provider", providerData: entry as JsonObject };
+    out.push(ModelInfo.create({ id, provider: opts.provider, apiFamily: opts.apiFamily, origin }));
   }
   return out;
 }

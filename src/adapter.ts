@@ -19,7 +19,7 @@ import { isJsonObject, parseJson, type JsonObject } from "./json.ts";
 import { getDefaultPlatform, noCloudChain, noStoredCredentials, type Env, type LoadedCredential } from "./platform.ts";
 import { namedMeaning, validateNamedCredential } from "./cloud/identity.ts";
 import { lookup } from "./registry.ts";
-import { applyClientSideStop, truncateStreamAtStopAsync } from "./stop.ts";
+import { applyClientSideStop, stopCuttingReader, truncateStreamAtStopAsync } from "./stop.ts";
 import { coalesceStreamAsync, materializeResponseAsync, parseSseAsync, splitLinesAsync, type SSEEvent } from "./stream.ts";
 import { bufferResponse, getDefaultTransport, type Transport } from "./transport.ts";
 import { looksLikeAccessToken } from "./auth/jwt.ts";
@@ -381,7 +381,8 @@ export abstract class ProviderLM {
   protected wireModelRequest(request: Request): Request {
     request = normalizeRequest(request);
     const colon = request.model.indexOf(":");
-    if (colon > 0 && colon < request.model.length - 1 && request.model.slice(0, colon).replace(/_/g, "-") === this.provider.replace(/_/g, "-")) {
+    // A URI (`tinker://…`: the first ":" followed by "//") is one name, never a prefix (2026-11-09).
+    if (colon > 0 && colon < request.model.length - 1 && !request.model.startsWith("//", colon + 1) && request.model.slice(0, colon).replace(/_/g, "-") === this.provider.replace(/_/g, "-")) {
       return normalizeRequest({ ...request, model: request.model.slice(colon + 1) });
     }
     return request;
@@ -397,7 +398,24 @@ export abstract class ProviderLM {
    * vet shim. The default maps each event on its own.
    */
   streamReader(request: Request): StreamReader {
-    return { feed: (raw) => this.parseStreamEvents(request, raw) };
+    const reader: StreamReader = { feed: (raw) => this.parseStreamEvents(request, raw) };
+    // MAP-22: a server that returns the stop sequence it stopped at.
+    return this.stopReturnedInText(request) ? (stopCuttingReader(reader as never, request.config?.stop ?? []) as unknown as StreamReader) : reader;
+  }
+
+  /** MAP-22: the dialect's stop policy for this request; the dialects' rule by default. */
+  protected stopInText(_request: Request): "excluded" | "included" {
+    return "excluded";
+  }
+
+  /** MAP-22: `Config.stop` is set and the server returns the sequence; the text is cut where replies become canonical. */
+  protected stopReturnedInText(request: Request): boolean {
+    return (request.config?.stop?.length ?? 0) > 0 && this.stopInText(request) === "included";
+  }
+
+  /** MAP-22: cut a parsed reply at the first stop sequence when the server returned it. */
+  protected cutReturnedStop(request: Request, response: Response): Response {
+    return this.stopReturnedInText(request) ? applyClientSideStop(response, request.config?.stop) : response;
   }
 
   normalizeError(status: number, body: string): ProviderError {

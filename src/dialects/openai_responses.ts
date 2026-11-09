@@ -32,6 +32,7 @@ import {
   canonicalErrorCode,
   mapHttpError,
   isPinnedAuthFailure,
+  detailMessage,
   isPinnedModelNotFound,
 } from "../errors.ts";
 import { float, isJsonObject, parseJson, stringifyJson, type JsonObject, type RawNumber } from "../json.ts";
@@ -230,6 +231,8 @@ export class OpenAILM extends ProviderLM {
       const err = isJsonObject(data) ? data["error"] : undefined;
       const e = isJsonObject(err) ? err : {};
       msg = isJsonObject(err) ? str(e["message"]) : err === undefined ? "" : str(err);
+      // MAP-21: FastAPI's {"detail": ...} with no envelope; the detail is the message.
+      if (!msg) msg = detailMessage(data) ?? "";
       const code = isJsonObject(err) ? str(e["code"]) : "";
       const errType = isJsonObject(err) ? str(e["type"]) : "";
       providerCode = code || errType || null;

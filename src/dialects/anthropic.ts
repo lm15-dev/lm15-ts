@@ -31,6 +31,7 @@ import {
   canonicalErrorCode,
   mapHttpError,
   isPinnedAuthFailure,
+  detailMessage,
   isPinnedModelNotFound,
 } from "../errors.ts";
 import { isJsonObject, parseJson, stringifyJson, type JsonObject } from "../json.ts";
@@ -256,6 +257,8 @@ export class AnthropicLM extends ProviderLM {
       const inner = isJsonObject(data) ? data["error"] : undefined;
       const err = isJsonObject(inner) || typeof inner === "string" ? inner : isJsonObject(data) ? data : {};
       msg = isJsonObject(err) ? str(err["message"]) : str(err);
+      // MAP-21: FastAPI's {"detail": ...} (Tinker's Messages door, 401 and 404).
+      if (!msg) msg = detailMessage(data) ?? "";
       errType = isJsonObject(err) ? str(err["type"] || err["code"]) : "";
       requestId = isJsonObject(data) ? str(data["request_id"]) : "";
       // AUTH-10 backend settings: the minimum-version refusal names the setting to change.
@@ -669,6 +672,15 @@ export class AnthropicLM extends ProviderLM {
   // ─── Response ────────────────────────────────────────────────────
 
   parseResponse(request: Request, response: HttpResponse): Response {
+    // MAP-22: a server that returns the stop sequence it stopped at is cut here.
+    return this.cutReturnedStop(request, this.parseResponseBody(request, response));
+  }
+
+  protected override stopInText(_request: Request): "excluded" | "included" {
+    return this.resolvedCompat.stopInText;
+  }
+
+  private parseResponseBody(request: Request, response: HttpResponse): Response {
     request = this.wireModelRequest(request);
     const data = obj(response.json());
     const parts: Part[] = [];

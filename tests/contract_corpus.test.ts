@@ -116,8 +116,9 @@ test("corpus: router/resolution.json", { skip: !present }, () => {
   }
 });
 
-function hostOptions(c: JsonObject): { settings?: Record<string, string>; clock?: () => Date; baseUrl?: string } {
-  const out: { settings?: Record<string, string>; clock?: () => Date; baseUrl?: string } = {};
+function hostOptions(c: JsonObject): { settings?: Record<string, string>; clock?: () => Date; baseUrl?: string; baseModels?: Record<string, string> } {
+  const out: { settings?: Record<string, string>; clock?: () => Date; baseUrl?: string; baseModels?: Record<string, string> } = {};
+  if (isJsonObject(c["base_models"])) out.baseModels = Object.fromEntries(Object.entries(c["base_models"]).map(([k, v]) => [k, String(v)]));
   if (isJsonObject(c["settings"])) out.settings = Object.fromEntries(Object.entries(c["settings"]).map(([k, v]) => [k, String(v)]));
   if (typeof c["now"] === "string") {
     const fixed = parseRfc3339(c["now"]);
@@ -212,7 +213,7 @@ test("corpus: every recorded chat body reads back (MAP-12), lossy cells as pinne
     }
     compare(want, got, ["canonical_request"], new Set(), id);
   }
-  assert.deepEqual([roundTrips, lossy, foreign, refusals], [176, 37, 34, 9], "case counts moved; move CONTRACT_PIN and these constants together");
+  assert.deepEqual([roundTrips, lossy, foreign, refusals], [194, 40, 34, 10], "case counts moved; move CONTRACT_PIN and these constants together");
 });
 
 test("corpus: every canonical request builds the pinned wire request", { skip: !present }, async () => {

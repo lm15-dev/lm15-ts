@@ -145,6 +145,9 @@ export const ProviderDefinition = Object.freeze({
 export function providerTable(declarations: readonly ProviderDefinition[] = []): ReadonlyMap<string, ProviderDefinition> {
   if (!Array.isArray(declarations)) throw new TypeError("RouterConfig providers must be an array of ProviderDefinition values");
   const table = new Map(PROVIDERS);
+  // A registry entry's aliases route like a declared provider's (2026-11-09:
+  // `thinkingmachines` names `tinker`); a declaration cannot take one.
+  for (const d of PROVIDERS.values()) for (const alias of d.aliases ?? []) table.set(alias, d);
   for (const value of declarations) {
     if (!value || typeof value !== "object" || !value.access) throw new TypeError("RouterConfig providers must contain ProviderDefinition values");
     const definition = define(value);

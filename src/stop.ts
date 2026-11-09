@@ -178,6 +178,29 @@ export class StopCutter {
   }
 }
 
+/**
+ * MAP-22: the stream reader of a server that stops at a stop sequence and
+ * returns it in the text. Text is cut at the first sequence; text after the
+ * cut is dropped; every other event (usage, the end) passes, because the
+ * server has already stopped.
+ */
+export function stopCuttingReader(inner: { feed(raw: never): StreamEvent[] }, stop: readonly string[]): { feed(raw: never): StreamEvent[] } {
+  const cutter = new StopCutter(stop);
+  return {
+    feed(raw) {
+      const out: StreamEvent[] = [];
+      for (const event of inner.feed(raw)) {
+        if (cutter.cut) {
+          if (!isTextDelta(event)) out.push(event);
+          continue;
+        }
+        out.push(...cutter.step(event));
+      }
+      return out;
+    },
+  };
+}
+
 const CUT_END: StreamEvent = StreamEventNs.create({ type: "end", finishReason: "stop" });
 
 export function* truncateStreamAtStop(events: Iterable<StreamEvent>, stop: readonly string[] | undefined): Generator<StreamEvent> {

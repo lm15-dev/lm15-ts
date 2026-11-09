@@ -65,9 +65,19 @@ function baseUrlOf(msg: JsonObject): string | undefined {
   return b === null || b === undefined ? undefined : String(b);
 }
 
+/** PROTOCOL.md `base_models` (2026-11-09): a fine-tune's base model, by model id. */
+function baseModelsOf(msg: JsonObject): Record<string, string> | undefined {
+  const base = msg["base_models"];
+  if (!isJsonObject(base)) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(base)) out[k] = String(v);
+  return out;
+}
+
 function adapter(msg: JsonObject, opts: { parseOnly?: boolean } = {}): ProviderLM {
   const provider = String(msg["provider"]);
   const settings = settingsOf(msg);
+  const baseModels = baseModelsOf(msg);
   const clock = clockOf(msg);
   const baseUrl = baseUrlOf(msg);
   return adapterFor(provider, {
@@ -75,6 +85,7 @@ function adapter(msg: JsonObject, opts: { parseOnly?: boolean } = {}): ProviderL
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(settings ? { settings } : {}),
     ...(clock ? { clock } : {}),
+    ...(baseModels ? { baseModels } : {}),
     ...(provider.replace(/_/g, "-") === "openai-codex" ? { accountId: "test-account" } : {}),
   });
 }

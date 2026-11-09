@@ -92,7 +92,14 @@ export function mergeOpenAIResponsesCompat(base: OpenAIResponsesCompat, override
 
 // ─── OpenAI Chat Completions ─────────────────────────────────────────
 
-export type ChatThinkingFormat = "none" | "reasoning_effort" | "openrouter" | "deepseek" | "kimi" | "qwen" | "qwen_chat_template";
+/**
+ * "reasoning_effort_switch": `reasoning_effort` is an on/off switch, `true` or
+ * `false`, with no levels (Tinker's Qwen 3/3.5/3.6, Kimi K2.6, Nemotron; live
+ * 2026-11-09). Off is `false`; an effort word is `true`, recorded as substituted.
+ */
+export type ChatThinkingFormat = "none" | "reasoning_effort" | "openrouter" | "deepseek" | "kimi" | "qwen" | "qwen_chat_template" | "reasoning_effort_switch";
+/** MAP-22: whether the server returns the stop sequence it stopped at ("included": lm15 cuts it). */
+export type StopInText = "excluded" | "included";
 
 export interface OpenAIChatCompat {
   readonly instructionRole?: Auto<"developer" | "system">;
@@ -109,7 +116,8 @@ export interface OpenAIChatCompat {
   readonly cacheControl?: Auto<"none" | "openai" | "openai_implicit" | "anthropic">;
   readonly userField?: Auto<"user" | "user_id" | "safety_identifier">;
   readonly forcedToolChoice?: Auto<"send" | "reject">;
-  readonly jsonSchema?: Auto<"send" | "reject">;
+  /** "none": the server applies no response_format at all (Tinker): either type is dropped and recorded. */
+  readonly jsonSchema?: Auto<"send" | "reject" | "none">;
   /**
    * MAP-14 §4: can the server score named tokens (`logprob_token_ids` on the
    * completions endpoint) so lm15 can deliver a distribution over declared
@@ -125,8 +133,10 @@ export interface OpenAIChatCompat {
    * server that accepts the off word and reasons anyway: the lowest level
    * (`reasoningEfforts[0]`, else "low") is sent and the substitution recorded
    * (MAP-13 §4.2). Ratified 2026-09-26 (changes/2026-09-26-inference-hosts-live.md).
+   * "switch" (2026-11-09): off is `reasoning_effort: false` under the
+   * `reasoning_effort` format (Tinker's Qwen 3.8, DeepSeek V4.1 refuse `none`).
    */
-  readonly reasoningOff?: Auto<"send" | "lowest">;
+  readonly reasoningOff?: Auto<"send" | "lowest" | "switch">;
   /**
    * MAP-19: how the server counts reasoning in its usage. "in_completion" (the
    * dialect's rule): `completion_tokens` already includes it. "separate": it is
@@ -134,6 +144,8 @@ export interface OpenAIChatCompat {
    * Usage only; nothing on the request changes.
    */
   readonly reasoningUsage?: Auto<"in_completion" | "separate">;
+  /** MAP-22: "included" when the server returns the matched stop sequence; lm15 cuts it. */
+  readonly stopInText?: Auto<StopInText>;
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
   /** `(model-id prefix, knobs)`; the first matching prefix wins. */
@@ -155,10 +167,11 @@ export interface ResolvedOpenAIChatCompat {
   readonly cacheControl: "none" | "openai" | "openai_implicit" | "anthropic";
   readonly userField: "user" | "user_id" | "safety_identifier";
   readonly forcedToolChoice: "send" | "reject";
-  readonly jsonSchema: "send" | "reject";
+  readonly jsonSchema: "send" | "reject" | "none";
   readonly tokenScoring: "none" | "logprob_token_ids";
-  readonly reasoningOff: "send" | "lowest";
+  readonly reasoningOff: "send" | "lowest" | "switch";
   readonly reasoningUsage: "in_completion" | "separate";
+  readonly stopInText: StopInText;
   readonly reasoningEfforts?: readonly string[];
   readonly routing?: JsonObject;
   readonly extensions?: JsonObject;
@@ -189,18 +202,25 @@ export function resolveOpenAIChatCompat(partial: OpenAIChatCompat = {}): Resolve
     tokenScoring: pick(partial.tokenScoring, "none"),
     reasoningOff: pick(partial.reasoningOff, "send"),
     reasoningUsage: pick(partial.reasoningUsage, "in_completion"),
+    stopInText: pick(partial.stopInText, "excluded"),
     ...(partial.reasoningEfforts ? { reasoningEfforts: partial.reasoningEfforts } : {}),
     ...(partial.routing ? { routing: partial.routing } : {}),
     ...(partial.extensions ? { extensions: partial.extensions } : {}),
   };
 }
 
-/** This compat with the first matching `modelOverrides` entry applied. */
-export function chatCompatForModel(compat: OpenAIChatCompat, model: string): OpenAIChatCompat {
-  for (const [prefix, knobs] of compat.modelOverrides ?? []) {
-    if (model.startsWith(prefix)) {
-      const { modelOverrides: _drop, ...rest } = compat;
-      return { ...rest, ...knobs };
+/**
+ * This compat with the first matching `modelOverrides` entry applied. A
+ * fine-tune whose own id matches no entry follows its declared base model's
+ * entry (`baseModel`, from `RouterConfig.baseModels`; 2026-11-09).
+ */
+export function chatCompatForModel(compat: OpenAIChatCompat, model: string, baseModel?: string): OpenAIChatCompat {
+  for (const name of baseModel ? [model, baseModel] : [model]) {
+    for (const [prefix, knobs] of compat.modelOverrides ?? []) {
+      if (name.startsWith(prefix)) {
+        const { modelOverrides: _drop, ...rest } = compat;
+        return { ...rest, ...knobs };
+      }
     }
   }
   return compat;
@@ -222,6 +242,8 @@ export interface AnthropicCompat {
   readonly samplingParams?: Auto<"send" | "reject">;
   readonly toolResultMedia?: Auto<ToolResultMedia>;
   readonly reasoningEfforts?: readonly string[];
+  /** MAP-22: "included" when the server returns the matched stop sequence; lm15 cuts it. */
+  readonly stopInText?: Auto<StopInText>;
   /** Refuse, before the wire, a model id not starting with one of these. */
   readonly modelPrefixes?: readonly string[];
   readonly extensions?: JsonObject;
@@ -235,6 +257,7 @@ export interface ResolvedAnthropicCompat {
   readonly parallelToolCalls: "send" | "reject";
   readonly samplingParams: "send" | "reject";
   readonly toolResultMedia: ToolResultMedia;
+  readonly stopInText: StopInText;
   readonly reasoningEfforts?: readonly string[];
   readonly modelPrefixes?: readonly string[];
   readonly extensions?: JsonObject;
@@ -251,6 +274,7 @@ export function resolveAnthropicCompat(partial: AnthropicCompat = {}): ResolvedA
     parallelToolCalls: pick(partial.parallelToolCalls, "send"),
     samplingParams: pick(partial.samplingParams, "send"),
     toolResultMedia: pick(partial.toolResultMedia, "native"),
+    stopInText: pick(partial.stopInText, "excluded"),
     ...(partial.reasoningEfforts ? { reasoningEfforts: partial.reasoningEfforts } : {}),
     ...(partial.modelPrefixes ? { modelPrefixes: partial.modelPrefixes } : {}),
     ...(partial.extensions ? { extensions: partial.extensions } : {}),
@@ -347,11 +371,12 @@ export function validateCompat(dialect: string, compat: unknown): void {
     "openai-chat": {
       instructionRole: ["developer", "system"], maxTokensField: ["max_completion_tokens", "max_tokens"],
       streamUsage: ["include", "omit"], toolResultName: ["include", "omit"], assistantAfterToolResult: ["insert", "omit"],
-      thinkingFormat: ["none", "reasoning_effort", "openrouter", "deepseek", "kimi", "qwen", "qwen_chat_template"],
+      thinkingFormat: ["none", "reasoning_effort", "openrouter", "deepseek", "kimi", "qwen", "qwen_chat_template", "reasoning_effort_switch"],
       thinkingReplay: ["native", "as_text", "omit"], assistantReasoningContent: ["include_empty", "omit"],
       strictTools: ["include", "omit"], builtinTools: ["reject", "groq"], cacheControl: ["none", "openai", "openai_implicit", "anthropic"],
-      userField: ["user", "user_id", "safety_identifier"], forcedToolChoice: ["send", "reject"], jsonSchema: ["send", "reject"],
-      tokenScoring: ["none", "logprob_token_ids"], reasoningOff: ["send", "lowest"], reasoningUsage: ["in_completion", "separate"],
+      userField: ["user", "user_id", "safety_identifier"], forcedToolChoice: ["send", "reject"], jsonSchema: ["send", "reject", "none"],
+      tokenScoring: ["none", "logprob_token_ids"], reasoningOff: ["send", "lowest", "switch"], reasoningUsage: ["in_completion", "separate"],
+      stopInText: ["excluded", "included"],
     },
     "openai-responses": {
       developerRole: ["developer", "system"], maxOutputTokensField: ["max_output_tokens", "max_completion_tokens", "max_tokens"],
@@ -362,6 +387,7 @@ export function validateCompat(dialect: string, compat: unknown): void {
     anthropic: {
       thinkingFormat: ["anthropic", "deepseek", "adaptive", "effort"], thinkingReplay: ["signed", "unsigned"],
       cacheControl: ["anthropic", "none"], structuredOutput: ["send", "reject"], parallelToolCalls: ["send", "reject"], samplingParams: ["send", "reject"],
+      stopInText: ["excluded", "included"],
     },
   };
   const allowed = fields[dialect];
