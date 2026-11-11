@@ -367,8 +367,10 @@ export class GeminiLM extends ProviderLM {
 
   /** `functionResponse` (MAP-10): text in `response.result`, media under `parts[]`, the name resolved from the transcript. */
   protected functionResponse(part: ToolResultPart, names: ReadonlyMap<string, string>): JsonObject {
-    const textParts = part.content.filter((p) => !MEDIA_KINDS.has(p.type));
     const mediaParts = part.content.filter((p) => MEDIA_KINDS.has(p.type));
+    // MAP-24: beside media, an empty text part writes nothing (the media is the result); alone, it is the
+    // empty output and is written.
+    const textParts = part.content.filter((p) => !MEDIA_KINDS.has(p.type) && !(mediaParts.length > 0 && p.type === "text" && p.text === ""));
     for (const p of mediaParts) {
       if (p.type !== "image" && p.type !== "document") {
         throw new UnsupportedFeatureError(
@@ -436,9 +438,42 @@ export class GeminiLM extends ProviderLM {
     }
   }
 
-  protected message(msg: Message, names: ReadonlyMap<string, string> = new Map()): JsonObject {
-    if (msg.role === "developer") return { role: "user", parts: [{ text: `[developer]\n${partsToText(msg.parts, { provider: this.provider, where: "a developer turn" })}` }] };
-    return { role: msg.role === "assistant" ? "model" : "user", parts: msg.parts.map((p) => this.part(p, names)) };
+  /**
+   * MAP-24 on this wire: a part that is only `{"text": ""}`. One that also carries a `thoughtSignature` is
+   * state this dialect consumes and goes back as the model sent it.
+   */
+  protected static writesNothing(wirePart: JsonObject): boolean {
+    return wirePart["text"] === "" && !("thoughtSignature" in wirePart) && Object.keys(wirePart).every((k) => k === "text" || k === "thought");
+  }
+
+  /**
+   * One content, or undefined when it has nothing to write (MAP-24): a content with no parts is refused
+   * ("must include at least one parts field", live 2026-11-11), so a message whose parts all write
+   * nothing is not written.
+   */
+  protected message(msg: Message, names: ReadonlyMap<string, string> = new Map()): JsonObject | undefined {
+    if (msg.role === "developer") {
+      const text = partsToText(msg.parts, { provider: this.provider, where: "a developer turn" });
+      return text ? { role: "user", parts: [{ text: `[developer]\n${text}` }] } : undefined;
+    }
+    const parts = msg.parts.map((p) => this.part(p, names)).filter((w) => !GeminiLM.writesNothing(w));
+    return parts.length > 0 ? { role: msg.role === "assistant" ? "model" : "user", parts } : undefined;
+  }
+
+  /** The messages that have something to write, in order (MAP-24). */
+  protected contents(messages: readonly Message[], names: ReadonlyMap<string, string> = new Map()): JsonObject[] {
+    const out: JsonObject[] = [];
+    for (const m of messages) {
+      const wire = this.message(m, names);
+      if (wire !== undefined) out.push(wire);
+    }
+    return out;
+  }
+
+  /** `systemInstruction`, or undefined for a system prompt with no characters (MAP-24). */
+  protected static systemInstruction(system: string | readonly Part[]): JsonObject | undefined {
+    const text = typeof system === "string" ? system : partsToText(system);
+    return text ? { parts: [{ text }] } : undefined;
   }
 
   /** tool_call id → function name over the transcript (MAP-10 rule 6). */
@@ -509,11 +544,10 @@ export class GeminiLM extends ProviderLM {
     if (resource !== undefined && wireMessages.length === 0) throw new ValueError("gemini: a request against a stored cache needs at least one message after the prefix");
 
     const names = GeminiLM.callNames(request.messages);
-    const payload: JsonObject = { contents: wireMessages.map((m) => this.message(m, names)) };
+    const payload: JsonObject = { contents: this.contents(wireMessages, names) };
     if (resource !== undefined) payload["cachedContent"] = GeminiLM.cacheResource(resource);
-    if (request.system && resource === undefined) {
-      payload["systemInstruction"] = { parts: [{ text: typeof request.system === "string" ? request.system : partsToText(request.system) }] };
-    }
+    const instruction = request.system && resource === undefined ? GeminiLM.systemInstruction(request.system) : undefined;
+    if (instruction !== undefined) payload["systemInstruction"] = instruction;
 
     const gen: JsonObject = {};
     if (config.temperature !== undefined) gen["temperature"] = config.temperature; // proto3-JSON: integral doubles as integer digits
@@ -785,7 +819,8 @@ export class GeminiLM extends ProviderLM {
 
   liveSetupPayload(config: LiveConfig): JsonObject {
     const setup: JsonObject = { model: this.modelPath(config.model) };
-    if (config.system) setup["systemInstruction"] = { parts: [{ text: typeof config.system === "string" ? config.system : partsToText(config.system) }] };
+    const liveInstruction = config.system ? GeminiLM.systemInstruction(config.system) : undefined;
+    if (liveInstruction !== undefined) setup["systemInstruction"] = liveInstruction;
     const functionTools = (config.tools ?? [])
       .filter((t) => t.type === "function")
       .map(geminiFunctionDeclaration);
@@ -988,8 +1023,9 @@ export class GeminiLM extends ProviderLM {
 
   override cacheCreateRequest(prefix: Request, ttlSeconds?: number, label?: string): Promise<TransportRequest> {
     const names = GeminiLM.callNames(prefix.messages);
-    const body: JsonObject = { model: this.modelPath(prefix.model), contents: prefix.messages.map((m) => this.message(m, names)) };
-    if (prefix.system) body["systemInstruction"] = { parts: [{ text: typeof prefix.system === "string" ? prefix.system : partsToText(prefix.system) }] };
+    const body: JsonObject = { model: this.modelPath(prefix.model), contents: this.contents(prefix.messages, names) };
+    const prefixInstruction = prefix.system ? GeminiLM.systemInstruction(prefix.system) : undefined;
+    if (prefixInstruction !== undefined) body["systemInstruction"] = prefixInstruction;
     if (prefix.tools && prefix.tools.length > 0) {
       const declarations = prefix.tools
         .filter((t) => t.type === "function")

@@ -153,6 +153,19 @@ export const MEDIA_KINDS: ReadonlySet<string> = new Set(["image", "audio", "vide
  * Text rendering for wire fields that take text only. A media part RAISES
  * (MAP-10 rule 2): no caption, no type name, no placeholder.
  */
+/**
+ * MAP-24: a wire block that is text with no characters, in the three typed
+ * spellings (Messages and Chat Completions `text`, Responses `input_text` /
+ * `output_text`). No wire is sent one: a part whose block is this writes
+ * nothing, and a message left with nothing is not written. (A Gemini part
+ * has no `type`; its builder decides.)
+ */
+export function isEmptyTextBlock(block: unknown): boolean {
+  if (typeof block !== "object" || block === null || Array.isArray(block)) return false;
+  const b = block as Record<string, unknown>;
+  return (b["type"] === "text" || b["type"] === "input_text" || b["type"] === "output_text") && b["text"] === "";
+}
+
 export function partsToText(parts: readonly Part[], opts: { provider?: string; where?: string } = {}): string {
   const out: string[] = [];
   for (const part of parts) {
@@ -163,8 +176,9 @@ export function partsToText(parts: readonly Part[], opts: { provider?: string; w
         { provider: opts.provider ?? null },
       );
     }
-    if (part.type === "text") out.push(part.text);
-    else if (part.type === "data") out.push(dataPartText(part));
+    if (part.type === "text") {
+      if (part.text) out.push(part.text); // MAP-24: an empty text part writes nothing, a joining newline included
+    } else if (part.type === "data") out.push(dataPartText(part));
     else if (part.type === "thinking" && part.text) out.push(part.text);
     else if (part.type === "citation") {
       const bits = [part.title, part.url, part.text].filter((x): x is string => Boolean(x));

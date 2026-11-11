@@ -47,6 +47,7 @@ import {
   HttpResponse,
   MEDIA_KINDS,
   checkToolResultMedia,
+  isEmptyTextBlock,
   isoUtc,
   dataPartText,
   mediaBase64,
@@ -310,9 +311,12 @@ export class AnthropicLM extends ProviderLM {
         return { type: "tool_use", id: part.id, name: part.name, input: part.input };
       case "tool_result": {
         checkToolResultMedia(this.provider, part, this.resolvedCompat.toolResultMedia, "a tool_result block");
-        const blocks = part.content.map((p) => this.toolResultContent(p));
+        // MAP-24: an empty text block is never written, in a result either; the result itself always is,
+        // and one with no other block keeps its empty output as the string "" (INV-014).
+        const blocks = part.content.map((p) => this.toolResultContent(p)).filter((b) => !isEmptyTextBlock(b));
         const out: JsonObject = { type: "tool_result", tool_use_id: part.id };
-        if (blocks.length > 0) out["content"] = blocks.length === 1 && blocks[0]!["type"] === "text" ? blocks[0]!["text"]! : blocks;
+        if (blocks.length === 0) out["content"] = "";
+        else out["content"] = blocks.length === 1 && blocks[0]!["type"] === "text" ? blocks[0]!["text"]! : blocks;
         if (part.isError) out["is_error"] = true;
         return out;
       }
@@ -322,6 +326,8 @@ export class AnthropicLM extends ProviderLM {
         const signature = continuationData(part, "anthropic", "thinking_signature");
         if (signature && signature["signature"]) return { type: "thinking", thinking: part.text, signature: signature["signature"] };
         if (this.resolvedCompat.thinkingReplay === "unsigned" && part.text) return { type: "thinking", thinking: part.text };
+        // No state this dialect consumes (none, or another dialect's: MAP-7 rule 8): the thinking is replayed
+        // as text. With no text this is an empty block, which message() leaves out (MAP-24).
         return { type: "text", text: part.text };
       }
       default:
@@ -343,10 +349,21 @@ export class AnthropicLM extends ProviderLM {
     return { type: "text", text: partsToText([part], { provider: this.provider }) };
   }
 
-  protected message(msg: Message): JsonObject {
+  /**
+   * One message, or undefined when it has nothing to write (MAP-24): the Messages API refuses a text block
+   * with no characters (`minLength: 1`; HTTP 400 "text content blocks must be non-empty", live 2026-11-11),
+   * so a part whose block is one writes nothing (a hidden thinking part carrying another dialect's state,
+   * an empty text part, a citation with no quoted text), and a message left with no block is not written.
+   * Consecutive turns of one role are combined by the server (messages--create.md).
+   */
+  protected message(msg: Message): JsonObject | undefined {
     const role = msg.role === "assistant" ? "assistant" : "user";
-    let parts = msg.parts.map((p) => this.part(p));
-    if (msg.role === "developer") parts = [{ type: "text", text: `[developer]\n${partsToText(msg.parts)}` }];
+    let parts = msg.parts.map((p) => this.part(p)).filter((b) => !isEmptyTextBlock(b));
+    if (msg.role === "developer") {
+      const text = partsToText(msg.parts);
+      parts = text ? [{ type: "text", text: `[developer]\n${text}` }] : [];
+    }
+    if (parts.length === 0) return undefined;
     return { role, content: parts };
   }
 
@@ -398,7 +415,15 @@ export class AnthropicLM extends ProviderLM {
     const cache = config.cache;
     const useCache = cache !== undefined && cache.mode !== "off" && compat.cacheControl === "anthropic";
     const longCache = cache !== undefined && cache.retention === "long" && compat.cacheControl === "anthropic";
-    const messages = request.messages.map((m) => this.message(m));
+    // MAP-24: a message with nothing to write is left out. `written` keeps each wire message's place in the
+    // caller's list, so a cache mark asked for by message index lands on the message the caller meant (or
+    // the last one written before it).
+    const written: [number, JsonObject][] = [];
+    request.messages.forEach((m, i) => {
+      const wire = this.message(m);
+      if (wire !== undefined) written.push([i, wire]);
+    });
+    const messages = written.map(([, wire]) => wire);
 
     if (cache !== undefined && cache.key !== undefined) {
       // MAP-13: a best-effort routing hint by definition; no home on this wire, whether or not the server takes marks.
@@ -424,7 +449,10 @@ export class AnthropicLM extends ProviderLM {
         });
       }
       let idx: number | undefined;
-      if (cache.prefixUntilIndex !== undefined) idx = Math.min(cache.prefixUntilIndex, messages.length - 1);
+      if (cache.prefixUntilIndex !== undefined) {
+        const until = Math.min(cache.prefixUntilIndex, request.messages.length - 1);
+        idx = written.filter(([i]) => i <= until).length - 1;
+      }
       else if (cache.prefix === "history") idx = messages.length - 1;
       if (idx !== undefined && idx >= 0) {
         const content = messages[idx]!["content"];
@@ -521,8 +549,9 @@ export class AnthropicLM extends ProviderLM {
       max_tokens: thinkingBudget === undefined ? visible : thinkingBudget + visible,
     };
 
-    if (request.system) {
-      const systemText = typeof request.system === "string" ? request.system : partsToText(request.system);
+    const systemText = request.system ? (typeof request.system === "string" ? request.system : partsToText(request.system)) : "";
+    if (systemText) {
+      // MAP-24: a system prompt with no characters writes nothing.
       if (useCache) {
         const marker: JsonObject = { type: "ephemeral" };
         if (longCache) marker["ttl"] = "1h";

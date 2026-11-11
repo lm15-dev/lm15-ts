@@ -78,6 +78,8 @@ import {
   readFileBytes,
   type TransportRequest,
   checkMessageMedia,
+  dataPartText,
+  isEmptyTextBlock,
 } from "../wire.ts";
 import { decodeBase64 } from "../types/validate.ts";
 import {
@@ -293,8 +295,13 @@ export class OpenAILM extends ProviderLM {
       let contentParts: JsonObject[] = [];
       if (msg.role === "assistant") {
         for (const part of msg.parts) {
-          if (part.type === "text") contentParts.push({ type: "output_text", text: part.text });
-          else if (part.type === "refusal") contentParts.push({ type: "refusal", refusal: part.text });
+          if (part.type === "text") {
+            if (part.text) contentParts.push({ type: "output_text", text: part.text }); // MAP-24: an empty text block is never written
+          } else if (part.type === "data") {
+            // An assistant data part (a judged answer kept in the history) is its compact JSON on a text
+            // slot, as on every wire (changes/2026-09-19-jev-state.md D3). It was dropped here until 2026-11-11.
+            contentParts.push({ type: "output_text", text: dataPartText(part) });
+          } else if (part.type === "refusal") contentParts.push({ type: "refusal", refusal: part.text });
           else if (part.type === "thinking") {
             const state = continuationData(part, "openai", "reasoning_item");
             if (state) {
@@ -303,11 +310,18 @@ export class OpenAILM extends ProviderLM {
               if (state["encrypted_content"] !== undefined) item["encrypted_content"] = state["encrypted_content"];
               item["summary"] = part.text ? [{ type: "summary_text", text: part.text }] : [];
               items.push(item);
-            } else if (part.text) contentParts.push({ type: "output_text", text: part.text });
+            } else if (part.text) {
+              // No state this dialect consumes (none, or another dialect's: MAP-7 rule 8): replayed as
+              // assistant text (decision G); with no text there is nothing to write (MAP-24).
+              contentParts.push({ type: "output_text", text: part.text });
+            }
           }
         }
       } else {
-        contentParts = msg.parts.filter((p) => p.type !== "tool_call" && p.type !== "tool_result").map((p) => partToOpenAIInput(p, this.provider));
+        contentParts = msg.parts
+          .filter((p) => p.type !== "tool_call" && p.type !== "tool_result")
+          .map((p) => partToOpenAIInput(p, this.provider))
+          .filter((b) => !isEmptyTextBlock(b)); // MAP-24
       }
       if (msgIndex === breakpointIndex) {
         const last = contentParts[contentParts.length - 1];
@@ -356,8 +370,9 @@ export class OpenAILM extends ProviderLM {
     const config = request.config ?? {};
     const input = this.buildInput(request.messages, compat, cacheBreakpointIndex(request, compat.cacheControl));
     const payload: JsonObject = { model: request.model, input, stream };
-    if (request.system) {
-      const systemText = typeof request.system === "string" ? request.system : partsToText(request.system);
+    const systemText = request.system ? (typeof request.system === "string" ? request.system : partsToText(request.system)) : "";
+    if (systemText) {
+      // MAP-24: a system prompt with no characters writes nothing.
       if (cacheStablePrefix(request, compat.cacheControl)) {
         input.unshift({ role: compat.developerRole, content: [{ type: "input_text", text: systemText, prompt_cache_breakpoint: { mode: "explicit" } }] });
       } else payload["instructions"] = systemText;

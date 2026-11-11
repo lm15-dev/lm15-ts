@@ -95,6 +95,7 @@ import {
   unnamedToolCallError,
   type TransportRequest,
   checkMessageMedia,
+  isEmptyTextBlock,
 } from "../wire.ts";
 import { wireFloat } from "./openai_responses.ts";
 import {
@@ -144,7 +145,8 @@ function chatImageBlock(part: ImagePart, provider: string): JsonObject {
 
 /** Non-assistant message parts → chat content: a string for one text part, else an array (MAP-10 raises for no-slot parts). */
 function chatContentParts(msg: Message, provider: string, forceArray: boolean): string | JsonObject[] {
-  const parts = msg.parts.filter((p) => p.type !== "tool_call" && p.type !== "tool_result");
+  // MAP-24: an empty text part writes nothing, so it does not turn a lone text part's string into the array form either.
+  const parts = msg.parts.filter((p) => p.type !== "tool_call" && p.type !== "tool_result" && !(p.type === "text" && p.text === ""));
   if (parts.length === 1 && parts[0]!.type === "text" && !forceArray) return (parts[0] as { text: string }).text;
   if (parts.length === 1 && parts[0]!.type === "data" && !forceArray) return dataPartText(parts[0] as DataPart); // D3: the same string form as a lone text part
   const out: JsonObject[] = [];
@@ -157,7 +159,10 @@ function chatContentParts(msg: Message, provider: string, forceArray: boolean): 
         `${provider}: a ${part.type} part in a ${msg.role} message has no slot on the Chat Completions wire (text and image_url only); the OpenAI Responses, Anthropic and Gemini dialects carry it (MAP-10)`,
         { provider, feature: `messages[*].parts[${part.type}]` },
       );
-    } else out.push({ type: "text", text: partsToText([part], { provider }) });
+    } else {
+      const block: JsonObject = { type: "text", text: partsToText([part], { provider }) };
+      if (!isEmptyTextBlock(block)) out.push(block); // MAP-24 (a citation with nothing to say)
+    }
   }
   return out;
 }
@@ -168,7 +173,10 @@ function toolRowContent(provider: string, part: ToolResultPart, policy: string):
   if (part.content.every((p) => !MEDIA_KINDS.has(p.type))) {
     return toolResultErrorText(part, partsToText(part.content, { provider, where: "a Chat Completions tool row" }));
   }
-  const blocks: JsonObject[] = part.content.map((p) => (p.type === "image" ? chatImageBlock(p, provider) : { type: "text", text: partsToText([p], { provider }) }));
+  // MAP-24: the row is written, its empty text block is not.
+  const blocks: JsonObject[] = part.content
+    .map((p): JsonObject => (p.type === "image" ? chatImageBlock(p, provider) : { type: "text", text: partsToText([p], { provider }) }))
+    .filter((b) => !isEmptyTextBlock(b));
   if (part.isError) {
     const first = blocks.find((b) => b["type"] === "text");
     if (!first) blocks.unshift({ type: "text", text: "[error]" });
@@ -290,8 +298,9 @@ export class OpenAIChatLM extends ProviderLM {
 
   protected buildMessages(request: Request, compat: ResolvedOpenAIChatCompat): JsonObject[] {
     const messages: JsonObject[] = [];
-    if (request.system) {
-      const systemText = typeof request.system === "string" ? request.system : partsToText(request.system);
+    const systemText = request.system ? (typeof request.system === "string" ? request.system : partsToText(request.system)) : "";
+    if (systemText) {
+      // MAP-24: a system prompt with no characters writes nothing.
       if (cacheStablePrefix(request, compat.cacheControl)) {
         messages.push({ role: compat.instructionRole, content: [{ type: "text", text: systemText, prompt_cache_breakpoint: { mode: "explicit" } }] });
       } else messages.push({ role: compat.instructionRole, content: systemText });
@@ -311,8 +320,13 @@ export class OpenAIChatLM extends ProviderLM {
       if (msg.role === "assistant") {
         const textBits: string[] = [];
         for (const part of msg.parts) {
-          if (part.type === "text") textBits.push(part.text);
-          else if (part.type === "refusal" && part.text) textBits.push(part.text);
+          if (part.type === "text") {
+            if (part.text) textBits.push(part.text); // MAP-24: no empty text, and no newline joining one
+          } else if (part.type === "data") {
+            // An assistant data part is its compact JSON on a text slot, as on every wire
+            // (changes/2026-09-19-jev-state.md D3). It was dropped here until 2026-11-11.
+            textBits.push(dataPartText(part));
+          } else if (part.type === "refusal" && part.text) textBits.push(part.text);
           else if (part.type === "thinking" && compat.thinkingReplay === "as_text" && part.text) textBits.push(part.text);
         }
         const toolCalls = msg.parts
@@ -327,6 +341,10 @@ export class OpenAIChatLM extends ProviderLM {
           if (thinking || compat.assistantReasoningContent === "include_empty") item["reasoning_content"] = thinking;
         }
         if (toolCalls.length > 0) item["tool_calls"] = toolCalls;
+        // MAP-24: a row with no content, no call and no reasoning has nothing to write and is refused where
+        // the server checks ("content or tool_calls must be set", DeepSeek; "must not be empty", Moonshot;
+        // live 2026-11-11).
+        if (item["content"] === null && toolCalls.length === 0 && !item["reasoning_content"]) return;
         messages.push(item);
         return;
       }
@@ -338,7 +356,7 @@ export class OpenAIChatLM extends ProviderLM {
         if (!last || last["type"] !== "text") throw breakpointUnsupported(this.provider, msgIndex, msg.role);
         last["prompt_cache_breakpoint"] = { mode: "explicit" };
       }
-      if (content === "" || (typeof content === "string" ? content.length > 0 : content.length > 0)) messages.push({ role, content });
+      if (content.length > 0) messages.push({ role, content }); // MAP-24: a message with nothing to write is not written
     });
     return messages;
   }

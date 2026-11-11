@@ -24,7 +24,7 @@ import type { Request, ResponseFormat } from "../types/config.ts";
 import type { Message, Part, ToolResultPart } from "../types/parts.ts";
 import { ErrorDetail, settleUsage, type Usage } from "../types/response.ts";
 import { optionalInt } from "../types/validate.ts";
-import { MEDIA_KINDS, checkToolResultMedia, dataPartText, mediaBase64, mediaDataUri, partsToText, toolResultErrorText } from "../wire.ts";
+import { MEDIA_KINDS, checkToolResultMedia, dataPartText, isEmptyTextBlock, mediaBase64, mediaDataUri, partsToText, toolResultErrorText } from "../wire.ts";
 
 export type ProviderErrorClass = new (message: string, meta?: never) => ProviderError;
 
@@ -301,7 +301,8 @@ export function toolResultOutputOpenAI(provider: string, part: ToolResultPart, p
   if (part.content.every((p) => !MEDIA_KINDS.has(p.type))) {
     return toolResultErrorText(part, partsToText(part.content, { provider, where: "function_call_output" }));
   }
-  const blocks = part.content.map((p) => partToOpenAIInput(p, provider));
+  // MAP-24: the result is written, its empty text block is not.
+  const blocks = part.content.map((p) => partToOpenAIInput(p, provider)).filter((b) => !isEmptyTextBlock(b));
   if (part.isError) {
     const first = blocks.find((b) => b["type"] === "input_text");
     if (!first) blocks.unshift({ type: "input_text", text: "[error]" });
