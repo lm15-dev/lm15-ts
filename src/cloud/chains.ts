@@ -1005,12 +1005,107 @@ async function gcpImpersonate(ctx: ChainContext, source: BearerToken, url: strin
   return new BearerToken(str(token), data["expireTime"] ? parseRfc3339(str(data["expireTime"])) : undefined);
 }
 
+/** The verification URL of an AWS `credential_source`, checked as google-auth checks it. */
+function gcpAwsSource(source: JsonObject, where: string): string {
+  const m = /^aws(\d+)$/.exec(str(source["environment_id"]));
+  const url = str(source["regional_cred_verification_url"]);
+  if (!m || !url) throw new NotConfiguredError(`${where}: an AWS credential_source needs environment_id "aws1" and regional_cred_verification_url`);
+  if (Number(m[1]) !== 1) throw new NotConfiguredError(`${where}: AWS credential_source version ${m[1]} is not supported (only aws1)`);
+  return url;
+}
+
+/** IMDSv2's session header when the source names its token URL (google-auth: TTL 300), else none; asked for once. */
+function gcpAwsImdsSession(ctx: ChainContext, source: JsonObject, where: string): () => Promise<Record<string, string>> {
+  let got: Promise<Record<string, string>> | undefined;
+  return () => (got ??= (async () => {
+    const url = str(source["imdsv2_session_token_url"]);
+    if (!url || !ctx.http) return {};
+    const [status, , raw] = await ctx.http("PUT", url, { "X-aws-ec2-metadata-token-ttl-seconds": "300" }, undefined, 5);
+    if (status !== 200) throw new AuthError(`${where}: AWS IMDSv2 session token: HTTP ${status}`);
+    return { "X-aws-ec2-metadata-token": new TextDecoder().decode(raw) };
+  })());
+}
+
+/** AWS_REGION or AWS_DEFAULT_REGION: the region an AWS source signs for, when the environment says it. */
+const envAwsRegion = (ctx: ChainContext): string | undefined => ctx.env["AWS_REGION"] || ctx.env["AWS_DEFAULT_REGION"] || undefined;
+
+/** The environment's region, else the source's region_url (an availability zone, its last letter dropped). */
+async function gcpAwsRegion(ctx: ChainContext, source: JsonObject, where: string, imds: () => Promise<Record<string, string>>): Promise<string> {
+  const env = envAwsRegion(ctx);
+  if (env) return env;
+  const url = str(source["region_url"]);
+  if (!url || !ctx.http) throw new NotConfiguredError(`${where}: no AWS region: set AWS_REGION (the AWS source names no region_url)`);
+  const [status, , raw] = await ctx.http("GET", url, await imds(), undefined, 5);
+  if (status !== 200) throw new AuthError(`${where}: AWS region from ${url}: HTTP ${status}`);
+  return new TextDecoder().decode(raw).trim().slice(0, -1);
+}
+
+/**
+ * The AWS identity an AWS source signs with: the environment's keys, then (an lm15 addition, stated: Google's library
+ * reads only the other two, and so fails on ECS) the container endpoint, then EC2 metadata at the source's `url`.
+ */
+async function gcpAwsCredentials(ctx: ChainContext, source: JsonObject, where: string, imds: () => Promise<Record<string, string>>): Promise<AwsCredentials> {
+  const env = envAws(ctx);
+  if (env) return env;
+  if (containerConfig(ctx) !== undefined) {
+    const got = await containerAcquire(ctx);
+    if (got) return got;
+  }
+  const url = str(source["url"]);
+  if (!url || !ctx.http) throw new NotConfiguredError(`${where}: no AWS credentials: neither AWS_ACCESS_KEY_ID nor a container endpoint is set, and the AWS source names no metadata url`);
+  const headers = await imds();
+  const [roleStatus, , role] = await ctx.http("GET", url, headers, undefined, 5);
+  const name = new TextDecoder().decode(role).trim().split(/\r?\n/)[0] ?? "";
+  if (roleStatus !== 200 || !name) throw new AuthError(`${where}: AWS role name from ${url}: HTTP ${roleStatus}`);
+  const [status, , raw] = await ctx.http("GET", `${url}/${name}`, headers, undefined, 5);
+  if (status !== 200) throw new AuthError(`${where}: AWS credentials from ${url}/${name}: HTTP ${status}`);
+  return awsFromResponse(jsonBody(raw));
+}
+
+/** Python's `urllib.parse.quote(text, safe="/")`: what google-auth percent-encodes an AWS subject token with. */
+function quoteKeepingSlash(text: string): string {
+  return encodeURIComponent(text).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`).replace(/%2F/g, "/");
+}
+
+/**
+ * An AWS source's subject token: a signed AWS STS GetCallerIdentity request, serialized as Google's STS reads it
+ * (google-auth aws.py: headers as `[{key, value}]` in signing order, the pool provider's name added unsigned as
+ * `x-goog-cloud-target-resource`, compact JSON with sorted keys, percent-encoded keeping `/`).
+ */
+export function gcpAwsSubjectToken(info: JsonObject, template: string, region: string, creds: AwsCredentials, now: Date): string {
+  const url = template.replace("{region}", region);
+  const sig = sigv4Sign({ method: "POST", url, headers: {}, payload: new Uint8Array(), credentials: creds, region, service: new URL(url).hostname.split(".")[0]!, now });
+  const headers: Array<[string, string]> = [["Authorization", sig.authorization], ["host", sig.headers["host"]!], ["x-amz-date", sig.headers["x-amz-date"]!]];
+  if (creds.sessionToken) headers.push(["x-amz-security-token", creds.sessionToken]);
+  headers.push(["x-goog-cloud-target-resource", str(info["audience"])]);
+  // Keys sorted at every level, as Python's json.dumps(sort_keys=True): headers, method, url; key, value.
+  const signed = { headers: headers.map(([key, value]) => ({ key, value })), method: "POST", url };
+  return quoteKeepingSlash(JSON.stringify(signed));
+}
+
+/** The STS token exchange an external_account sends: `[url, JSON body]`. */
+function gcpStsRequest(info: JsonObject, subject: string): [string, JsonObject] {
+  return [str(info["token_url"]) || GCP_STS_URL, {
+    grantType: "urn:ietf:params:oauth:grant-type:token-exchange",
+    audience: str(info["audience"]),
+    scope: GCP_SCOPE,
+    requestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
+    subjectToken: subject,
+    subjectTokenType: str(info["subject_token_type"]),
+  }];
+}
+
 async function gcpExternalAccount(ctx: ChainContext, info: JsonObject, where: string): Promise<BearerToken> {
   const source = isJsonObject(info["credential_source"]) ? info["credential_source"] : {};
-  if ("environment_id" in source) throw new NotConfiguredError(`${where}: external_account with an AWS credential_source is a stated gap in lm15; use a file/url/executable source or a service account`);
   let subject: string | undefined;
   let fmt: JsonObject = isJsonObject(source["format"]) ? source["format"] : {};
-  if (source["file"]) {
+  if ("environment_id" in source) {
+    const template = gcpAwsSource(source, where);
+    const imds = gcpAwsImdsSession(ctx, source, where);
+    const region = await gcpAwsRegion(ctx, source, where, imds);
+    subject = gcpAwsSubjectToken(info, template, region, await gcpAwsCredentials(ctx, source, where, imds), ctx.now());
+    fmt = { type: "text" };
+  } else if (source["file"]) {
     const raw = ctx.read(str(source["file"]));
     if (raw === undefined) throw new NotConfiguredError(`${where}: subject token file ${str(source["file"])} is unreadable`);
     subject = raw.trim();
@@ -1030,19 +1125,10 @@ async function gcpExternalAccount(ctx: ChainContext, info: JsonObject, where: st
     subject = str(data["id_token"] ?? data["saml_response"]);
     fmt = { type: "text" };
   }
-  if (subject === undefined) throw new NotConfiguredError(`${where}: external_account credential_source is not file/url/executable`);
+  if (subject === undefined) throw new NotConfiguredError(`${where}: external_account credential_source is not file/url/executable/AWS`);
   if (fmt["type"] === "json") subject = str(jsonBody(subject)[str(fmt["subject_token_field_name"])]);
-  const body = new TextEncoder().encode(
-    stringifyJson({
-      grantType: "urn:ietf:params:oauth:grant-type:token-exchange",
-      audience: str(info["audience"]),
-      scope: GCP_SCOPE,
-      requestedTokenType: "urn:ietf:params:oauth:token-type:access_token",
-      subjectToken: subject,
-      subjectTokenType: str(info["subject_token_type"]),
-    }),
-  );
-  const token = bearerFromOauth(await exchange(ctx, "POST", str(info["token_url"]) || GCP_STS_URL, { "content-type": "application/json" }, body, `Google STS exchange (${where})`,
+  const [stsUrl, stsBody] = gcpStsRequest(info, subject);
+  const token = bearerFromOauth(await exchange(ctx, "POST", stsUrl, { "content-type": "application/json" }, new TextEncoder().encode(stringifyJson(stsBody)), `Google STS exchange (${where})`,
     "the workload identity pool refused the external token: check the provider's issuer, allowed audience and attribute condition, and that the subject token is fresh"), ctx.now(), "Google STS");
   if (info["service_account_impersonation_url"]) return gcpImpersonate(ctx, token, str(info["service_account_impersonation_url"]), [], where);
   return token;
@@ -1368,6 +1454,15 @@ export function cacheKey(policy: AccessPolicy, ctx: ChainContext): string {
 // ─── Harness ops ─────────────────────────────────────────────────────
 
 export function tokenExchangeBuild(policy: AccessPolicy, rungName: string, inputs: JsonObject, ctx: ChainContext): JsonObject {
+  if (["adc-env", "adc-file"].includes(rungName) && isJsonObject(inputs["credential_file"]) && inputs["credential_file"]["type"] === "external_account") {
+    const info = inputs["credential_file"];
+    const source = isJsonObject(info["credential_source"]) ? info["credential_source"] : {};
+    if (!("environment_id" in source)) throw new ValueError("token_exchange_build: only an AWS-sourced external_account is deterministic");
+    const creds = envAws(ctx), region = envAwsRegion(ctx);
+    if (!creds || !region) throw new ValueError("token_exchange_build: an AWS source's vector gives its keys and region in env");
+    const [url, body] = gcpStsRequest(info, gcpAwsSubjectToken(info, gcpAwsSource(source, "credential_file"), region, creds, ctx.now()));
+    return { method: "POST", url, headers: { "content-type": "application/json" }, body_encoding: "json", body };
+  }
   if (["adc-env", "adc-file", "service-account"].includes(rungName)) {
     const info = inputs["credential_file"];
     if (!isJsonObject(info)) throw new ValueError("token_exchange_build: credential_file must be an object");

@@ -201,3 +201,104 @@ test("browser explicit token and endpoint work; unavailable named chain is refus
     assert.match(bridged.credentialOrigin(), /application token bridge.*managed-identity/);
   } finally { setDefaultPlatform(previous); }
 });
+
+// ─── Google external_account with an AWS source (AUTH-1 gcp-chain) ───────────
+// The subject token is pinned byte for byte by lm15-contract auth/token-vectors.json
+// (gcp-external-account-aws*.build, computed by google-auth itself); these walk the whole
+// acquisition: where the AWS identity comes from, then STS, then impersonation.
+
+const AWS_WIF = {
+  type: "external_account",
+  audience: "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws",
+  subject_token_type: "urn:ietf:params:aws:token-type:aws4_request",
+  token_url: "https://sts.googleapis.com/v1/token",
+  credential_source: {
+    environment_id: "aws1",
+    region_url: "http://169.254.169.254/latest/meta-data/placement/availability-zone",
+    url: "http://169.254.169.254/latest/meta-data/iam/security-credentials",
+    regional_cred_verification_url: "https://sts.{region}.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15",
+  } as Record<string, string>,
+  service_account_impersonation_url: "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/sa@p.iam.gserviceaccount.com:generateAccessToken",
+};
+type Call = [string, string, Record<string, string>, Uint8Array | undefined];
+const GOOGLE_ANSWERS: [string, [number, unknown]][] = [
+  ["https://sts.googleapis.com/", [200, { access_token: "federated", expires_in: 3600, token_type: "Bearer" }]],
+  ["https://iamcredentials.googleapis.com/", [200, { accessToken: "sa-token", expireTime: "2026-09-20T01:00:00Z" }]],
+];
+function awsWif(env: Record<string, string>, answers: [string, [number, unknown]][], source = AWS_WIF.credential_source) {
+  const calls: Call[] = [];
+  const ctx = new ChainContext({
+    env: { GOOGLE_APPLICATION_CREDENTIALS: "~/wif.json", ...env }, files: { "~/wif.json": JSON.stringify({ ...AWS_WIF, credential_source: source }) },
+    now: () => new Date("2026-09-20T00:00:00Z"),
+    http: async (method, url, headers, body) => {
+      calls.push([method, url, { ...headers }, body]);
+      const hit = answers.find(([prefix]) => url.startsWith(prefix));
+      if (!hit) throw new Error(`unexpected request ${method} ${url}`);
+      const [status, data] = hit[1];
+      return [status, {}, typeof data === "string" ? new TextEncoder().encode(data) : jsonBytes(data)];
+    },
+  });
+  return { calls, provide: credentialProvider(VERTEX, ctx, "workload") };
+}
+function signedRequest(calls: Call[]): { url: string; headers: Record<string, string> } {
+  const sts = calls.find((c) => c[1].startsWith("https://sts.googleapis.com/"))!;
+  const body = JSON.parse(new TextDecoder().decode(sts[3])) as Record<string, string>;
+  assert.equal(body["subjectTokenType"], "urn:ietf:params:aws:token-type:aws4_request");
+  const signed = JSON.parse(decodeURIComponent(body["subjectToken"]!)) as { url: string; headers: { key: string; value: string }[] };
+  return { url: signed.url, headers: Object.fromEntries(signed.headers.map((h) => [h.key, h.value])) };
+}
+
+test("GCP AWS source on ECS: the task role from the container endpoint signs, then STS, then impersonation", async () => {
+  const { calls, provide } = awsWif({ AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/abc", AWS_REGION: "us-east-2" }, [
+    ["http://169.254.170.2/v2/credentials/abc", [200, { AccessKeyId: "ASIATASK", SecretAccessKey: "s", Token: "task-session", Expiration: "2026-09-20T06:00:00Z" }]],
+    ...GOOGLE_ANSWERS,
+  ]);
+  const token = await provide();
+  assert.ok(token instanceof BearerToken);
+  assert.equal(token.value, "sa-token");
+  assert.deepEqual(calls.map((c) => c[1]), ["http://169.254.170.2/v2/credentials/abc", "https://sts.googleapis.com/v1/token", AWS_WIF.service_account_impersonation_url]);
+  const signed = signedRequest(calls);
+  assert.equal(signed.url, "https://sts.us-east-2.amazonaws.com?Action=GetCallerIdentity&Version=2011-06-15");
+  assert.match(signed.headers["Authorization"]!, /^AWS4-HMAC-SHA256 Credential=ASIATASK\/20260920\/us-east-2\/sts\/aws4_request, SignedHeaders=host;x-amz-date;x-amz-security-token, /);
+  assert.equal(signed.headers["x-amz-security-token"], "task-session");
+  assert.equal(signed.headers["x-goog-cloud-target-resource"], AWS_WIF.audience);
+  assert.equal(calls[2]![2]["authorization"], "Bearer federated");
+});
+
+test("GCP AWS source on EC2: IMDSv2 once, the region from the availability zone, the role's credentials", async () => {
+  const { calls, provide } = awsWif({}, [
+    ["http://169.254.169.254/latest/api/token", [200, "imds-session"]],
+    ["http://169.254.169.254/latest/meta-data/placement/availability-zone", [200, "eu-west-1b"]],
+    ["http://169.254.169.254/latest/meta-data/iam/security-credentials/web", [200, { Code: "Success", AccessKeyId: "ASIAEC2", SecretAccessKey: "s", Token: "t" }]],
+    ["http://169.254.169.254/latest/meta-data/iam/security-credentials", [200, "web\n"]],
+    ...GOOGLE_ANSWERS,
+  ], { ...AWS_WIF.credential_source, imdsv2_session_token_url: "http://169.254.169.254/latest/api/token" });
+  assert.equal(((await provide()) as BearerToken).value, "sa-token");
+  assert.equal(calls.filter((c) => c[0] === "PUT").length, 1);
+  assert.deepEqual(calls[0]![2], { "X-aws-ec2-metadata-token-ttl-seconds": "300" });
+  for (const c of calls.slice(1, 4)) assert.equal(c[2]["X-aws-ec2-metadata-token"], "imds-session");
+  assert.ok(signedRequest(calls).url.startsWith("https://sts.eu-west-1.amazonaws.com?"));
+});
+
+test("GCP AWS source: the environment's keys win and no endpoint is asked", async () => {
+  const { calls, provide } = awsWif({ AWS_ACCESS_KEY_ID: "AKIDENV", AWS_SECRET_ACCESS_KEY: "s", AWS_DEFAULT_REGION: "ca-central-1", AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/abc" }, GOOGLE_ANSWERS);
+  await provide();
+  const h = signedRequest(calls).headers;
+  assert.equal(h["x-amz-security-token"], undefined);
+  assert.match(h["Authorization"]!, /AKIDENV\/20260920\/ca-central-1\/sts/);
+});
+
+test("GCP AWS source: a malformed source or no AWS identity is refused before any request", async () => {
+  const refuse = async () => { throw new Error("no request before the source is valid"); };
+  for (const [source, why] of [
+    [{ environment_id: "aws2", regional_cred_verification_url: "https://sts.{region}.amazonaws.com" }, /only aws1/],
+    [{ environment_id: "aws1" }, /regional_cred_verification_url/],
+    [{ environment_id: "azure1", regional_cred_verification_url: "https://x" }, /environment_id/],
+  ] as const) {
+    const ctx = new ChainContext({ env: { GOOGLE_APPLICATION_CREDENTIALS: "~/wif.json", AWS_REGION: "us-east-1", AWS_ACCESS_KEY_ID: "a", AWS_SECRET_ACCESS_KEY: "s" }, files: { "~/wif.json": JSON.stringify({ ...AWS_WIF, credential_source: source }) }, http: refuse });
+    await assert.rejects(credentialProvider(VERTEX, ctx, "workload")(), why);
+  }
+  const { url: _url, ...noUrl } = AWS_WIF.credential_source;
+  const ctx = new ChainContext({ env: { GOOGLE_APPLICATION_CREDENTIALS: "~/wif.json", AWS_REGION: "us-east-1" }, files: { "~/wif.json": JSON.stringify({ ...AWS_WIF, credential_source: noUrl }) }, http: refuse });
+  await assert.rejects(credentialProvider(VERTEX, ctx, "workload")(), /AWS_ACCESS_KEY_ID nor a container endpoint/);
+});
