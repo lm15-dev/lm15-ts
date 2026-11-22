@@ -205,7 +205,15 @@ const ops: Record<string, OpHandler> = {
   normalize_error(msg) {
     const lm = adapter(msg, { parseOnly: true });
     const err = lm.normalizeError(Number(msg["status"]), String(msg["body_text"]));
-    return { class: err.name, code: err.code ?? canonicalErrorCode(err), provider_code: err.providerCode, message: err.message };
+    return {
+      class: err.name,
+      code: err.code ?? canonicalErrorCode(err),
+      provider: err.provider,
+      provider_code: err.providerCode,
+      status: err.status,
+      request_id: err.requestId,
+      message: err.message,
+    };
   },
 
   async build_models_request(msg) {
@@ -485,12 +493,14 @@ registerOps({
             : { codexAuthPath: credentialsPath }
         : {}),
     });
+    const settingsError = report.settings.find(([name]) => name === "error")?.[1];
     return {
       configured: report.configured,
       ...(report.baseUrl !== undefined ? { base_url: report.baseUrl } : {}),
       steps: report.steps.map((s) => ({ kind: s.kind, state: s.state })),
       // PROTOCOL.md explain_auth `settings` (2026-09-26): value and origin per host setting.
       settings: explainedSettings(report),
+      ...(settingsError !== undefined ? { settings_error: settingsError } : {}),
       report_text: [describeReport(report), JSON.stringify(report.steps.map((s) => ({ ...s })))].join("\n"),
     };
   },

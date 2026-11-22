@@ -296,7 +296,7 @@ export class OpenAIChatLM extends ProviderLM {
     return resolveOpenAIChatCompat(chatCompatForModel(this.compatPartial, model, base));
   }
 
-  protected buildMessages(request: Request, compat: ResolvedOpenAIChatCompat): JsonObject[] {
+  protected buildMessages(request: Request, compat: ResolvedOpenAIChatCompat, breakpointIndex?: number | undefined): JsonObject[] {
     const messages: JsonObject[] = [];
     const systemText = request.system ? (typeof request.system === "string" ? request.system : partsToText(request.system)) : "";
     if (systemText) {
@@ -305,7 +305,6 @@ export class OpenAIChatLM extends ProviderLM {
         messages.push({ role: compat.instructionRole, content: [{ type: "text", text: systemText, prompt_cache_breakpoint: { mode: "explicit" } }] });
       } else messages.push({ role: compat.instructionRole, content: systemText });
     }
-    const breakpointIndex = cacheBreakpointIndex(request, compat.cacheControl);
     request.messages.forEach((msg, msgIndex) => {
       if (msgIndex === breakpointIndex && (msg.role === "assistant" || msg.role === "tool")) throw breakpointUnsupported(this.provider, msgIndex, msg.role);
       if (msg.role === "tool") {
@@ -417,7 +416,8 @@ export class OpenAIChatLM extends ProviderLM {
       if (stream && this.judgmentsViaTokenScoring(request)) this.judgmentStreamPolicy(request);
       else noteUnmeasurableProbabilities(request, this.provider);
     }
-    const payload: JsonObject = { model: request.model, messages: this.buildMessages(request, compat) };
+    const breakpointIndex = cacheBreakpointIndex(request, compat.cacheControl);
+    const payload: JsonObject = { model: request.model, messages: this.buildMessages(request, compat, breakpointIndex) };
     if (stream) {
       payload["stream"] = true;
       if (compat.streamUsage === "include") payload["stream_options"] = { include_usage: true };
@@ -604,9 +604,19 @@ export class OpenAIChatLM extends ProviderLM {
             payload["reasoning_effort"] = effort;
             break;
           case "qwen":
+            adapt("config.reasoning.effort", "substituted", "this wire's reasoning is an on/off switch with no levels; reasoning was switched on", {
+              asked: effort,
+              applied: "on",
+              provider: this.provider,
+            });
             payload["enable_thinking"] = true;
             break;
           case "qwen_chat_template":
+            adapt("config.reasoning.effort", "substituted", "this wire's reasoning is an on/off switch with no levels; reasoning was switched on", {
+              asked: effort,
+              applied: "on",
+              provider: this.provider,
+            });
             payload["chat_template_kwargs"] = { enable_thinking: true, preserve_thinking: true };
             break;
         }
@@ -635,7 +645,7 @@ export class OpenAIChatLM extends ProviderLM {
         }
       }
     }
-    cacheCommonPayload(request, payload, compat.cacheControl, this.provider);
+    cacheCommonPayload(request, payload, compat.cacheControl, this.provider, breakpointIndex);
     if (compat.routing !== undefined) payload["provider"] = compat.routing;
     if (config.serviceTier !== undefined) payload["service_tier"] = config.serviceTier;
     if (config.userId !== undefined) payload[compat.userField] = config.userId;

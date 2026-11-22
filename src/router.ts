@@ -33,6 +33,46 @@ import type { Response } from "./types/response.ts";
 import type { StreamEvent } from "./types/stream.ts";
 import { ResponseStream } from "./stream.ts";
 
+const INSPECT = Symbol.for("nodejs.util.inspect.custom");
+
+/** AUTH-5: attach non-enumerable redacting hooks to a frozen copy of a secret-bearing map. */
+function redactSecretMap<T extends Record<string, unknown>>(raw: T, label: string): Readonly<T> {
+  const copy = { ...raw };
+  const summary = () => label;
+  Object.defineProperties(copy, {
+    toString: { value: summary, enumerable: false, configurable: true },
+    [INSPECT]: { value: summary, enumerable: false, configurable: true },
+    toJSON: { value: summary, enumerable: false, configurable: true },
+  });
+  return Object.freeze(copy);
+}
+
+/** AUTH-5: attach non-enumerable redacting hooks to a frozen RouterConfig so apiKeys/env never print. */
+function redactRouterConfig(config: RouterConfig): RouterConfig {
+  const redactedView = () => {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(config)) {
+      if (k === "apiKeys" || k === "env") out[k] = "<redacted>";
+      else if (k === "auth" && v !== undefined) out[k] = String(v);
+      else if (v !== undefined) out[k] = v;
+    }
+    return out;
+  };
+  const summary = () => {
+    const parts: string[] = [];
+    if (config.apiKeys) parts.push("apiKeys=<redacted>");
+    if (config.env) parts.push("env=<redacted>");
+    if (config.adaptations) parts.push(`adaptations=${JSON.stringify(config.adaptations)}`);
+    return `RouterConfig(${parts.join(", ")})`;
+  };
+  Object.defineProperties(config, {
+    toString: { value: summary, enumerable: false, configurable: true },
+    [INSPECT]: { value: summary, enumerable: false, configurable: true },
+    toJSON: { value: redactedView, enumerable: false, configurable: true },
+  });
+  return Object.freeze(config);
+}
+
 /** Maps a model-id prefix to a provider. That's all a rule is. */
 export interface RouteRule {
   readonly prefix: string;
@@ -733,16 +773,27 @@ export class LMRouter {
       if (!r || typeof r.prefix !== "string" || typeof r.provider !== "string" || !table.has(canonicalProvider(r.provider))) throw new NotConfiguredError("RouterConfig rules must name a declared or built-in provider");
     }
     for (const key of Object.keys(config.apiKeys ?? {})) apiKeysSource(config, key);
-    this.config = Object.freeze({
+    this.config = redactRouterConfig({
       ...config,
       ...(config.providers ? { providers: Object.freeze([...config.providers]) } : {}),
       ...(config.rules ? { rules: Object.freeze(config.rules.map((r) => Object.freeze({ ...r }))) } : {}),
-      ...(config.apiKeys ? { apiKeys: Object.freeze({ ...config.apiKeys }) } : {}),
+      ...(config.apiKeys ? { apiKeys: redactSecretMap(config.apiKeys, "apiKeys(<redacted>)") } : {}),
+      ...(config.env ? { env: redactSecretMap(config.env, "env(<redacted>)") } : {}),
       ...(config.credentials ? { credentials: Object.freeze({ ...config.credentials }) } : {}),
       ...(config.baseUrls ? { baseUrls: Object.freeze({ ...config.baseUrls }) } : {}),
       ...(config.settings ? { settings: Object.freeze(Object.fromEntries(Object.entries(config.settings).map(([k, v]) => [k, Object.freeze({ ...v })]))) } : {}),
       ...(config.timeouts ? { timeouts: Object.freeze({ ...config.timeouts }) } : {}),
     });
+  }
+
+  toString(): string {
+    return `LMRouter(cached=${this.lms.size})`;
+  }
+  [INSPECT](): string {
+    return this.toString();
+  }
+  toJSON(): string {
+    return this.toString();
   }
 
   private sharedTransport(): Transport {

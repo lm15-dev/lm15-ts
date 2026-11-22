@@ -254,3 +254,78 @@ test("Codex: an output cap or store=true is refused, never stripped (MAP-13 rule
     assert.throws(() => lm.payload(request(config), true), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === feature && /openai-codex/.test(e.message));
   }
 });
+
+test("MAP-13: Responses reasoning_format='none' drops and refuses; qwen/zai switches record substituted", async () => {
+  const noneLm = new OpenAILM({ apiKey: "k", compat: "ollama" });
+  for (const effort of ["low", "off"] as const) {
+    const req = { model: "llama3.2", messages: user("hi"), config: { reasoning: { effort } } };
+    const planned = await noneLm.plan(req);
+    assert.equal(planned.length, 1);
+    assert.equal(planned[0]?.field, "config.reasoning");
+    assert.equal(planned[0]?.action, "dropped");
+    assert.deepEqual(planned[0]?.asked, { effort });
+    const strict = new OpenAILM({ apiKey: "k", compat: "ollama", adaptations: "refuse" });
+    await assert.rejects(strict.buildRequest(req, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.reasoning");
+  }
+
+  for (const compat of ["qwen", "zai"] as const) {
+    const lm = new OpenAILM({ apiKey: "k", compat, baseUrl: "https://example.invalid/v1" });
+    const req = { model: "qwen3", messages: user("hi"), config: { reasoning: { effort: "high" as const } } };
+    const built = await lm.build(req, false);
+    assert.equal(built.adaptations.some((a) => a.field === "config.reasoning.effort" && a.action === "substituted" && a.asked === "high" && a.applied === "on"), true);
+  }
+
+  const chatQwen = new OpenAIChatLM({ apiKey: "k", compat: "qwen", baseUrl: "https://example.invalid/v1" });
+  const chatBuilt = await chatQwen.build({ model: "qwen3", messages: user("hi"), config: { reasoning: { effort: "low" } } }, false);
+  assert.equal(chatBuilt.adaptations.some((a) => a.field === "config.reasoning.effort" && a.action === "substituted" && a.asked === "low" && a.applied === "on"), true);
+});
+
+test("MAP-6: gpt-5.6 cache breakpoint adaptation is recorded once, not twice", async () => {
+  const req = {
+    model: "gpt-5.6",
+    messages: [Message.user("u1"), Message.assistant("a1"), Message.user("u2")],
+    config: { cache: { prefixUntilIndex: 1 } },
+  };
+  for (const lm of [new OpenAILM({ apiKey: "k" }), new OpenAIChatLM({ apiKey: "k" })]) {
+    const built = await lm.build(req, false);
+    const cacheNotes = built.adaptations.filter((a) => a.field === "config.cache.prefix_until_index");
+    assert.equal(cacheNotes.length, 1, `${lm.constructor.name} recorded ${cacheNotes.length} notes`);
+  }
+});
+
+test("MAP-14: Anthropic structured_output='reject' still refuses probabilities='required'", async () => {
+  const lm = new AnthropicLM({ apiKey: "k", compat: "deepseek" });
+  const schema = {
+    type: "object",
+    properties: { ok: { type: "boolean" } },
+    required: ["ok"],
+    additionalProperties: false,
+  };
+  const req = {
+    model: "deepseek-chat",
+    messages: user("hi"),
+    config: {
+      responseFormat: { type: "json_schema" as const, name: "j", schema, strict: true },
+      probabilities: "required" as const,
+    },
+  };
+  await assert.rejects(lm.buildRequest(req, false), (e: unknown) => e instanceof UnsupportedFeatureError && e.feature === "config.probabilities");
+});
+
+test("Gemini trailing usage-only stream chunk preserves earlier finish_reason", async () => {
+  const { GeminiLM } = await import("../src/dialects/gemini.ts");
+  const { coalesceStream } = await import("../src/stream.ts");
+  const lm = new GeminiLM({ apiKey: "k" });
+  const req = { model: "gemini-2.5-flash", messages: user("hi") };
+  const chunks = [
+    JSON.stringify({ candidates: [{ content: { role: "model", parts: [{ text: "cut off" }] }, finishReason: "MAX_TOKENS" }] }),
+    JSON.stringify({ usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 } }),
+  ];
+  const raw = chunks.flatMap((data) => lm.parseStreamEvents(req, { event: "message", data }));
+  const coalesced = [...coalesceStream(raw, { model: "gemini-2.5-flash" })];
+  const end = coalesced.find((e) => e.type === "end");
+  assert.equal(end?.type, "end");
+  assert.equal(end.finishReason, "length");
+  assert.equal(end.usage?.inputTokens, 10);
+  assert.equal(end.usage?.outputTokens, 5);
+});

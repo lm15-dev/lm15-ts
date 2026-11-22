@@ -52,7 +52,24 @@ import { captureRateLimits, millisecondsSeconds, type RateLimitHeaders } from ".
 import type { StreamEvent } from "./types/stream.ts";
 import { ValueError } from "./types/validate.ts";
 import { BATCH_TERMINAL_STATUSES, VIDEO_TERMINAL_STATUSES } from "./vocab.ts";
-import { HttpResponse, jsonBytes, makeJsonRequest, type TransportRequest } from "./wire.ts";
+import { HttpResponse, jsonBytes, makeJsonRequest, redactTransportRequest, type TransportRequest } from "./wire.ts";
+
+const INSPECT = Symbol.for("nodejs.util.inspect.custom");
+
+function redactUrlUserinfo(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) {
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+    }
+  } catch {
+    // non-standard URL: keep raw only if it has no userinfo separator
+    if (url.includes("@")) return "<redacted-url>";
+  }
+  return url;
+}
 
 export interface LMOptions {
   /** A string, an AUTH-2 credential value, or a zero-arg (possibly async) provider. */
@@ -173,10 +190,23 @@ export abstract class ProviderLM {
   accountId: string | undefined;
   /** MAP-13 policy for every request this LM builds. */
   readonly adaptations: AdaptationPolicy;
-  protected credential: CredentialLike | undefined;
+  /** AUTH-5: private field so neither Object.keys nor util.inspect can expose credential material. */
+  #credential: CredentialLike | undefined;
+  protected get credential(): CredentialLike | undefined { return this.#credential; }
+  protected set credential(value: CredentialLike | undefined) { this.#credential = value; }
   protected credentialSource: "explicit" | "stored" = "explicit";
   private origin: string | CredentialSource | undefined;
   private readonly requestOrigins = new WeakMap<TransportRequest, string>();
+
+  toString(): string {
+    return `${this.constructor.name}(provider=${JSON.stringify(this.provider)}, baseUrl=${JSON.stringify(redactUrlUserinfo(this.baseUrl))})`;
+  }
+  [INSPECT](): string {
+    return this.toString();
+  }
+  toJSON(): string {
+    return this.toString();
+  }
 
   protected constructor(manifest: AccessPolicy, dialectBaseUrl: string, opts: LMOptions) {
     let policy = opts.access ?? manifest;
@@ -354,7 +384,7 @@ export abstract class ProviderLM {
         credential,
         now: this.now(),
       });
-      req = { ...req, headers: signed };
+      req = redactTransportRequest({ ...req, headers: signed });
     }
     if (origin !== undefined) this.requestOrigins.set(req, origin);
     return req;

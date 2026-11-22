@@ -106,3 +106,50 @@ test("AUTH-7 cloud: offline network rungs are unprobed; the door key is selected
   assert.ok(bare.configured); // "probably": a network rung may win at request time
   assert.equal(bare.settings.find(([k]) => k === "error")?.[1]?.includes("region"), true);
 });
+
+test("AUTH-5: adapters, router, transport requests, and PKCE redact ordinary diagnostics", async () => {
+  const { OpenAILM } = await import("../src/dialects/openai_responses.ts");
+  const { AnthropicLM } = await import("../src/dialects/anthropic.ts");
+  const { GeminiLM } = await import("../src/dialects/gemini.ts");
+  const { LMRouter } = await import("../src/router.ts");
+  const { generatePkce } = await import("../src/auth/pkce.ts");
+  const { makeJsonRequest } = await import("../src/wire.ts");
+
+  const adapters = [
+    new OpenAILM({ apiKey: SECRET }),
+    new AnthropicLM({ apiKey: SECRET }),
+    new GeminiLM({ apiKey: SECRET }),
+  ];
+  for (const lm of adapters) {
+    for (const rendered of [String(lm), inspect(lm), JSON.stringify(lm), JSON.stringify(Object.keys(lm))]) {
+      assert.ok(!rendered.includes(SECRET), rendered);
+    }
+    const built = await lm.buildRequest({ model: "m", messages: [{ role: "user", parts: [{ type: "text", text: "hi" }] }] }, false);
+    assert.ok(built.headers.some(([, value]) => value.includes(SECRET)), "redaction must not remove wire credentials");
+    for (const rendered of [String(built), inspect(built), JSON.stringify(built)]) {
+      assert.ok(!rendered.includes(SECRET), rendered);
+    }
+  }
+
+  const router = new LMRouter({
+    apiKeys: { openai: SECRET, anthropic: SECRET },
+    env: { OPENAI_API_KEY: SECRET, AZURE_CLIENT_SECRET: SECRET },
+  });
+  for (const target of [router, router.config, router.config.apiKeys, router.config.env]) {
+    for (const rendered of [String(target), inspect(target), JSON.stringify(target)]) {
+      assert.ok(!rendered.includes(SECRET), rendered);
+    }
+  }
+
+  const req = makeJsonRequest({ method: "POST", url: `https://example.com?key=${SECRET}`, headers: { Authorization: `Bearer ${SECRET}` }, payload: { secret: SECRET } });
+  for (const rendered of [String(req), inspect(req), JSON.stringify(req)]) {
+    assert.ok(!rendered.includes(SECRET), rendered);
+  }
+
+  const pkce = await generatePkce();
+  assert.ok(pkce.verifier.length >= 43, "the verifier remains available to the token exchange");
+  assert.ok(!Object.keys(pkce).includes("verifier"));
+  for (const rendered of [String(pkce), inspect(pkce), JSON.stringify(pkce)]) {
+    assert.ok(!rendered.includes(pkce.verifier), rendered);
+  }
+});

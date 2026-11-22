@@ -16,6 +16,7 @@ import { ValueError, encodeBase64 } from "./types/validate.ts";
 
 const UTF8 = new TextEncoder();
 const UTF8_DECODE = new TextDecoder("utf-8", { fatal: false });
+const INSPECT = Symbol.for("nodejs.util.inspect.custom");
 
 /** The request a dialect built: what goes on the wire, before the transport. */
 export interface TransportRequest {
@@ -29,6 +30,29 @@ export interface TransportRequest {
   readonly connectTimeout?: number;
   /** Per-chunk idle timeout in seconds, overriding the transport default. */
   readonly readTimeout?: number;
+}
+
+/**
+ * AUTH-5: a TransportRequest carries auth headers, query keys (Gemini) and
+ * request bodies. Hide them from `toString`, `util.inspect`, and `JSON.stringify`
+ * while keeping property access intact — matching Python's `TransportRequest`.
+ */
+export function redactTransportRequest(req: TransportRequest): TransportRequest {
+  const summary = () => `TransportRequest(method=${JSON.stringify(req.method)})`;
+  Object.defineProperties(req, {
+    toString: { value: summary, enumerable: false, configurable: true },
+    [INSPECT]: { value: summary, enumerable: false, configurable: true },
+    toJSON: {
+      value: () => ({
+        method: req.method,
+        ...(req.connectTimeout !== undefined ? { connectTimeout: req.connectTimeout } : {}),
+        ...(req.readTimeout !== undefined ? { readTimeout: req.readTimeout } : {}),
+      }),
+      enumerable: false,
+      configurable: true,
+    },
+  });
+  return req;
 }
 
 /** A buffered provider-level HTTP response. */
@@ -127,7 +151,7 @@ export function makeJsonRequest(opts: JsonRequestOptions): TransportRequest {
     body = jsonBytes(opts.payload);
     if (!headers.some(([k]) => k.toLowerCase() === "content-type")) headers.push(["Content-Type", "application/json"]);
   }
-  return { method: opts.method, url: buildUrl(opts.url, opts.params), headers, body };
+  return redactTransportRequest({ method: opts.method, url: buildUrl(opts.url, opts.params), headers, body });
 }
 
 // ─── File readiness fold (OpenAI-shaped file objects) ────────────────

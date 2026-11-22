@@ -377,6 +377,12 @@ export class Auth {
   toString(): string {
     return `Auth(${this.store.toString()})`;
   }
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+  toJSON(): string {
+    return this.toString();
+  }
 
   /**
    * The same scope with every request-time resolution checked against one

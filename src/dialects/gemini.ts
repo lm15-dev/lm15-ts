@@ -796,7 +796,10 @@ export class GeminiLM extends ProviderLM {
     }
     const usage = () => geminiUsage(payload["usageMetadata"], ["candidatesTokenCount", "responseTokenCount"]);
     if (finish) events.push({ type: "end", finishReason: finishReason(finish, sawTool), usage: usage(), providerData: payload });
-    else if (!yieldedDelta && "usageMetadata" in payload) events.push({ type: "end", finishReason: "stop", usage: usage(), providerData: payload });
+    // Never fabricate "stop" on a trailing usage-only frame: coalescing preserves an earlier
+    // non-undefined finishReason (e.g. "length" or "tool_call"), and StreamAccumulator defaults
+    // to "stop"/"tool_call" when no frame sent one.
+    else if (!yieldedDelta && "usageMetadata" in payload) events.push({ type: "end", usage: usage(), providerData: payload });
     return events;
   }
 

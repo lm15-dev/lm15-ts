@@ -125,6 +125,12 @@ export abstract class Store {
   toString(): string {
     return `${this.constructor.name}(${this.description})`;
   }
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+  toJSON(): string {
+    return this.toString();
+  }
 }
 
 /** One exclusive holder at a time within this process, in arrival order. */

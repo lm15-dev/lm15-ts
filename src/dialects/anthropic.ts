@@ -640,6 +640,9 @@ export class AnthropicLM extends ProviderLM {
       payload["thinking"] = { ...thinking, display: "summarized" };
     }
     if (config.responseFormat) {
+      // MAP-14: check probabilities before structuredOutput rejection so probabilities="required"
+      // is refused (and "if_available" recorded) even when output_config.format itself is dropped.
+      noteUnmeasurableProbabilities(request, this.provider);
       if (compat.structuredOutput === "reject") {
         // The server accepts output_config.format and ignores the schema
         // (DeepSeek, live 2026-09-03: 200 with keys the schema never named).
@@ -650,9 +653,7 @@ export class AnthropicLM extends ProviderLM {
         });
       } else {
         // MAP-14 §2: a judgment property carrying type+anyOf has its type moved
-        // into every branch (the wire 400s otherwise, receipted 2026-09-17);
-        // probabilities cannot be measured here.
-        noteUnmeasurableProbabilities(request, this.provider);
+        // into every branch (the wire 400s otherwise, receipted 2026-09-17).
         const found = requestJudgments(request);
         let fmt = config.responseFormat;
         if (found.size > 0 && fmt.type === "json_schema") fmt = { ...fmt, schema: anthropicSchema(fmt.schema, found) };

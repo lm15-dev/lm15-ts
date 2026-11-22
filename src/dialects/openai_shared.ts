@@ -196,12 +196,23 @@ export function cacheStablePrefix(request: Request, cacheControl: string): boole
   return cache !== undefined && cache.mode !== "off" && cache.prefix === "stable" && cacheControl === "openai";
 }
 
-function hasExplicitBreakpoint(request: Request, cacheControl: string): boolean {
-  return cacheBreakpointIndex(request, cacheControl) !== undefined || (cacheStablePrefix(request, cacheControl) && Boolean(request.system));
+function hasExplicitBreakpoint(request: Request, cacheControl: string, breakpointIndex: number | undefined): boolean {
+  return breakpointIndex !== undefined || (cacheStablePrefix(request, cacheControl) && Boolean(request.system));
 }
 
-/** Shared MAP-6 fields for both OpenAI dialects: off switch, key, retention. */
-export function cacheCommonPayload(request: Request, payload: JsonObject, cacheControl: string, provider: string): void {
+/**
+ * Shared MAP-6 fields for both OpenAI dialects: off switch, key, retention.
+ * `breakpointIndex` is the build's one computation of `cacheBreakpointIndex`
+ * (it records an adaptation when the mark moves or drops; calling it twice
+ * recorded the adaptation twice).
+ */
+export function cacheCommonPayload(
+  request: Request,
+  payload: JsonObject,
+  cacheControl: string,
+  provider: string,
+  breakpointIndex: number | undefined,
+): void {
   const cache = request.config?.cache;
   if (!cache) return;
   if (cacheControl !== "openai" && cacheControl !== "openai_implicit") {
@@ -234,7 +245,7 @@ export function cacheCommonPayload(request: Request, payload: JsonObject, cacheC
   }
   if (cache.key) payload["prompt_cache_key"] = cache.key;
   if (cache.retention === "long") payload["prompt_cache_retention"] = "24h";
-  if (openaiModelHasCacheOptions(request.model) && hasExplicitBreakpoint(request, cacheControl)) {
+  if (openaiModelHasCacheOptions(request.model) && hasExplicitBreakpoint(request, cacheControl, breakpointIndex)) {
     payload["prompt_cache_options"] = { mode: "explicit" };
   }
   if (cache.resource !== undefined) {

@@ -368,7 +368,8 @@ export class OpenAILM extends ProviderLM {
     checkMessageMedia(request.messages, "openai", this.provider);
     const compat = this.compat(request);
     const config = request.config ?? {};
-    const input = this.buildInput(request.messages, compat, cacheBreakpointIndex(request, compat.cacheControl));
+    const breakpointIndex = cacheBreakpointIndex(request, compat.cacheControl);
+    const input = this.buildInput(request.messages, compat, breakpointIndex);
     const payload: JsonObject = { model: request.model, input, stream };
     const systemText = request.system ? (typeof request.system === "string" ? request.system : partsToText(request.system)) : "";
     if (systemText) {
@@ -423,8 +424,18 @@ export class OpenAILM extends ProviderLM {
       payload["text"] = responseFormatToOpenAIText(config.responseFormat);
     }
     if (config.reasoning) {
-      const reasoning = config.reasoning;
-      if (reasoning.effort !== "off") {
+      let reasoning: typeof config.reasoning | undefined = config.reasoning;
+      if (compat.reasoningFormat === "none") {
+        // No reasoning dial on this server (MAP-13): drop and record before any sub-field checks.
+        adapt(
+          "config.reasoning",
+          "dropped",
+          "this server has no reasoning dial on its wire (compat reasoning_format='none'); the model reasons at its own default; pass the server's own knob through extensions",
+          { asked: { effort: reasoning.effort }, provider: this.provider },
+        );
+        reasoning = undefined;
+      }
+      if (reasoning !== undefined && reasoning.effort !== "off") {
         if (reasoning.thinkingBudget !== undefined) {
           // MAP-13: effort carries the intent (MAP-7 rule 5); no budget field exists on this wire.
           adapt(
@@ -459,15 +470,25 @@ export class OpenAILM extends ProviderLM {
             break;
           case "qwen":
           case "zai":
+            adapt("config.reasoning.effort", "substituted", "this wire's reasoning is an on/off switch with no levels; reasoning was switched on", {
+              asked: effort,
+              applied: "on",
+              provider: this.provider,
+            });
             payload["enable_thinking"] = true;
             break;
           case "qwen_chat_template":
+            adapt("config.reasoning.effort", "substituted", "this wire's reasoning is an on/off switch with no levels; reasoning was switched on", {
+              asked: effort,
+              applied: "on",
+              provider: this.provider,
+            });
             payload["chat_template_kwargs"] = { enable_thinking: true, preserve_thinking: true };
             break;
           case "none":
             break;
         }
-      } else {
+      } else if (reasoning !== undefined) {
         switch (compat.reasoningFormat) {
           case "responses_reasoning":
             payload["reasoning"] = { effort: "none" };
@@ -493,7 +514,7 @@ export class OpenAILM extends ProviderLM {
         }
       }
     }
-    cacheCommonPayload(request, payload, compat.cacheControl, this.provider);
+    cacheCommonPayload(request, payload, compat.cacheControl, this.provider, breakpointIndex);
     if (compat.routing !== undefined) payload["provider"] = compat.routing;
     if (config.serviceTier !== undefined) payload["service_tier"] = config.serviceTier;
     if (config.userId !== undefined) payload["safety_identifier"] = config.userId;

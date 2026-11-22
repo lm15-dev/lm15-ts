@@ -150,6 +150,12 @@ export class BoundClient {
   toString(): string {
     return `BoundClient(${this.routed}, connection=${this.selection.connectionId})`;
   }
+  [Symbol.for("nodejs.util.inspect.custom")](): string {
+    return this.toString();
+  }
+  toJSON(): string {
+    return this.toString();
+  }
 
   /** An ordinary canonical Request with the selected routed model; a string is one user message. */
   request(messages: string | readonly Message[], fields: BoundRequestFields = {}): Request {

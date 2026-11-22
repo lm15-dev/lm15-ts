@@ -13,6 +13,8 @@
 
 import { base64UrlEncode, utf8Encode } from "../bytes.ts";
 
+const INSPECT = Symbol.for("nodejs.util.inspect.custom");
+
 export interface PkcePair {
   /** Secret until the code exchange; never log it, never put it in a URL. */
   readonly verifier: string;
@@ -32,5 +34,15 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 /** A fresh pair: 64 random bytes → an 86-character base64url verifier, and its challenge. */
 export async function generatePkce(): Promise<PkcePair> {
   const verifier = base64UrlEncode(crypto.getRandomValues(new Uint8Array(64)));
-  return { verifier, challenge: await pkceChallenge(verifier), method: "S256" };
+  const challenge = await pkceChallenge(verifier);
+  const summary = () => `PkcePair(challenge=${JSON.stringify(challenge)}, method="S256", verifier=<redacted>)`;
+  const pair = { challenge, method: "S256" as const } as unknown as PkcePair;
+  Object.defineProperties(pair, {
+    // AUTH-5: non-enumerable so Object.keys / spread / JSON / util.inspect never print the verifier.
+    verifier: { value: verifier, enumerable: false, writable: false, configurable: false },
+    toString: { value: summary, enumerable: false, configurable: true },
+    [INSPECT]: { value: summary, enumerable: false, configurable: true },
+    toJSON: { value: () => ({ challenge, method: "S256" }), enumerable: false, configurable: true },
+  });
+  return Object.freeze(pair);
 }

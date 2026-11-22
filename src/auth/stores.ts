@@ -818,14 +818,35 @@ export async function startXaiDeviceLogin(): Promise<XaiDeviceAuthorization> {
   if (typeof expiresIn !== "number" || expiresIn <= 0) throw new AuthError("xAI device authorization response is missing expires_in.", { provider: "xai" });
   const interval = data["interval"];
   const complete = data["verification_uri_complete"];
-  return {
+  const verificationUri = httpsOrRaise(data["verification_uri"]);
+  const verificationUriComplete = typeof complete === "string" && complete ? httpsOrRaise(complete) : undefined;
+  const intervalS = typeof interval === "number" && interval > 0 ? interval : 5;
+  const auth = {
     userCode,
-    verificationUri: httpsOrRaise(data["verification_uri"]),
-    ...(typeof complete === "string" && complete ? { verificationUriComplete: httpsOrRaise(complete) } : {}),
-    intervalS: typeof interval === "number" && interval > 0 ? interval : 5,
+    verificationUri,
+    ...(verificationUriComplete !== undefined ? { verificationUriComplete } : {}),
+    intervalS,
     expiresInS: expiresIn,
-    deviceCode,
-  };
+  } as unknown as XaiDeviceAuthorization;
+  const summary = () => `XaiDeviceAuthorization(userCode=${JSON.stringify(userCode)}, verificationUri=${JSON.stringify(verificationUri)}, deviceCode=<redacted>)`;
+  Object.defineProperties(auth, {
+    // AUTH-5: deviceCode is secret (matches Python XaiDeviceAuthorization.device_code repr=False).
+    deviceCode: { value: deviceCode, enumerable: false, writable: false, configurable: false },
+    toString: { value: summary, enumerable: false, configurable: true },
+    [INSPECT]: { value: summary, enumerable: false, configurable: true },
+    toJSON: {
+      value: () => ({
+        userCode,
+        verificationUri,
+        ...(verificationUriComplete !== undefined ? { verificationUriComplete } : {}),
+        intervalS,
+        expiresInS: expiresIn,
+      }),
+      enumerable: false,
+      configurable: true,
+    },
+  });
+  return Object.freeze(auth);
 }
 
 export class DeviceCodeExpiredError extends AuthError {}
