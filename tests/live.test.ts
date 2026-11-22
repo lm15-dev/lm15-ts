@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { LiveSession } from "../src/live.ts";
 import { GeminiLM } from "../src/dialects/gemini.ts";
 import { OpenAILM } from "../src/dialects/openai_responses.ts";
-import { TransportError } from "../src/errors.ts";
+import { ProviderError, TransportError } from "../src/errors.ts";
 import type { LiveServerEvent } from "../src/types/live.ts";
 
 function socketFactory(opts: { connect?: "open" | "close" | "error" | "hang"; setup?: "ok" | "close" | "error" | "reject" | "hang"; closeAck?: boolean; immediateText?: boolean } = {}) {
@@ -89,6 +89,18 @@ test("decoder errors reject pending receivers instead of escaping event dispatch
   const pending = session.recv();
   fake.sockets[0]!.message({ bad: true });
   await assert.rejects(pending, /decoding/);
+});
+
+test("a nameless live call retains ProviderError through the session and closes the socket", async () => {
+  const fake = socketFactory();
+  const session = await LiveSession.open(gemini(), { model: "m" }, { WebSocket: fake.WebSocket });
+  fake.sockets[0]!.message({ serverContent: { modelTurn: { parts: [{ text: "Already delivered." }] } } });
+  assert.deepEqual(await session.recv(), { type: "text", text: "Already delivered." });
+  const pending = session.recv();
+  fake.sockets[0]!.message({ toolCall: { functionCalls: [{ id: "c", args: {} }] } });
+  await assert.rejects(pending, (e: unknown) => e instanceof ProviderError && e.provider === "gemini" && /no name/.test(e.message));
+  assert.ok(fake.sockets[0]!.closeCalls > 0);
+  await assert.rejects(session.recv(), ProviderError);
 });
 
 test("close is bounded and idempotent even without a peer acknowledgement", { timeout: 2000 }, async () => {

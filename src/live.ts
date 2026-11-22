@@ -1,6 +1,6 @@
 /** Realtime session lifecycle over the provider-owned websocket codecs. */
 import { abortable, checkAborted, positiveTimeout } from "./async.ts";
-import { CollectionLimitError, TransportError, UnsupportedFeatureError } from "./errors.ts";
+import { CollectionLimitError, LM15Error, TransportError, UnsupportedFeatureError } from "./errors.ts";
 import { stringifyJson, type JsonObject } from "./json.ts";
 import { getDefaultPlatform } from "./platform.ts";
 import { LiveConfig, LiveClientEvent as LiveClientEventNs, LiveServerEvent as LiveServerEventNs, type LiveClientEvent, type LiveServerEvent } from "./types/live.ts";
@@ -141,7 +141,11 @@ export class LiveSession implements AsyncIterable<LiveServerEvent> {
   private listen(signal?: AbortSignal): void {
     const message = (event: MessageEvent) => {
       try { for (const decoded of this.decode(frameBytes(event.data))) this.push(decoded); }
-      catch (e) { this.fail(new TransportError("decoding websocket message failed", { cause: e })); }
+      catch (e) {
+        // A malformed provider reply is not a connection fault or a reason to
+        // retry inference. Preserve canonical decoder errors through the session.
+        this.fail(e instanceof LM15Error ? e : new TransportError("decoding websocket message failed", { cause: e }));
+      }
     };
     const close = (event: CloseEvent) => {
       this.finish(event.code !== undefined && event.code !== 1000 && event.code !== 1005

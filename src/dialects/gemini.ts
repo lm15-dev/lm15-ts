@@ -892,6 +892,12 @@ export class GeminiLM extends ProviderLM {
     return geminiUsage(usage, ["responseTokenCount", "candidatesTokenCount"]);
   }
 
+  private liveCompleteToolName(call: JsonObject): string {
+    const name = call["name"];
+    if (typeof name !== "string" || !name) throw unnamedToolCallError(this.provider, "live function call");
+    return name;
+  }
+
   override decodeLiveServerEvent(raw: Uint8Array | string): LiveServerEvent[] {
     let payload: unknown;
     try {
@@ -909,7 +915,7 @@ export class GeminiLM extends ProviderLM {
     const toolCall = payload["toolCall"];
     if (isJsonObject(toolCall)) {
       for (const fc of list(toolCall["functionCalls"])) {
-        if (isJsonObject(fc)) events.push({ type: "tool_call", id: str(fc["id"]) || "fc_0", name: str(fc["name"]) || "tool", input: isJsonObject(fc["args"]) ? fc["args"] : {} });
+        if (isJsonObject(fc)) events.push({ type: "tool_call", id: str(fc["id"]) || "fc_0", name: this.liveCompleteToolName(fc), input: isJsonObject(fc["args"]) ? fc["args"] : {} });
       }
     }
     const server = payload["serverContent"];
@@ -925,7 +931,7 @@ export class GeminiLM extends ProviderLM {
           if (mime.startsWith("audio/")) events.push({ type: "audio", data: str(inline["data"]), ...(mime ? { mediaType: mime } : {}) });
         } else if (isJsonObject(part["functionCall"])) {
           const fc = part["functionCall"];
-          events.push({ type: "tool_call", id: str(fc["id"]) || "fc_0", name: str(fc["name"]) || "tool", input: isJsonObject(fc["args"]) ? fc["args"] : {} });
+          events.push({ type: "tool_call", id: str(fc["id"]) || "fc_0", name: this.liveCompleteToolName(fc), input: isJsonObject(fc["args"]) ? fc["args"] : {} });
         }
       }
     }
