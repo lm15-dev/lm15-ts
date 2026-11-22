@@ -1,3 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if ! command -v nix >/dev/null 2>&1 && command -v llvm-ar >/dev/null 2>&1; then
+  exec llvm-ar "$@"
+fi
 exec nix shell nixpkgs#llvmPackages.llvm --command llvm-ar "$@"

@@ -101,6 +101,15 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - name: Build TLS WebAssembly module from locked source
+        run: |
+          command -v wasm-ld >/dev/null 2>&1 && command -v clang >/dev/null 2>&1 && command -v llvm-ar >/dev/null 2>&1 || {
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm lld
+          }
+          rustup target add wasm32v1-none
+          (cd tls && cargo build --release --locked)
+          mkdir -p vendor/tls
+          cp tls/target/wasm32v1-none/release/lm15_tls.wasm vendor/tls/lm15-tls.wasm
       - run: npm ci && npm run build
       - name: Pack, install in a scratch project, load every entry point
         run: |

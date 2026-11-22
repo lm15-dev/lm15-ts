@@ -36,6 +36,15 @@ jobs:
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
+      - name: Build TLS WebAssembly module from locked source
+        run: |
+          command -v wasm-ld >/dev/null 2>&1 && command -v clang >/dev/null 2>&1 && command -v llvm-ar >/dev/null 2>&1 || {
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm lld
+          }
+          rustup target add wasm32v1-none
+          (cd tls && cargo build --release --locked)
+          mkdir -p vendor/tls
+          cp tls/target/wasm32v1-none/release/lm15_tls.wasm vendor/tls/lm15-tls.wasm
       - run: npm run build && npm run check && npm test
       - name: Contract harness at the pin
         run: python3 ../lm15-contract/harness/check.py --shim typescript --direction all
@@ -67,6 +76,15 @@ jobs:
           git clone --no-checkout https://github.com/lm15-dev/lm15-contract.git ../lm15-contract
           git -C ../lm15-contract checkout --detach "$PIN"
       - run: npm ci
+      - name: Build TLS WebAssembly module from locked source
+        run: |
+          command -v wasm-ld >/dev/null 2>&1 && command -v clang >/dev/null 2>&1 && command -v llvm-ar >/dev/null 2>&1 || {
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends clang llvm lld
+          }
+          rustup target add wasm32v1-none
+          (cd tls && cargo build --release --locked)
+          mkdir -p vendor/tls
+          cp tls/target/wasm32v1-none/release/lm15_tls.wasm vendor/tls/lm15-tls.wasm
       - name: Publish
         # A prerelease goes to the `next` tag once a stable version holds
         # `latest`; until then it is `latest` (the only line there is).
