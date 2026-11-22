@@ -108,7 +108,8 @@ jobs:
           mkdir "$RUNNER_TEMP/user" && cd "$RUNNER_TEMP/user"
           npm init -y > /dev/null
           npm install "$RUNNER_TEMP"/lm15-lm15-*.tgz
-          test ! -e node_modules/@lm15/lm15/dist/tls
+          test -f node_modules/@lm15/lm15/dist/tls/lm15-tls.wasm
+          test -f node_modules/@lm15/lm15/native/credential_lock.c
           test -z "$(ls node_modules/.bin 2>/dev/null | grep lm15 || true)"
           node -e "const l = require('@lm15/lm15'); if (typeof l.LMRouter !== 'function') process.exit(1)"
-          node --input-type=module -e "import { LMRouter } from '@lm15/lm15'; import '@lm15/lm15/browser'; import '@lm15/lm15/testing'; if (typeof LMRouter !== 'function') process.exit(1)"
+          node --input-type=module -e "import { readFileSync } from 'node:fs'; import { LMRouter, TlsEngine } from '@lm15/lm15'; import '@lm15/lm15/browser'; import '@lm15/lm15/testing'; if (typeof LMRouter !== 'function') process.exit(1); await TlsEngine.load(readFileSync(new URL(import.meta.resolve('@lm15/lm15/tls/lm15-tls.wasm'))));"

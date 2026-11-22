@@ -2,7 +2,7 @@
  * Audio / live (realtime) types (spec/types.md § Audio / Live).
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, ensureCanonical } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import { AUDIO_ENCODINGS, type AudioEncoding } from "../vocab.ts";
 import { Tool, isTool, normalizeTool } from "./config.ts";
@@ -57,6 +57,7 @@ export const AudioFormat = {
     return normalizeAudioFormat({ encoding: d["encoding"], sampleRate: d["sample_rate"], channels: d["channels"] ?? 1 });
   },
   toJSON(f: AudioFormat): JsonObject {
+    f = ensureCanonical("audio_format", f, normalizeAudioFormat);
     return omitEmpty({ encoding: f.encoding, sample_rate: f.sampleRate, channels: f.channels ?? 1 });
   },
 };
@@ -116,6 +117,7 @@ export const LiveConfig = {
     });
   },
   toJSON(c: LiveConfig): JsonObject {
+    c = ensureCanonical("live_config", c, normalizeLiveConfig);
     return omitEmpty({
       model: c.model,
       system: systemToJSON(c.system),
@@ -269,6 +271,7 @@ export const LiveClientEvent = {
   },
   /** Serialized WITHOUT cleaning: every field verbatim, including `turn_complete: false`. */
   toJSON(e: LiveClientEvent): JsonObject {
+    e = ensureCanonical("live_client_event", e, normalizeLiveClientEvent);
     switch (e.type) {
       case "turn":
         return { type: "turn", parts: e.parts.map(Part.toJSON), turn_complete: e.turnComplete ?? true };
@@ -407,6 +410,7 @@ export const LiveServerEvent = {
     }
   },
   toJSON(e: LiveServerEvent): JsonObject {
+    e = ensureCanonical("live_server_event", e, normalizeLiveServerEvent);
     switch (e.type) {
       case "audio":
         return omitEmpty({ type: "audio", data: e.data, media_type: e.mediaType });

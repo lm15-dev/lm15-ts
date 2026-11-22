@@ -211,8 +211,12 @@ own, or a short-lived token from your backend. See
 Besides API keys, lm15 can use an account you sign in to (a ChatGPT, Claude,
 xAI, GitHub Copilot, Kimi Code or OpenRouter login), saved in one file every
 lm15 language shares: `Auth`, `connect()` and `new LMRouter({ auth })`.
-It ships from 1.0.0-rc.2 (it was not in 1.0.0-rc.1). Sign-in is
-**provisional**. See
+Stored-credential writes and token refreshes take a kernel file lock (`flock`
+on `PATH` on Linux; the shipped `native/credential_lock.c` Node-API addon on
+macOS and Windows — see [docs/credential-locking.md](docs/credential-locking.md));
+explicit credentials and fresh reads require no lock. For browser tunnels,
+`@lm15/lm15/tls/lm15-tls.wasm` ships beside the browser entry and loads only
+when passed to `TlsEngine.load(...)`. Sign-in is **provisional**. See
 [docs/managed-login.md](docs/managed-login.md).
 
 ### More
@@ -235,8 +239,8 @@ sign-in.
 ## Conformance
 
 Graded by [lm15-contract](https://github.com/lm15-dev/lm15-contract) at the
-commit in `CONTRACT_PIN`: every check passes (1,921 of 1,921 on
-2026-10-15), the same as Python, Rust, Go, Julia and R at theirs. The checks compare
+commit in `CONTRACT_PIN`: every check passes, the same as Python, Rust, Go,
+Julia and R at theirs. The checks compare
 the exact requests lm15 builds and the responses it reads against recorded
 provider traffic. The package's own tests also replay the corpus through
 the browser entry in a realm with only web globals.

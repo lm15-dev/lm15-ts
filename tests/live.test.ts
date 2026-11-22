@@ -103,6 +103,22 @@ test("a nameless live call retains ProviderError through the session and closes 
   await assert.rejects(session.recv(), ProviderError);
 });
 
+test("an OpenAI Realtime nameless live call retains ProviderError through the session and closes the socket", async () => {
+  const fake = socketFactory();
+  const session = await new OpenAILM({ apiKey: "fake" }).live({ model: "gpt-realtime-mini" }, { WebSocket: fake.WebSocket });
+  fake.sockets[0]!.message({ type: "response.output_text.delta", delta: "Already delivered." });
+  assert.deepEqual(await session.recv(), { type: "text", text: "Already delivered." });
+  const pending = session.recv();
+  fake.sockets[0]!.message({
+    type: "response.output_item.done",
+    output_index: 0,
+    item: { id: "item_1", type: "function_call", status: "completed", call_id: "c", arguments: "{}" },
+  });
+  await assert.rejects(pending, (e: unknown) => e instanceof ProviderError && e.provider === "openai" && /no name/.test(e.message));
+  assert.ok(fake.sockets[0]!.closeCalls > 0);
+  await assert.rejects(session.recv(), ProviderError);
+});
+
 test("close is bounded and idempotent even without a peer acknowledgement", { timeout: 2000 }, async () => {
   const fake = socketFactory({ closeAck: false });
   const session = await LiveSession.open(gemini(), { model: "m" }, { WebSocket: fake.WebSocket, closeTimeoutMs: 15 });

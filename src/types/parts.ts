@@ -8,7 +8,7 @@
  * the wire contract (snake_case), the identifiers follow TypeScript.
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, ensureCanonical } from "../canonical.ts";
 import { float, isJsonObject, isStrictJson, memberNames, omitEmpty, orderedObject, setMember, type JsonObject, type JsonValue } from "../json.ts";
 import { IMAGE_DETAILS, JUDGMENT_METHODS, ROLES, type ImageDetail, type JudgmentMethod, type Role } from "../vocab.ts";
 import {
@@ -70,6 +70,8 @@ export const ContinuationState = {
     return normalizeContinuationState({ provider: d["provider"], kind: d["kind"], data: d["data"] ?? {} });
   },
   toJSON(state: ContinuationState): JsonObject {
+    state = ensureCanonical("continuation_state", state, normalizeContinuationState);
+    requireJsonObject(state.data, "data");
     return { provider: state.provider, kind: state.kind, data: state.data };
   },
 };
@@ -542,6 +544,7 @@ export function guessMediaType(path: string): string | undefined {
 // ─── Part serde ──────────────────────────────────────────────────────
 
 function partToJSON(part: Part): JsonObject {
+  part = ensureCanonical("part", part, normalizePart);
   const out: JsonObject = { type: part.type };
   switch (part.type) {
     case "text":
@@ -569,7 +572,7 @@ function partToJSON(part: Part): JsonObject {
     case "tool_call":
       out["id"] = part.id;
       out["name"] = part.name;
-      out["input"] = part.input;
+      out["input"] = requireJsonObject(part.input, "input");
       break;
     case "tool_result":
       out["id"] = part.id;
@@ -578,6 +581,7 @@ function partToJSON(part: Part): JsonObject {
       if (part.isError) out["is_error"] = true;
       break;
     case "data":
+      if (!isStrictJson(part.value)) throw new TypeError("DataPart.value must contain only JSON-compatible values");
       out["value"] = part.value; // opaque, always emitted (null is a value)
       if (part.probabilities !== undefined) {
         // canonical data, not an opaque payload: floats stay JSON floats (Number rule)
@@ -749,6 +753,7 @@ export type ToolResultsInput =
   | Readonly<Record<string, PartInput<ToolResultContentPart>>>;
 
 function messageToJSON(message: Message): JsonObject {
+  message = ensureCanonical("message", message, normalizeMessage);
   const out: JsonObject = { role: message.role, parts: message.parts.map(partToJSON) };
   const continuation = continuationToJson(message.continuation);
   if (continuation) out["continuation"] = continuation;

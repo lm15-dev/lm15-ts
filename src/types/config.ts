@@ -6,7 +6,7 @@
  * `router.complete`).
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, canonicalValue, ensureCanonical } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import {
   CACHE_MODES,
@@ -143,9 +143,13 @@ export const Tool = {
     return normalizeTool({ type: "function", name: d["name"], description: d["description"], parameters: d["parameters"] });
   },
   toJSON(t: Tool): JsonObject {
-    if (t.type === "builtin") return omitEmpty({ type: "builtin", name: t.name, config: t.config });
+    t = ensureCanonical("tool", t, normalizeTool);
+    if (t.type === "builtin") {
+      optionalJsonObject(t.config, "config");
+      return omitEmpty({ type: "builtin", name: t.name, config: t.config });
+    }
     const out = omitEmpty({ type: "function", name: t.name, description: t.description });
-    out["parameters"] = t.parameters ?? defaultParameters();
+    out["parameters"] = requireJsonObject(t.parameters ?? defaultParameters(), "parameters");
     return out;
   },
 };
@@ -186,6 +190,7 @@ export const ToolChoice = {
     return normalizeToolChoice({ mode: d["mode"] ?? "auto", allowed: d["allowed"] ?? [], parallel: d["parallel"] });
   },
   toJSON(tc: ToolChoice): JsonObject {
+    tc = ensureCanonical("tool_choice", tc, normalizeToolChoice);
     return omitEmpty({ mode: tc.mode ?? "auto", allowed: tc.allowed ? [...tc.allowed] : [], parallel: tc.parallel });
   },
 };
@@ -237,6 +242,7 @@ export const Reasoning = {
     return normalizeReasoning({ effort, thinkingBudget: d["thinking_budget"] ?? d["budget"], summary: d["summary"] });
   },
   toJSON(r: Reasoning): JsonObject {
+    r = ensureCanonical("reasoning", r, normalizeReasoning);
     return omitEmpty({ effort: r.effort, thinking_budget: r.thinkingBudget, summary: r.summary });
   },
 };
@@ -289,6 +295,7 @@ export const CacheConfig = {
     });
   },
   toJSON(c: CacheConfig): JsonObject {
+    c = ensureCanonical("cache_config", c, normalizeCacheConfig);
     return omitEmpty({
       mode: c.mode ?? "auto",
       retention: c.retention,
@@ -405,7 +412,7 @@ function normalizeConfigValue(input: unknown): Config {
   return frozen(config);
 }
 
-const EMPTY_CONFIG: Config = Object.freeze({});
+const EMPTY_CONFIG: Config = canonicalValue("config", Object.freeze({}));
 
 export function isDefaultConfig(config: Config | undefined): boolean {
   return config === undefined || Object.keys(Config.toJSON(config)).length === 0;
@@ -447,6 +454,10 @@ export const Config = {
     });
   },
   toJSON(c: Config): JsonObject {
+    if (typeof c !== "object" || c === null) throw new TypeError("Request.config must be a Config");
+    c = ensureCanonical("config", c, normalizeConfig);
+    optionalJsonObject(c.extensions, "extensions");
+    if (c.responseFormat !== undefined) validateResponseFormat(requireJsonObject(c.responseFormat as unknown as JsonObject, "response_format"));
     const out = omitEmpty({
       max_tokens: c.maxTokens,
       temperature: float(c.temperature),
@@ -560,6 +571,7 @@ export const Request = {
     });
   },
   toJSON(r: Request): JsonObject {
+    r = ensureCanonical("request", r, normalizeRequest);
     return omitEmpty({
       model: r.model,
       messages: r.messages.map(Message.toJSON),

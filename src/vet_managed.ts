@@ -168,6 +168,7 @@ async function managedRun(msg: JsonObject): Promise<JsonValue> {
 
   const saved = { ...process.env };
   for (const key of Object.keys(process.env)) delete process.env[key];
+  if (!("PATH" in env) && saved["PATH"] !== undefined) process.env["PATH"] = saved["PATH"];
   Object.assign(process.env, env);
   try {
     const list = Array.isArray(msg["steps"]) ? msg["steps"] : [];

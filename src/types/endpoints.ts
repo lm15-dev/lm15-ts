@@ -3,7 +3,7 @@
  * caches, batches, image/speech generation, video jobs.
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, ensureCanonical } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import {
   BATCH_OUTCOMES,
@@ -114,6 +114,8 @@ export const FileUploadRequest = {
     });
   },
   toJSON(r: FileUploadRequest): JsonObject {
+    r = ensureCanonical("file_upload_request", r, normalizeFileUploadRequest);
+    optionalJsonObject(r.extensions, "extensions");
     return omitEmpty({
       filename: r.filename,
       bytes_data: r.bytes ? encodeBase64(r.bytes) : undefined,
@@ -177,6 +179,8 @@ export const FileInfo = {
     });
   },
   toJSON(f: FileInfo): JsonObject {
+    f = ensureCanonical("file_info", f, normalizeFileInfo);
+    optionalJsonObject(f.providerData, "provider_data");
     const out = omitEmpty({
       id: f.id,
       filename: f.filename,
@@ -220,6 +224,7 @@ export const FilePage = {
     return normalizeFilePage({ items: items.map((x) => FileInfo.fromJSON(x as JsonObject)), nextCursor: d["next_cursor"] });
   },
   toJSON(p: FilePage): JsonObject {
+    p = ensureCanonical("file_page", p, normalizeFilePage);
     return omitEmpty({ items: p.items.map(FileInfo.toJSON), next_cursor: p.nextCursor });
   },
 };
@@ -267,6 +272,8 @@ export const CacheInfo = {
     });
   },
   toJSON(c: CacheInfo): JsonObject {
+    c = ensureCanonical("cache_info", c, normalizeCacheInfo);
+    optionalJsonObject(c.providerData, "provider_data");
     return omitEmpty({
       id: c.id,
       model: c.model,
@@ -306,6 +313,7 @@ export const CachePage = {
     return normalizeCachePage({ items: items.map((x) => CacheInfo.fromJSON(x as JsonObject)), nextCursor: d["next_cursor"] });
   },
   toJSON(p: CachePage): JsonObject {
+    p = ensureCanonical("cache_page", p, normalizeCachePage);
     return omitEmpty({ items: p.items.map(CacheInfo.toJSON), next_cursor: p.nextCursor });
   },
 };
@@ -448,6 +456,8 @@ export const BatchRequest = {
     });
   },
   toJSON(b: BatchRequest): JsonObject {
+    b = ensureCanonical("batch_request", b, normalizeBatchRequest);
+    optionalJsonObject(b.extensions, "extensions");
     return omitEmpty({ model: b.model, requests: b.requests.map(Request.toJSON), label: b.label, extensions: b.extensions });
   },
 };
@@ -490,6 +500,8 @@ export const BatchJobInfo = {
     });
   },
   toJSON(j: BatchJobInfo): JsonObject {
+    j = ensureCanonical("batch_job", j, normalizeBatchJobInfo);
+    optionalJsonObject(j.providerData, "provider_data");
     return omitEmpty({ id: j.id, status: j.status, label: j.label, created_at: j.createdAt, provider_data: j.providerData });
   },
 };
@@ -546,6 +558,7 @@ export const BatchEntry = {
     });
   },
   toJSON(e: BatchEntry): JsonObject {
+    e = ensureCanonical("batch_entry", e, normalizeBatchEntry);
     return omitEmpty({
       index: e.index,
       outcome: e.outcome,
@@ -597,6 +610,8 @@ export const ImageGenerationRequest = {
     });
   },
   toJSON(r: ImageGenerationRequest): JsonObject {
+    r = ensureCanonical("image_generation_request", r, normalizeImageGenerationRequest);
+    optionalJsonObject(r.extensions, "extensions");
     return omitEmpty({
       model: r.model,
       prompt: r.prompt,
@@ -650,6 +665,8 @@ export const ImageGenerationResponse = {
     });
   },
   toJSON(r: ImageGenerationResponse): JsonObject {
+    r = ensureCanonical("image_generation_response", r, normalizeImageGenerationResponse);
+    optionalJsonObject(r.providerData, "provider_data");
     return omitEmpty({
       images: r.images.map(Part.toJSON),
       text: r.text,
@@ -692,6 +709,8 @@ export const SpeechGenerationRequest = {
     return normalizeSpeechGenerationRequest({ model: d["model"], prompt: d["prompt"], voice: d["voice"], format: d["format"], extensions: d["extensions"] });
   },
   toJSON(r: SpeechGenerationRequest): JsonObject {
+    r = ensureCanonical("speech_generation_request", r, normalizeSpeechGenerationRequest);
+    optionalJsonObject(r.extensions, "extensions");
     return omitEmpty({ model: r.model, prompt: r.prompt, voice: r.voice, format: r.format, extensions: r.extensions });
   },
 };
@@ -735,6 +754,8 @@ export const SpeechGenerationResponse = {
     });
   },
   toJSON(r: SpeechGenerationResponse): JsonObject {
+    r = ensureCanonical("speech_generation_response", r, normalizeSpeechGenerationResponse);
+    optionalJsonObject(r.providerData, "provider_data");
     return omitEmpty({
       audio: Part.toJSON(r.audio),
       id: r.id,
@@ -789,6 +810,8 @@ export const VideoGenerationRequest = {
     });
   },
   toJSON(r: VideoGenerationRequest): JsonObject {
+    r = ensureCanonical("video_generation_request", r, normalizeVideoGenerationRequest);
+    optionalJsonObject(r.extensions, "extensions");
     return omitEmpty({
       model: r.model,
       prompt: r.prompt,
@@ -845,6 +868,8 @@ export const VideoJobInfo = {
     });
   },
   toJSON(j: VideoJobInfo): JsonObject {
+    j = ensureCanonical("video_job", j, normalizeVideoJobInfo);
+    optionalJsonObject(j.providerData, "provider_data");
     return omitEmpty({
       id: j.id,
       status: j.status,

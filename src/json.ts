@@ -716,3 +716,33 @@ export function deepFreeze<T>(value: T): T {
   }
   return value;
 }
+
+const rawJsonFn: ((text: string) => unknown) | undefined =
+  typeof (JSON as unknown as { rawJSON?: unknown }).rawJSON === "function"
+    ? (JSON as unknown as { rawJSON: (text: string) => unknown }).rawJSON
+    : undefined;
+
+/**
+ * Convert a canonical `JsonValue` tree so native `JSON.stringify` emits every
+ * `RawNumber` (integral floats like `0.0` / `1.0` and 64-bit integers) without
+ * hitting `RawNumber.prototype.toJSON`'s direct-use guard.
+ */
+export function toNativeJsonValue(value: JsonValue): unknown {
+  if (value === null || typeof value !== "object") return value;
+  if (value instanceof RawNumber) {
+    if (rawJsonFn) return rawJsonFn(value.raw);
+    const n = Number(value.raw);
+    if (value.isFloat) {
+      if (!Number.isFinite(n)) throw new TypeError(`RawNumber out of finite range: ${value.raw}`);
+      return n;
+    }
+    if (!Number.isSafeInteger(n)) {
+      throw new TypeError(`RawNumber ${value.raw} exceeds JavaScript's safe integer range and JSON.rawJSON is unavailable; use stringifyJson`);
+    }
+    return n;
+  }
+  if (Array.isArray(value)) return value.map(toNativeJsonValue);
+  const out: Record<string, unknown> = {};
+  for (const key of memberNames(value)) out[key] = toNativeJsonValue(value[key]!);
+  return out;
+}

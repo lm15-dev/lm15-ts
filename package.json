@@ -32,11 +32,16 @@
       "import": "./dist/testing.js",
       "require": "./dist/cjs/testing.js"
     },
+    "./tls/lm15-tls.wasm": "./dist/tls/lm15-tls.wasm",
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
-    "!dist/tls",
+    "native",
+    "!native/*.o",
+    "!native/*.obj",
+    "!native/*.exp",
+    "!native/*.lib",
     "LICENSE",
     "README.md",
     "docs"

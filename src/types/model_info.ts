@@ -3,10 +3,10 @@
  * routing, and cost estimation (mirrors `lm15.models`).
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, canonicalValue, ensureCanonical } from "../canonical.ts";
 import { float, isJsonObject, omitEmpty, type JsonObject } from "../json.ts";
 import { ValueError, absent, compact, frozen, optionalInt, optionalJsonObject, requireFloat, stringArray } from "./validate.ts";
-import type { Usage } from "./response.ts";
+import { normalizeUsage, type Usage } from "./response.ts";
 
 function nonEmptyText(value: unknown, field: string): string {
   if (typeof value !== "string" || value === "") throw new ValueError(`${field} must be a non-empty string`);
@@ -75,7 +75,8 @@ function rates(d: Record<string, unknown>): { [K in keyof Rates]: number | undef
   };
 }
 
-export function normalizePricingTier(input: unknown): PricingTier {
+export const normalizePricingTier = canonicalFactory("pricing_tier", normalizePricingTierValue);
+function normalizePricingTierValue(input: unknown): PricingTier {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a PricingTier");
   const d = input as Record<string, unknown>;
   let above: number | undefined;
@@ -88,11 +89,11 @@ export function normalizePricingTier(input: unknown): PricingTier {
   return frozen(compact({ aboveInputTokens: above, ...rates(d) })) as PricingTier;
 }
 
-export function normalizeInferencePricing(input: unknown): InferencePricing {
+export const normalizeInferencePricing = canonicalFactory("inference_pricing", normalizeInferencePricingValue);
+function normalizeInferencePricingValue(input: unknown): InferencePricing {
   if (typeof input !== "object" || input === null) throw new TypeError("expected an InferencePricing");
   const d = input as Record<string, unknown>;
-  const dims = d["dimensions"];
-  if (!absent(dims) && !isJsonObject(dims)) throw new TypeError("dimensions must be a JSON object or None");
+  const dims = optionalJsonObject(d["dimensions"], "dimensions");
   const rawTiers = d["tiers"];
   if (!absent(rawTiers) && !Array.isArray(rawTiers)) throw new TypeError("tiers must be an array of PricingTier");
   const tiers = ((rawTiers as unknown[] | undefined) ?? []).map(normalizePricingTier);
@@ -105,7 +106,7 @@ export function normalizeInferencePricing(input: unknown): InferencePricing {
     compact({
       ...rates(d),
       currency: nonEmptyText(d["currency"] ?? "USD", "currency"),
-      dimensions: absent(dims) ? undefined : (dims as JsonObject),
+      dimensions: dims,
       tiers: tiers.length > 0 ? Object.freeze(tiers) : undefined,
     }),
   );
@@ -135,6 +136,7 @@ export const PricingTier = {
   create: normalizePricingTier,
   fromJSON: tierFromJSON,
   toJSON(t: PricingTier): JsonObject {
+    t = ensureCanonical("pricing_tier", t, normalizePricingTier);
     return omitEmpty({ above_input_tokens: t.aboveInputTokens, ...ratesToJSON(t) });
   },
 };
@@ -153,6 +155,9 @@ export const InferencePricing = {
    * are outside it.
    */
   estimate(p: InferencePricing, usage: Usage): number | undefined {
+    p = ensureCanonical("inference_pricing", p, normalizeInferencePricing);
+    if (typeof usage !== "object" || usage === null) throw new TypeError("InferencePricing.estimate takes a Usage");
+    usage = ensureCanonical("usage", usage, normalizeUsage);
     const input = usage.inputTokens;
     const output = usage.outputTokens;
     if (input === undefined || output === undefined) return undefined;
@@ -199,6 +204,8 @@ export const InferencePricing = {
     });
   },
   toJSON(p: InferencePricing): JsonObject {
+    p = ensureCanonical("inference_pricing", p, normalizeInferencePricing);
+    optionalJsonObject(p.dimensions, "dimensions");
     return omitEmpty({
       ...ratesToJSON(p),
       currency: p.currency ?? "USD",
@@ -219,11 +226,11 @@ export interface InferenceModelInfo {
   readonly extensions?: JsonObject;
 }
 
-export function normalizeInferenceModelInfo(input: unknown): InferenceModelInfo {
+export const normalizeInferenceModelInfo = canonicalFactory("inference_model_info", normalizeInferenceModelInfoValue);
+function normalizeInferenceModelInfoValue(input: unknown): InferenceModelInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected an InferenceModelInfo");
   const d = input as Record<string, unknown>;
-  const ext = d["extensions"];
-  if (!absent(ext) && !isJsonObject(ext)) throw new TypeError("extensions must be a JSON object or None");
+  const ext = optionalJsonObject(d["extensions"], "extensions");
   const inputModalities = absent(d["inputModalities"]) ? ["text"] : stringArray(d["inputModalities"], "input_modalities");
   const outputModalities = absent(d["outputModalities"]) ? ["text"] : stringArray(d["outputModalities"], "output_modalities");
   return frozen(
@@ -235,7 +242,7 @@ export function normalizeInferenceModelInfo(input: unknown): InferenceModelInfo 
       supportsReasoning: d["supportsReasoning"] === true,
       reasoningEfforts: Object.freeze(stringArray(d["reasoningEfforts"], "reasoning_efforts")),
       pricing: absent(d["pricing"]) ? undefined : normalizeInferencePricing(d["pricing"]),
-      extensions: absent(ext) ? undefined : (ext as JsonObject),
+      extensions: ext,
     }),
   );
 }
@@ -255,6 +262,8 @@ export const InferenceModelInfo = {
     });
   },
   toJSON(i: InferenceModelInfo): JsonObject {
+    i = ensureCanonical("inference_model_info", i, normalizeInferenceModelInfo);
+    optionalJsonObject(i.extensions, "extensions");
     return omitEmpty({
       input_modalities: [...(i.inputModalities ?? ["text"])],
       output_modalities: [...(i.outputModalities ?? ["text"])],
@@ -275,22 +284,22 @@ export interface ModelOrigin {
   readonly providerData?: JsonObject;
 }
 
-export function normalizeModelOrigin(input: unknown): ModelOrigin {
+export const normalizeModelOrigin = canonicalFactory("model_origin", normalizeModelOriginValue);
+function normalizeModelOriginValue(input: unknown): ModelOrigin {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a ModelOrigin");
   const d = input as Record<string, unknown>;
-  const pd = d["providerData"];
-  if (!absent(pd) && !isJsonObject(pd)) throw new TypeError("provider_data must be a JSON object or None");
+  const pd = optionalJsonObject(d["providerData"], "provider_data");
   return frozen(
     compact({
       type: nonEmptyText(d["type"] ?? "provider", "ModelOrigin.type"),
       id: absent(d["id"]) ? undefined : nonEmptyText(d["id"], "ModelOrigin.id"),
       baseModel: absent(d["baseModel"]) ? undefined : nonEmptyText(d["baseModel"], "ModelOrigin.base_model"),
-      providerData: absent(pd) ? undefined : (pd as JsonObject),
+      providerData: pd,
     }),
   );
 }
 
-export const DEFAULT_ORIGIN: ModelOrigin = Object.freeze({ type: "provider" });
+export const DEFAULT_ORIGIN: ModelOrigin = canonicalValue("model_origin", Object.freeze({ type: "provider" }));
 
 export const ModelOrigin = {
   create: normalizeModelOrigin,
@@ -298,6 +307,8 @@ export const ModelOrigin = {
     return normalizeModelOrigin({ type: d["type"] ?? "provider", id: d["id"], baseModel: d["base_model"], providerData: d["provider_data"] });
   },
   toJSON(o: ModelOrigin): JsonObject {
+    o = ensureCanonical("model_origin", o, normalizeModelOrigin);
+    optionalJsonObject(o.providerData, "provider_data");
     return omitEmpty({ type: o.type ?? "provider", id: o.id, base_model: o.baseModel, provider_data: o.providerData });
   },
 };
@@ -318,8 +329,7 @@ export const normalizeModelInfo = canonicalFactory("model_info", normalizeModelI
 function normalizeModelInfoValue(input: unknown): ModelInfo {
   if (typeof input !== "object" || input === null) throw new TypeError("expected a ModelInfo");
   const d = input as Record<string, unknown>;
-  const ext = d["extensions"];
-  if (!absent(ext) && !isJsonObject(ext)) throw new TypeError("extensions must be a JSON object or None");
+  const ext = optionalJsonObject(d["extensions"], "extensions");
   const aliases = stringArray(d["aliases"], "ModelInfo.aliases");
   if (aliases.some((a) => a === "")) throw new ValueError("ModelInfo.aliases must contain non-empty strings");
   return frozen(
@@ -330,7 +340,7 @@ function normalizeModelInfoValue(input: unknown): ModelInfo {
       aliases: Object.freeze(aliases),
       origin: absent(d["origin"]) ? DEFAULT_ORIGIN : normalizeModelOrigin(d["origin"]),
       inference: absent(d["inference"]) ? undefined : normalizeInferenceModelInfo(d["inference"]),
-      extensions: optionalJsonObject(ext, "extensions"),
+      extensions: ext,
     }),
   );
 }
@@ -349,6 +359,8 @@ export const ModelInfo = {
     });
   },
   toJSON(m: ModelInfo): JsonObject {
+    m = ensureCanonical("model_info", m, normalizeModelInfo);
+    optionalJsonObject(m.extensions, "extensions");
     let origin = ModelOrigin.toJSON(m.origin ?? DEFAULT_ORIGIN);
     const keys = Object.keys(origin);
     if (keys.length === 1 && origin["type"] === "provider") origin = {}; // the default origin carries no information

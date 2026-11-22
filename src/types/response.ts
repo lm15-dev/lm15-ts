@@ -6,9 +6,9 @@
  * `response.usage.inputTokens`.
  */
 
-import { canonicalFactory, canonicalValue } from "../canonical.ts";
+import { canonicalFactory, canonicalValue, ensureCanonical } from "../canonical.ts";
 import { normalizeHttpResponse } from "../rate_limits.ts";
-import { float, isJsonObject, omitEmpty, parseJson, stringifyJson, type JsonObject, type JsonValue } from "../json.ts";
+import { float, isJsonObject, omitEmpty, parseJson, stringifyJson, toNativeJsonValue, type JsonObject, type JsonValue } from "../json.ts";
 import { ERROR_CODES, FINISH_REASONS, type ErrorCode, type FinishReason } from "../vocab.ts";
 import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
 import { Message, normalizeMessage, type CitationPart, type DataPart, type Part, type TextPart, type ToolCallPart } from "./parts.ts";
@@ -22,6 +22,7 @@ import {
   optionalString,
   requireFloat,
   requireInt,
+  requireJsonObject,
   requireOneOf,
   requireString,
 } from "./validate.ts";
@@ -153,6 +154,8 @@ export const Usage = {
     return normalizeUsage(input);
   },
   toJSON(u: Usage): JsonObject {
+    if (typeof u !== "object" || u === null) throw new TypeError("usage must be a Usage");
+    u = ensureCanonical("usage", u, normalizeUsage);
     const out: Record<string, unknown> = {};
     for (const [camel, snake] of USAGE_FIELDS) out[snake] = u[camel];
     return omitEmpty(out);
@@ -241,6 +244,7 @@ export const TokenLogprob = {
     });
   },
   toJSON(t: TokenLogprob): JsonObject {
+    t = ensureCanonical("token_logprob", t, normalizeTokenLogprob);
     const out = topLogprobToJSON(t);
     if (t.top && t.top.length > 0) out["top"] = t.top.map(topLogprobToJSON);
     return out;
@@ -288,6 +292,7 @@ export const ErrorDetail = {
     return normalizeErrorDetail({ code: d["code"], message: d["message"] ?? "", providerCode: d["provider_code"], httpResponse: d["http_response"] });
   },
   toJSON(e: ErrorDetail): JsonObject {
+    e = ensureCanonical("error_detail", e, normalizeErrorDetail);
     const http = e.httpResponse ? { ...e.httpResponse } : undefined;
     if (http && typeof http["retry_after"] === "number") http["retry_after"] = float(http["retry_after"]);
     return omitEmpty({ code: e.code, message: e.message, provider_code: e.providerCode, http_response: http });
@@ -456,6 +461,7 @@ export class Response {
 
   /** Canonical JSON; `provider_data` only when asked (the vet protocol serializes without it). */
   static toJSON(r: Response, opts: { includeProviderData?: boolean } = {}): JsonObject {
+    if (!(r instanceof Response)) throw new TypeError("expected a Response");
     const out = omitEmpty({
       id: r.id,
       model: r.model,
@@ -466,14 +472,17 @@ export class Response {
     });
     // false is data (the coverage claim), emitted; true is the default and omitted.
     if (!r.logprobsComplete) out["logprobs_complete"] = false;
-    if (opts.includeProviderData && r.providerData !== undefined) out["provider_data"] = r.providerData;
+    if (opts.includeProviderData && r.providerData !== undefined) out["provider_data"] = requireJsonObject(r.providerData, "provider_data");
     const adaptations = adaptationsToJSON(r.adaptations);
     if (adaptations) out["adaptations"] = adaptations;
     return out;
   }
 
-  toJSON(): JsonObject {
-    return Response.toJSON(this);
+  toJSON(key?: string): JsonObject {
+    const out = Response.toJSON(this);
+    // Native `JSON.stringify` always invokes `toJSON(key)` with a string key;
+    // direct `response.toJSON()` calls pass 0 arguments and get the canonical tree.
+    return typeof key === "string" ? (toNativeJsonValue(out) as JsonObject) : out;
   }
 }
 

@@ -15,3 +15,9 @@ export function canonicalFactory<A extends unknown[], T extends object>(kind: st
 export function canonicalKind(value: object): string | undefined {
   return kinds.get(value);
 }
+
+/** O(1) pass-through for values already produced by this kind's normalizer; validates plain literals. */
+export function ensureCanonical<T extends object>(kind: string, input: unknown, normalize: (v: unknown) => T): T {
+  if (typeof input === "object" && input !== null && kinds.get(input) === kind) return input as T;
+  return normalize(input);
+}

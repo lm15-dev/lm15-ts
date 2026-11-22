@@ -812,6 +812,12 @@ export class OpenAILM extends ProviderLM {
     }
   }
 
+  private liveCompleteToolName(item: JsonObject): string {
+    const name = item["name"];
+    if (typeof name !== "string" || !name) throw unnamedToolCallError(this.provider, "live function call");
+    return name;
+  }
+
   override decodeLiveServerEvent(raw: Uint8Array | string): LiveServerEvent[] {
     let payload: unknown;
     try {
@@ -832,14 +838,16 @@ export class OpenAILM extends ProviderLM {
       const delta = str(payload["delta"]);
       if (delta) {
         const id = str(payload["call_id"] ?? payload["id"]);
-        const name = str(payload["name"]);
-        events.push(LiveServerEventNs.create({ type: "tool_call_delta", inputDelta: delta, id: id || undefined, name: name || undefined }));
+        const rawName = payload["name"];
+        const name = typeof rawName === "string" && rawName ? rawName : undefined;
+        events.push(LiveServerEventNs.create({ type: "tool_call_delta", inputDelta: delta, id: id || undefined, name }));
       }
     } else if (et === "response.output_item.done") {
       const item = obj(payload["item"]);
       if (item["type"] === "function_call") {
+        const name = this.liveCompleteToolName(item);
         const callId = str(item["call_id"] ?? item["id"]);
-        if (callId) events.push(LiveServerEventNs.create({ type: "tool_call", id: callId, name: str(item["name"]) || "tool", input: parseJsonObjectLenient(item["arguments"]) }));
+        if (callId) events.push(LiveServerEventNs.create({ type: "tool_call", id: callId, name, input: parseJsonObjectLenient(item["arguments"]) }));
       }
     } else if (et === "response.done" || et === "response.completed") {
       const response = obj(payload["response"]);
@@ -1118,17 +1126,22 @@ export class OpenAILM extends ProviderLM {
     const data = obj(resp.json());
     const outputFormat = data["output_format"];
     const mediaType = typeof outputFormat === "string" && outputFormat ? `image/${outputFormat}` : undefined;
-    const images = [];
-    for (const item of list(data["data"])) {
-      if (!isJsonObject(item)) continue;
+    const images: Part[] = [];
+    const unmapped: Unmapped = [];
+    list(data["data"]).forEach((item, idx) => {
+      if (!isJsonObject(item)) {
+        recordUnmapped(unmapped, `data[${idx}]`, typeName(item));
+        return;
+      }
       if (item["b64_json"]) images.push(normalizePart({ type: "image", mediaType: mediaType ?? "application/octet-stream", data: str(item["b64_json"]) }));
       else if (item["url"]) images.push(normalizePart({ type: "image", mediaType: mediaType ?? "application/octet-stream", url: str(item["url"]) }));
-    }
+      else recordUnmapped(unmapped, `data[${idx}]`, Object.keys(item).sort().join("+") || "<empty>");
+    });
     const u = obj(data["usage"]);
     return ImageGenerationResponse.create({
       images,
       usage: Usage.create({ inputTokens: u["input_tokens"], outputTokens: u["output_tokens"], totalTokens: u["total_tokens"] }),
-      providerData: data,
+      providerData: attachUnmapped(data, unmapped),
     });
   }
 
@@ -1350,7 +1363,8 @@ class ResponsesStreamReader implements StreamReader {
     if (kind === "function_call") {
       const rest = this.copies.remainder(index, "arguments", argumentsText(item["arguments"]), { jsonValue: true });
       if (!rest && this.named.has(index)) return [];
-      const name = str(item["name"]);
+      const rawName = item["name"];
+      const name = typeof rawName === "string" && rawName ? rawName : "";
       if (name) this.named.add(index);
       const id = str(item["call_id"] ?? item["id"]);
       return [{ type: "delta", delta: { type: "tool_call", input: rest, partIndex: index, ...(id ? { id } : {}), ...(name ? { name } : {}) } }];

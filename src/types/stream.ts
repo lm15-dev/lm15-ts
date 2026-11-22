@@ -3,7 +3,7 @@
  * Closed discriminated unions on `type`.
  */
 
-import { canonicalFactory } from "../canonical.ts";
+import { canonicalFactory, ensureCanonical } from "../canonical.ts";
 import { isJsonObject, omitEmpty, type JsonObject, type JsonValue } from "../json.ts";
 import { FINISH_REASONS, type FinishReason } from "../vocab.ts";
 import { adaptationsFromJSON, adaptationsToJSON, normalizeAdaptations, type Adaptation } from "./adaptation.ts";
@@ -225,6 +225,7 @@ export const Delta = {
   },
   /** Drops only `null`/absent fields — empty strings ARE emitted; `part_index` always (except a null ContinuationDelta's). */
   toJSON(delta: Delta): JsonObject {
+    delta = ensureCanonical("delta", delta, normalizeDelta);
     const out: JsonObject = { type: delta.type };
     if (delta.type !== "continuation") out["part_index"] = delta.partIndex ?? 0;
     switch (delta.type) {
@@ -362,12 +363,14 @@ export const StreamEvent = {
     }
   },
   toJSON(e: StreamEvent): JsonObject {
+    e = ensureCanonical("stream_event", e, normalizeStreamEvent);
     switch (e.type) {
       case "start":
         return omitEmpty({ type: "start", id: e.id, model: e.model, adaptations: adaptationsToJSON(e.adaptations) });
       case "delta":
         return { type: "delta", delta: Delta.toJSON(e.delta) };
       case "end":
+        optionalJsonObject(e.providerData, "provider_data");
         return omitEmpty({
           type: "end",
           finish_reason: e.finishReason,

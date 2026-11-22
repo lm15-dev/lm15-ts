@@ -14,7 +14,7 @@ import { normalizePart, type ImagePart, type VideoPart } from "../types/parts.ts
 import { Usage } from "../types/response.ts";
 import { HttpResponse, mediaDataUri, pathId, type TransportRequest } from "../wire.ts";
 import { OpenAIChatLM, type OpenAIChatLMOptions } from "./openai_chat.ts";
-import { int, list, obj, str } from "./openai_shared.ts";
+import { attachUnmapped, int, list, obj, recordUnmapped, str, typeName, type Unmapped } from "./openai_shared.ts";
 
 const VIDEO_STATUS_MAP: Readonly<Record<string, string>> = Object.freeze({ pending: "running", done: "completed", failed: "failed" });
 
@@ -117,15 +117,20 @@ export class XaiLM extends OpenAIChatLM {
   override imageGenerationFromResponse(_request: ImageGenerationRequest, resp: HttpResponse): ImageGenerationResponse {
     const data = obj(resp.json());
     const images: ImagePart[] = [];
-    for (const item of list(data["data"])) {
-      if (!isJsonObject(item)) continue;
+    const unmapped: Unmapped = [];
+    list(data["data"]).forEach((item, idx) => {
+      if (!isJsonObject(item)) {
+        recordUnmapped(unmapped, `data[${idx}]`, typeName(item));
+        return;
+      }
       const mime = item["mime_type"];
       const mediaType = typeof mime === "string" && mime ? mime : "application/octet-stream";
       if (item["b64_json"]) images.push(normalizePart({ type: "image", mediaType, data: str(item["b64_json"]) }) as ImagePart);
       else if (item["url"]) images.push(normalizePart({ type: "image", mediaType, url: str(item["url"]) }) as ImagePart);
-    }
+      else recordUnmapped(unmapped, `data[${idx}]`, Object.keys(item).sort().join("+") || "<empty>");
+    });
     if (images.length === 0) throw new ProviderError("xai: image response carries no images", { provider: this.provider });
-    return ImageGenerationResponse.create({ images, usage: Usage.empty, providerData: data });
+    return ImageGenerationResponse.create({ images, usage: Usage.empty, providerData: attachUnmapped(data, unmapped) });
   }
 
   // ─── Video (grok-imagine) ────────────────────────────────────────
